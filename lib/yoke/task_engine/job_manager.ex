@@ -223,27 +223,29 @@ defmodule Yoke.TaskEngine.JobManager do
 
     updated_path = Enum.join(extra_paths ++ [current_path], ":")
 
-    env = [
-      {"PATH", updated_path},
-      {"VIPS_UNBLOCK", "svgload,svgload_buffer,svgload_stream"}
-    ]
+    extra_env = %{
+      "PATH" => updated_path,
+      "VIPS_UNBLOCK" => "svgload,svgload_buffer,svgload_stream"
+    }
 
-    env =
+    extra_env =
       if System.get_env("ERL_HOME") == nil do
         erl_dir = Path.join(user_home, ".asdf/installs/erlang")
 
         case File.ls(erl_dir) do
           {:ok, versions} when is_list(versions) and versions != [] ->
             first = Enum.sort(versions) |> List.last()
-            [{"ERL_HOME", Path.join(erl_dir, first)} | env]
+            Map.put(extra_env, "ERL_HOME", Path.join(erl_dir, first))
 
           _ ->
-            env
+            extra_env
         end
       else
-        env
+        extra_env
       end
 
-    {env, command}
+    scrubbed_env = Yoke.Hands.Environment.build(File.cwd!(), extra_env)
+
+    {scrubbed_env, command}
   end
 end

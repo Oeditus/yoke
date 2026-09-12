@@ -175,6 +175,11 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
+  def handle_input("/doctor", _session_pid, _session_id) do
+    Yoke.CLI.Doctor.print_report()
+    :continue
+  end
+
   def handle_input("/guide", _session_pid, _session_id) do
     IO.puts(Formatter.getting_started_guide())
     :continue

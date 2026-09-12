@@ -30,6 +30,7 @@ defmodule Yoke.CLI.Main do
           connect: :string,
           plugin: :string,
           update: :boolean,
+          doctor: :boolean,
           help: :boolean
         ],
         aliases: [
@@ -39,6 +40,7 @@ defmodule Yoke.CLI.Main do
           c: :conversation,
           r: :resume,
           u: :update,
+          d: :doctor,
           h: :help
         ]
       )
@@ -46,6 +48,10 @@ defmodule Yoke.CLI.Main do
     cond do
       opts[:help] ->
         print_usage()
+        halt(0)
+
+      opts[:doctor] ->
+        Yoke.CLI.Doctor.print_report()
         halt(0)
 
       opts[:update] || "update" in extra_args || "self-update" in extra_args ->
