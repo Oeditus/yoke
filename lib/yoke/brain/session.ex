@@ -607,6 +607,7 @@ defmodule Yoke.Brain.Session do
         4. **Actionable Recommendations**: Specific code refactoring snippets & improvements.
         5. **Test & Verification Coverage**: Assessment of missing test cases.
         6. **GitHub PR Review Formatted Block**: A ready-to-post Markdown comment block formatted for GitHub Pull Request review.
+        #{Yoke.PRReview.prompt_instructions()}
         """
 
         rules_preamble = Yoke.Rules.build_preamble("cr", state.cwd)

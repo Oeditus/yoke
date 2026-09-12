@@ -118,7 +118,7 @@ defmodule Yoke.CLI.Formatter do
       #{cyan()}/skills [show|path|edit|new|<name>]#{reset()} List, inspect, scaffold, or execute skills
       #{cyan()}/compact#{reset()}                Compress conversation context to save tokens
       #{cyan()}/diff#{reset()}                   Show colorized git diff of workspace changes
-      #{cyan()}/review <base> [head]#{reset()}   Compare two git branches and generate a detailed Code Review
+      #{cyan()}/review [<base> [head] | <pr_num>]#{reset()} Interactive PR Code Review with finding selection, GitHub posting, and auto-fix
       #{cyan()}/review_conversation [id]#{reset()} Review conversation history (current session or specific ID)
       #{cyan()}/commit <message>#{reset()}       Auto-commit staged workspace changes to git
       #{cyan()}/import <path> [id]#{reset()}     Import an external session .lmml or JSON file into Yoke's session store
@@ -284,6 +284,10 @@ defmodule Yoke.CLI.Formatter do
 
   def format_info(msg) do
     "#{cyan()}#{bold()}●#{reset()} #{msg}"
+  end
+
+  def format_warning(msg) do
+    "#{yellow()}#{bold()}●#{reset()} #{msg}"
   end
 
   @doc """

@@ -73,7 +73,6 @@ defmodule Yoke.MixProject do
       {:makeup_rust, ">= 0.0.0", optional: true},
       {:makeup_html, ">= 0.0.0", optional: true},
       {:owl, "~> 0.13"},
-      {:egit, "~> 0.2"},
       {:ragex, "~> 0.30"},
       {:dllb, "~> 0.9"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

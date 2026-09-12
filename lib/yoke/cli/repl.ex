@@ -695,9 +695,24 @@ defmodule Yoke.CLI.Repl do
 
     {base_branch, head_branch} =
       case parts do
-        [base, head | _] -> {base, head}
-        [base] -> {base, "HEAD"}
-        _ -> {"main", "HEAD"}
+        [pr_num] ->
+          if Regex.match?(~r/^\d+$/, pr_num) do
+            case Yoke.PRReview.detect_pr(pr_num) do
+              {:ok, info} ->
+                {info.base || "main", info.head || "HEAD"}
+
+              _ ->
+                {"main", "HEAD"}
+            end
+          else
+            {pr_num, "HEAD"}
+          end
+
+        [base, head | _] ->
+          {base, head}
+
+        _ ->
+          {"main", "HEAD"}
       end
 
     IO.puts(
@@ -718,6 +733,98 @@ defmodule Yoke.CLI.Repl do
       {:ok, %{content: review_md}} ->
         IO.puts("\n" <> Formatter.format_agent_response(review_md) <> "\n")
         Formatter.flush()
+
+        findings = Yoke.PRReview.parse_findings(review_md)
+
+        if findings == [] do
+          IO.puts(Formatter.format_info("No discrete actionable findings parsed from review."))
+        else
+          {:ok, accepted_findings, _declined} = Yoke.PRReview.interactive_review(findings)
+
+          if accepted_findings != [] do
+            fix_prompt = Yoke.PRReview.build_fix_prompt(accepted_findings)
+            pr_body = Yoke.PRReview.build_pr_comment_body(accepted_findings, fix_prompt)
+
+            post_question = "Post accepted findings to GitHub PR?"
+
+            post_options = [
+              "Yes, post findings to GitHub PR (Recommended)",
+              "No, skip posting to GitHub"
+            ]
+
+            post_choice = Yoke.CLI.QuestionPrompt.ask_single_question(post_question, post_options)
+
+            selected_post =
+              case post_choice do
+                %{selected: [c | _]} -> c
+                %{custom: c} when is_binary(c) -> c
+                _ -> "Yes"
+              end
+
+            if String.starts_with?(selected_post, "Yes") or String.contains?(selected_post, "Yes") do
+              case Yoke.PRReview.post_to_github_pr(head_branch, pr_body) do
+                {:ok, pr_info} ->
+                  IO.puts(
+                    Formatter.format_success(
+                      "Successfully posted review findings to GitHub PR ##{pr_info.number} (#{pr_info.url})"
+                    )
+                  )
+
+                {:error, err} ->
+                  IO.puts(Formatter.format_warning("Could not post to GitHub PR: #{err}"))
+              end
+            end
+
+            IO.puts(
+              "\n" <> Formatter.cyan() <> "🛠️ Yoke Code Review Fix Prompt:" <> Formatter.reset()
+            )
+
+            IO.puts(Formatter.dim() <> fix_prompt <> Formatter.reset() <> "\n")
+            Formatter.flush()
+
+            apply_question = "Would you like Yoke to examine and apply these fixes now?"
+
+            apply_options = [
+              "Yes, apply fixes now (Recommended)",
+              "No, I will apply them later"
+            ]
+
+            apply_choice =
+              Yoke.CLI.QuestionPrompt.ask_single_question(apply_question, apply_options)
+
+            selected_apply =
+              case apply_choice do
+                %{selected: [c | _]} -> c
+                %{custom: c} when is_binary(c) -> c
+                _ -> "Yes"
+              end
+
+            if String.starts_with?(selected_apply, "Yes") or
+                 String.contains?(selected_apply, "Yes") do
+              IO.puts(Formatter.format_info("Passing fix prompt to Yoke model…"))
+
+              apply_fn = fn -> Session.send_user_message(session_pid, fix_prompt) end
+
+              fix_res =
+                Yoke.CLI.Spinner.run(
+                  fn -> Yoke.CLI.Interrupt.run(session_pid, apply_fn) end,
+                  title: "Applying Code Review fixes… (Ctrl+Q to interrupt)"
+                )
+
+              case fix_res do
+                {:ok, %{content: fix_reply}} ->
+                  IO.puts("\n" <> Formatter.format_agent_response(fix_reply) <> "\n")
+                  Formatter.flush()
+
+                {:error, err} ->
+                  IO.puts(Formatter.format_error(err))
+                  Formatter.flush()
+              end
+            end
+          else
+            IO.puts(Formatter.format_info("No findings were accepted by user."))
+          end
+        end
 
       {:error, err} ->
         IO.puts(Formatter.format_error(err))
