@@ -33,7 +33,8 @@ defmodule Yoke.Client.DeepSeekAPI do
 
     res =
       Yoke.ExternalCall.run(:deepseek_api, [endpoint: config.endpoint, model: config.model], fn ->
-        if ((is_nil(config.api_key) or config.api_key == "") and not local_endpoint?(config.endpoint)) or
+        if ((is_nil(config.api_key) or config.api_key == "") and
+              not local_endpoint?(config.endpoint)) or
              config.mock == true do
           mock_response(messages, tools, config.model)
         else

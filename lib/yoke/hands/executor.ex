@@ -18,7 +18,7 @@ defmodule Yoke.Hands.Executor do
   @type execution_mode :: :local | :remote | :docker
 
   @doc "Executes a tool call under the configured sandbox target."
-  def execute(%__MODULE__{mode: :local} = executor, tool_name, args) do
+  def execute(%__MODULE__{mode: :local} = _executor, tool_name, args) do
     verdict = Yoke.AIGuard.guard_tool(tool_name, args)
 
     if verdict.action == :blocked do

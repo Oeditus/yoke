@@ -16,14 +16,22 @@ defmodule Yoke.AIGuard do
   defmodule Verdict do
     @moduledoc "Represents an AI Guard evaluation verdict."
     defstruct [
-      :phase,       # :input | :output | :tool_call
-      :target,      # tool name or model ID
-      :action,      # :pass | :flagged | :blocked
-      :mode,        # :observe | :enforce
-      :reason,      # string or nil
-      :details,     # map of extra info
-      :timestamp,   # ISO8601 string
-      :duration_ms  # integer latency
+      # :input | :output | :tool_call
+      :phase,
+      # tool name or model ID
+      :target,
+      # :pass | :flagged | :blocked
+      :action,
+      # :observe | :enforce
+      :mode,
+      # string or nil
+      :reason,
+      # map of extra info
+      :details,
+      # ISO8601 string
+      :timestamp,
+      # integer latency
+      :duration_ms
     ]
 
     @type t :: %__MODULE__{
@@ -42,7 +50,8 @@ defmodule Yoke.AIGuard do
 
   # Risk patterns for input/prompt injection and credentials
   @secret_patterns [
-    {~r/(?:sk-|ghp_|gho_|glpat-|xox[baprs]-)[A-Za-z0-9_\-]{20,}/, "Potential API Token / Private Secret"},
+    {~r/(?:sk-|ghp_|gho_|glpat-|xox[baprs]-)[A-Za-z0-9_\-]{20,}/,
+     "Potential API Token / Private Secret"},
     {~r/-----BEGIN (?:RSA|OPENSSH|EC|PRIVATE KEY)-----/, "Private Key Material"},
     {~r/DEEPSEEK_API_KEY\s*=\s*['"]?[A-Za-z0-9_\-]+['"]?/, "DeepSeek API Key leakage"}
   ]
@@ -55,7 +64,8 @@ defmodule Yoke.AIGuard do
   ]
 
   @prompt_injection_patterns [
-    {~r/ignore\s+(?:all\s+)?previous\s+instructions/i, "Prompt injection: reset instructions attempt"},
+    {~r/ignore\s+(?:all\s+)?previous\s+instructions/i,
+     "Prompt injection: reset instructions attempt"},
     {~r/system\s+prompt\s+override/i, "Prompt injection: override attempt"}
   ]
 
@@ -167,21 +177,19 @@ defmodule Yoke.AIGuard do
 
   defp check_patterns(messages, patterns) when is_list(messages) do
     text =
-      messages
-      |> Enum.map(fn
+      Enum.map_join(messages, "\n", fn
         %{"content" => c} when is_binary(c) -> c
         %{content: c} when is_binary(c) -> c
         c when is_binary(c) -> c
         _ -> ""
       end)
-      |> Enum.join("\n")
 
     check_patterns(text, patterns)
   end
 
   defp check_patterns(_, _), do: []
 
-  defp evaluate_tool_risk(tool_name, %{} = args) do
+  defp evaluate_tool_risk(_tool_name, %{} = args) do
     cmd = Map.get(args, "command") || Map.get(args, :command) || ""
     content = Map.get(args, "content") || Map.get(args, :content) || ""
 
@@ -200,12 +208,12 @@ defmodule Yoke.AIGuard do
 
   defp log_and_audit(%Verdict{} = verdict) do
     if verdict.action in [:flagged, :blocked] do
-      msg = "[AI Guard:#{verdict.mode}] #{verdict.phase} on target '#{verdict.target}': #{verdict.reason}"
+      msg =
+        "[AI Guard:#{verdict.mode}] #{verdict.phase} on target '#{verdict.target}': #{verdict.reason}"
 
       case verdict.action do
         :blocked -> Logger.error(msg)
         :flagged -> Logger.warning(msg)
-        :pass -> nil
       end
     end
 
