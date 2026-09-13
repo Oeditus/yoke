@@ -427,6 +427,13 @@ Manage most of these live from the REPL with `/config style <name>`, `/config pr
 
 ---
 
+## Roadmap & Future Enhancements (TODO)
+
+- **Sandboxed Code Mode over MCP**: Implement a sandboxed Lua expression surface over MCP tools (`lua_docs`, `lua_eval`) allowing external and internal subagents to project, filter, and aggregate large data structures or file fields on the host without loading multi-megabyte raw context into model prompts.
+- **Enhanced Git Worktree Isolation & Multi-Lock Serialization**: Introduce dual-lock mechanics (`gate_lock` for CPU/testing serialization and `land_lock` for branch advancement) alongside warm dependency cache copying (`deps`/`_build`) for git worktree subagents managed by the workflow engine.
+
+---
+
 ## License
 
 MIT, see [`LICENSE`](LICENSE) -- with one additional restriction: this project may **not** be used, modified, or distributed as a harness, adapter, or integration layer for proprietary third-party models from OpenAI, Anthropic, or Google (e.g. GPT, Claude, Gemini), whether accessed directly or through an intermediary API, proxy, or aggregator.

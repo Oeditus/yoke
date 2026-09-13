@@ -29,12 +29,25 @@ defmodule Yoke.Client.DeepSeekAPI do
   """
   def chat_completion(messages, tools, opts \\ []) do
     config = build_config(opts)
+    _input_verdict = Yoke.AIGuard.guard_llm(messages, :input, target: config.model)
 
-    if ((is_nil(config.api_key) or config.api_key == "") and not local_endpoint?(config.endpoint)) or
-         config.mock == true do
-      mock_response(messages, tools, config.model)
-    else
-      real_chat_completion(messages, tools, config)
+    res =
+      Yoke.ExternalCall.run(:deepseek_api, [endpoint: config.endpoint, model: config.model], fn ->
+        if ((is_nil(config.api_key) or config.api_key == "") and not local_endpoint?(config.endpoint)) or
+             config.mock == true do
+          mock_response(messages, tools, config.model)
+        else
+          real_chat_completion(messages, tools, config)
+        end
+      end)
+
+    case res do
+      {:ok, choice} = ok_res ->
+        _output_verdict = Yoke.AIGuard.guard_llm(inspect(choice), :output, target: config.model)
+        ok_res
+
+      other ->
+        other
     end
   end
 

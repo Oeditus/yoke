@@ -18,15 +18,21 @@ defmodule Yoke.Hands.Executor do
   @type execution_mode :: :local | :remote | :docker
 
   @doc "Executes a tool call under the configured sandbox target."
-  def execute(%__MODULE__{mode: :local}, tool_name, args) do
-    badge =
-      Yoke.CLI.Formatter.cyan() <> "⚡" <> Yoke.CLI.Formatter.reset()
+  def execute(%__MODULE__{mode: :local} = executor, tool_name, args) do
+    verdict = Yoke.AIGuard.guard_tool(tool_name, args)
 
-    Logger.info("#{badge} #{tool_icon(tool_name)} #{format_tool_call(tool_name, args)}")
+    if verdict.action == :blocked do
+      {:error, "[AI Guard Enforce] Tool execution blocked: #{verdict.reason}"}
+    else
+      badge =
+        Yoke.CLI.Formatter.cyan() <> "⚡" <> Yoke.CLI.Formatter.reset()
 
-    case Yoke.Plugin.Loader.execute_tool(tool_name, args, :infinity) do
-      {:ok, result} -> {:ok, format_output(result)}
-      {:error, reason} -> {:error, reason}
+      Logger.info("#{badge} #{tool_icon(tool_name)} #{format_tool_call(tool_name, args)}")
+
+      case Yoke.Plugin.Loader.execute_tool(tool_name, args, :infinity) do
+        {:ok, result} -> {:ok, format_output(result)}
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
