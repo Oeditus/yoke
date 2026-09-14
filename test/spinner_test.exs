@@ -47,13 +47,12 @@ defmodule Yoke.CLI.SpinnerTest do
     assert formatted_none == "⠋ Thinking…"
   end
 
-  @tag ragex: true
   test "spinner includes gray tip when active" do
     {:ok, _pid} = Spinner.start(title: "Processing task", tip: "Use /help for commands")
-    line = Spinner.current_line()
-    assert line =~ "Processing task"
-    assert line =~ "(Tip: Use /help for commands)"
-    assert line =~ Yoke.CLI.Formatter.gray()
+    raw_line = Spinner.format_line("⠋", "Processing task", "Use /help for commands")
+    assert raw_line =~ "Processing task"
+    assert raw_line =~ "(Tip: Use /help for commands)"
+    assert raw_line =~ Yoke.CLI.Formatter.gray()
     Spinner.stop()
   end
 

@@ -47,7 +47,7 @@ defmodule Yoke.Config do
     # will run before pausing to ask the user whether to continue. Override
     # per-workspace (or globally) by adding "max_tool_depth": <n> to
     # .yoke/config.json (or ~/.yoke/config.json).
-    "max_tool_depth" => 100,
+    "max_tool_depth" => 1000,
     # These enforce the built-in "plan -> approve -> execute" gate for
     # non-trivial tasks. The gate is default-ON: once a task requires more
     # than `plan_gate_threshold` modifying tool calls, Yoke pauses to present

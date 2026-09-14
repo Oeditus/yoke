@@ -259,7 +259,7 @@ Managed via `~/.yoke/config.json` or project-local `.yoke/config.json`:
 {
   "model": "deepseek-chat",
   "permission_mode": "ask_confirm",
-  "max_tool_depth": 100,
+  "max_tool_depth": 1000,
   "plan_gate_enabled": true,
   "plan_gate_threshold": 2,
   "prompt_style": "starship",

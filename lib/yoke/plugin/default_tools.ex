@@ -96,7 +96,7 @@ defmodule Yoke.Plugin.DefaultTools do
       %{
         name: "bash",
         description:
-          "Execute a shell bash command and return standard output / error. User toolchain paths (~/.asdf/shims, ~/.cargo/bin, ERL_HOME) are automatically loaded. Pass `async: true` for long-running build/test tasks (`mix compile`, `mix test`, `cargo build`) to run them in the background without blocking. Returns a job ID immediately when `async: true`. Use `job_status` to inspect logs and `job_kill` to terminate. STRICT RESTRICTION: Do NOT use bash with grep, sed, find, cat, head, tail, or xargs for code searching, symbol finding, or reading file content -- use read_file (with start_line/end_line), read_files, or grep_search instead.",
+          "Execute a shell bash command and return standard output / error. User toolchain paths (~/.asdf/shims, ~/.cargo/bin, ERL_HOME) are automatically loaded. Pass `async: true` for long-running build/test tasks (`mix compile`, `mix test`, `cargo build`) to run them in the background without blocking. Returns a job ID immediately when `async: true` and automatically sends a completion message to the session when finished. Do NOT poll `job_status` or run polling bash loops (`pgrep`, `sleep`). STRICT RESTRICTION: Do NOT use bash with grep, sed, find, cat, head, tail, or xargs for code searching, symbol finding, or reading file content -- use read_file (with start_line/end_line), read_files, or grep_search instead.",
         parameters: %{
           type: "object",
           properties: %{
@@ -114,7 +114,7 @@ defmodule Yoke.Plugin.DefaultTools do
       %{
         name: "job_status",
         description:
-          "Check the status, exit code, and recent log output of a background job started via bash(async: true).",
+          "Inspect recent log output and status of a running or finished background job. Background jobs notify the session automatically upon completion; use job_status only if you specifically need to inspect intermediate logs of an active job while performing other work.",
         parameters: %{
           type: "object",
           properties: %{
@@ -469,14 +469,16 @@ defmodule Yoke.Plugin.DefaultTools do
   def execute_bash(%{"command" => cmd} = args) do
     if Map.get(args, "async", false) do
       cwd = Map.get(args, "_session_cwd", File.cwd!())
+      session_id = Map.get(args, "_session_id")
 
       # `start_job/2` either returns `{:ok, job_id, log_file}` or raises; any
       # failure to spawn the job is turned into an error tuple by the
       # function-level `rescue` below.
-      {:ok, job_id, log_file} = Yoke.TaskEngine.JobManager.start_job(cmd, cwd: cwd)
+      {:ok, job_id, log_file} =
+        Yoke.TaskEngine.JobManager.start_job(cmd, cwd: cwd, session_id: session_id)
 
       {:ok,
-       "Started background job '#{job_id}' (log: #{log_file}). Use job_status(job_id: \"#{job_id}\") to monitor log output."}
+       "Started background job '#{job_id}' (log: #{log_file}) as an asynchronous OTP process. The job will notify this session automatically upon completion. Continue with other work or complete your turn without polling."}
     else
       {env, exec_cmd} = Yoke.TaskEngine.JobManager.prepare_environment(cmd)
 

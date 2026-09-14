@@ -131,13 +131,24 @@ defmodule Yoke.TaskEngine.Orchestrator do
   # hides any such key from the tool-call summary line so this never leaks
   # into what the user sees echoed for the call.
   defp effective_arguments(%{name: "spawn_subagent", arguments: args}, session_state) do
+    sid = if is_map(session_state), do: Map.get(session_state, :session_id)
+    model = if is_map(session_state), do: Map.get(session_state, :model)
+    cwd = if is_map(session_state), do: Map.get(session_state, :cwd)
+
     args
-    |> Map.put("_session_id", session_state.session_id)
-    |> Map.put("_session_model", session_state.model)
-    |> Map.put("_session_cwd", session_state.cwd)
+    |> Map.put("_session_id", sid)
+    |> Map.put("_session_model", model)
+    |> Map.put("_session_cwd", cwd)
   end
 
-  defp effective_arguments(%{arguments: args}, _session_state), do: args
+  defp effective_arguments(%{arguments: args}, session_state) do
+    sid = if is_map(session_state), do: Map.get(session_state, :session_id)
+    cwd = if is_map(session_state), do: Map.get(session_state, :cwd)
+
+    args
+    |> Map.put("_session_id", sid)
+    |> Map.put("_session_cwd", cwd)
+  end
 
   @doc "Formats a short human-readable summary of a tool call for real-time status display."
   def format_short_summary(tool_name, args) when is_map(args) do

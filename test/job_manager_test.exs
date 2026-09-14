@@ -22,6 +22,17 @@ defmodule Yoke.TaskEngine.JobManagerTest do
     assert output =~ "hello world"
   end
 
+  test "sends completion notification to notify_pid when job finishes" do
+    assert {:ok, job_id, _log_file} =
+             JobManager.start_job("echo 'notified completion'", notify_pid: self())
+
+    assert_receive {:job_completed, ^job_id, "echo 'notified completion'", {:exited, 0},
+                    log_tail},
+                   2000
+
+    assert log_tail =~ "notified completion"
+  end
+
   test "bash tool executes asynchronously when async: true is passed" do
     assert {:ok, msg} =
              DefaultTools.execute_bash(%{"command" => "echo 'async job test'", "async" => true})

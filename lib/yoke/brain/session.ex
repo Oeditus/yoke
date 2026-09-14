@@ -34,7 +34,7 @@ defmodule Yoke.Brain.Session do
 
   Tool Selection Guidelines:
   - EFFICIENT COMMAND EXECUTION & DEDICATED TOOLS:
-    - For long-running build or test commands (`mix compile`, `mix test`, `cargo build`), use `bash(command: "...", async: true)` to run the command asynchronously in the background, then check progress with `job_status(job_id: "...")`. NEVER use sleep-until-finished bash commands (`sleep`, `nohup ... sleep`, `tail`, `pgrep` loops). We are on OTP -- delegate background execution to OTP worker processes asynchronously.
+    - For long-running build or test commands (`mix compile`, `mix test`, `cargo build`), use `bash(command: "...", async: true)` to run the command asynchronously in the background. The job runs as an OTP background worker process and will automatically send a completion message to this session when finished. NEVER poll `job_status` or execute bash polling commands (`pgrep`, `sleep`, `tail` loops) to wait for completion -- continue with other work or end your turn.
     - User environment toolchains (`~/.asdf/shims`, `~/.cargo/bin`, `ERL_HOME`) are automatically loaded into `bash` -- NEVER issue exploratory bash loops (`which erl`, `env | grep ...`, `cat ~/.asdf/...`) to locate binaries.
     - NEVER use raw `bash` commands (`cat`, `head`, `tail`, `sed`, `grep`) for file reading or code searching. Use `read_file` (with `start_line`/`end_line` for line ranges), `read_files`, `grep_search`, or Ragex tools instead.
     - Use dedicated git tools (`git_status`, `git_diff`, `git_commit`, `git_root`) instead of executing raw shell git commands.
@@ -240,7 +240,7 @@ defmodule Yoke.Brain.Session do
       snapshots: [],
       step_count: 0,
       max_tool_depth:
-        opts[:max_tool_depth] || Map.get(Config.load_config(cwd), "max_tool_depth", 100),
+        opts[:max_tool_depth] || Map.get(Config.load_config(cwd), "max_tool_depth", 1000),
       # Hardcoded "plan -> approve -> execute" gate for non-trivial tasks. The
       # gate is default-ON and read from config (`plan_gate_enabled`,
       # `plan_gate_threshold`). `plan_approved_for_turn` is set true once the
@@ -895,6 +895,31 @@ defmodule Yoke.Brain.Session do
         {:ok, other} -> "=== Async Subagent Result (#{sub_id}) ===\n#{inspect(other)}\n"
         {:error, err} -> "=== Async Subagent Failure (#{sub_id}) ===\n#{inspect(err)}\n"
       end
+
+    notice = %{"role" => "user", "content" => notice_content}
+    {:noreply, %{state | messages: state.messages ++ [notice]}}
+  end
+
+  @impl true
+  def handle_info({:job_completed, job_id, command, result, log_tail}, state) do
+    Logger.info("[Brain.Session] Async background job '#{job_id}' completed.")
+
+    status_str =
+      case result do
+        {:exited, 0} -> "COMPLETED SUCCESSFULLY (exit code 0)"
+        {:exited, code} -> "FAILED with exit code #{code}"
+        {:failed, msg} -> "FAILED (#{msg})"
+      end
+
+    notice_content = """
+    === Async Background Job Finished (#{job_id}) ===
+    Command: `#{command}`
+    Status: #{status_str}
+    Log output (tail):
+    ```
+    #{log_tail}
+    ```
+    """
 
     notice = %{"role" => "user", "content" => notice_content}
     {:noreply, %{state | messages: state.messages ++ [notice]}}

@@ -413,7 +413,7 @@ The full reference lives in [`docs/cheat_sheet.md`](docs/cheat_sheet.md); the es
 | `enable_context_gauge` | `true` | Show the token/cost usage gauge on the idle status bar |
 | `compact_status_bar` | `false` | Swap the gauge for a compact `id + message count` line |
 | `max_context_tokens` | `64000` | Assumed model context window used by the usage gauge |
-| `max_tool_depth` | `100` | Consecutive tool-calling turns before pausing to confirm |
+| `max_tool_depth` | `1000` | Consecutive tool-calling turns before pausing to confirm |
 
 Manage most of these live from the REPL with `/config style <name>`, `/config prompt <template>`, and `/config toggle <key>` -- or toggle permission mode, sandbox bounds, and the status bar mode instantly with `Ctrl+P`, `Ctrl+G`, and `Ctrl+B`.
 

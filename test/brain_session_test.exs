@@ -164,9 +164,9 @@ defmodule Yoke.BrainSessionTest do
     assert user2["role"] == "user"
   end
 
-  test "defaults max_tool_depth to 100 and honors an explicit override", %{pid: pid} do
+  test "defaults max_tool_depth to 1000 and honors an explicit override", %{pid: pid} do
     stats = Session.get_stats(pid)
-    assert stats.max_tool_depth == 100
+    assert stats.max_tool_depth == 1000
 
     sess_id = "depth_override_test_#{System.unique_integer([:positive])}"
 

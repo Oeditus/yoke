@@ -122,6 +122,8 @@ defmodule Yoke.TaskEngine.JobManager do
               end
           end
         end)
+
+        notify_session(command, id, res, opts)
       end)
 
     job_info = %{
@@ -268,5 +270,32 @@ defmodule Yoke.TaskEngine.JobManager do
     scrubbed_env = Yoke.Hands.Environment.build(File.cwd!(), extra_env)
 
     {scrubbed_env, command}
+  end
+
+  defp notify_session(command, id, res, opts) do
+    target =
+      cond do
+        pid = Keyword.get(opts, :notify_pid) -> pid
+        sid = Keyword.get(opts, :session_id) -> Yoke.Brain.Session.via_tuple(sid)
+        true -> nil
+      end
+
+    if target do
+      log_tail =
+        case get_job_status(id, tail: 15) do
+          {:ok, output} -> output
+          _ -> ""
+        end
+
+      msg = {:job_completed, id, command, res, log_tail}
+
+      try do
+        send(target, msg)
+      rescue
+        _ -> :ok
+      catch
+        :exit, _ -> :ok
+      end
+    end
   end
 end

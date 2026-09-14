@@ -1464,7 +1464,7 @@ defmodule Yoke.CLI.Repl do
 
     Override how many consecutive tool-calling turns a single agent loop
     runs before pausing to ask whether to continue by adding
-    `"max_tool_depth": <n>` to `.yoke/config.json` (default: `100`).
+    `"max_tool_depth": <n>` to `.yoke/config.json` (default: `1000`).
 
     **Hotkeys:** `Ctrl+P` toggles permission mode, `Ctrl+G` toggles sandbox
     bounds, `Ctrl+B` toggles the idle status bar between gauge and compact mode

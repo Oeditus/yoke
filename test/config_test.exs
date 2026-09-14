@@ -34,8 +34,8 @@ defmodule Yoke.ConfigTest do
     File.rm_rf!(tmp_dir)
   end
 
-  test "defaults max_tool_depth to 100 and allows workspace override" do
-    assert Config.load_config()["max_tool_depth"] == 100
+  test "defaults max_tool_depth to 1000 and allows workspace override" do
+    assert Config.load_config()["max_tool_depth"] == 1000
 
     tmp_dir =
       Path.join(System.tmp_dir!(), "config_depth_test_#{System.unique_integer([:positive])}")
