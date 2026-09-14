@@ -1736,7 +1736,7 @@ defmodule Yoke.CLI.LineEditor do
 
   defp strip_ansi_length(str), do: display_width(str)
 
-  @ansi_escape_pattern ~r/(\e\[[0-9;?]*[a-zA-Z~])/
+  @ansi_escape_pattern ~r/(\e\][^\e\a]*(?:\e\\|\a)|\e\[[0-9;?]*[a-zA-Z~])/
 
   @doc """
   Truncates a possibly ANSI-colored string to at most `max_width` visible
@@ -1787,7 +1787,7 @@ defmodule Yoke.CLI.LineEditor do
     @ansi_escape_pattern
     |> Regex.split(str, include_captures: true)
     |> Enum.flat_map(fn chunk ->
-      if String.match?(chunk, ~r/^\e\[[0-9;?]*[a-zA-Z~]$/) do
+      if String.match?(chunk, ~r/^(\e\][^\e\a]*(?:\e\\|\a)|\e\[[0-9;?]*[a-zA-Z~])$/) do
         [{:escape, chunk}]
       else
         chunk |> String.graphemes() |> Enum.map(&{:char, &1})

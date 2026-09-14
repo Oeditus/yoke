@@ -49,10 +49,14 @@ defmodule Yoke.HandsExecutorTest do
     Application.put_env(:yoke, :expand_tool_calls, false)
 
     collapsed =
-      Executor.format_tool_call("write_file", %{
-        "path" => "test.txt",
-        "content" => String.duplicate("a", 100)
-      })
+      Executor.format_tool_call(
+        "write_file",
+        %{
+          "path" => "test.txt",
+          "content" => String.duplicate("a", 100)
+        },
+        max_width: 80
+      )
 
     assert String.contains?(collapsed, "…") or String.contains?(collapsed, "payload")
 
@@ -68,5 +72,46 @@ defmodule Yoke.HandsExecutorTest do
     assert String.contains?(expanded, String.duplicate("a", 100))
 
     Application.put_env(:yoke, :expand_tool_calls, false)
+  end
+
+  test "smart trimming Rule 1: does not trim if tool call fits screen" do
+    Application.put_env(:yoke, :expand_tool_calls, false)
+
+    args = %{
+      "path" => "lib/cure/elab/resolve.ex",
+      "target" => "foo",
+      "replacement" => "bar"
+    }
+
+    formatted = Executor.format_tool_call("replace_file", args, max_width: 120)
+
+    # Fits screen (width ~73 <= 120), so no argument should be trimmed
+    assert formatted ==
+             "replace_file(path: \"lib/cure/elab/resolve.ex\", replacement: \"bar\", target: \"foo\")" or
+             formatted ==
+               "replace_file(path: \"lib/cure/elab/resolve.ex\", target: \"foo\", replacement: \"bar\")"
+
+    refute String.contains?(formatted, "payload")
+  end
+
+  test "smart trimming Rule 2: shows shortest parts and trims longest argument when line is too long" do
+    Application.put_env(:yoke, :expand_tool_calls, false)
+
+    long_change = String.duplicate("def resolve(a, b, c) do\n  :ok\nend\n", 10)
+
+    args = %{
+      "path" => "lib/cure/elab/resolve.ex",
+      "replacement" => long_change
+    }
+
+    # Set max_width = 80 so full call (~320 width) exceeds max_width
+    formatted = Executor.format_tool_call("replace_file", args, max_width: 80)
+
+    # Shortest part ("path") must be shown in full
+    assert String.contains?(formatted, "path: \"lib/cure/elab/resolve.ex\"")
+
+    # Longest part ("replacement") must be trimmed out
+    refute String.contains?(formatted, long_change)
+    assert String.contains?(formatted, "replacement:")
   end
 end

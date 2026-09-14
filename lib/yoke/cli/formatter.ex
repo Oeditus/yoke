@@ -312,7 +312,7 @@ defmodule Yoke.CLI.Formatter do
   """
   def display_width(str) when is_binary(str) do
     str
-    |> String.replace(~r/\e\[[0-9;?]*[a-zA-Z~]/, "")
+    |> String.replace(~r/\e\][^\e\a]*(?:\e\\|\a)|\e\[[0-9;?]*[a-zA-Z~]/, "")
     |> String.graphemes()
     |> Enum.reduce(0, fn grapheme, acc -> acc + grapheme_width(grapheme) end)
   end

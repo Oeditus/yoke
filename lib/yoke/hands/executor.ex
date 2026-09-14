@@ -158,10 +158,12 @@ defmodule Yoke.Hands.Executor do
   def tool_icon(_), do: "🛠️"
 
   @doc "Formats a tool call into a user-friendly string: tool_name(key: val, ...)"
-  def format_tool_call(tool_name, %{} = args) when map_size(args) == 0,
+  def format_tool_call(tool_name, args, opts \\ [])
+
+  def format_tool_call(tool_name, %{} = args, _opts) when map_size(args) == 0,
     do: "#{tool_name}()"
 
-  def format_tool_call(tool_name, args) when is_map(args) do
+  def format_tool_call(tool_name, args, opts) when is_map(args) do
     # Underscore-prefixed keys (e.g. `_session_id`, injected server-side by
     # `Yoke.TaskEngine.Orchestrator` for tools like
     # `spawn_subagent` that need session context the model never supplies
@@ -173,46 +175,107 @@ defmodule Yoke.Hands.Executor do
     if map_size(visible_args) == 0 do
       "#{tool_name}()"
     else
-      formatted_args =
-        Enum.map_join(visible_args, ", ", fn
-          {k, v} when is_binary(k) -> "#{k}: #{format_arg_val(k, v)}"
-          {k, v} -> "#{inspect(k)}: #{format_arg_val(to_string(k), v)}"
-        end)
+      max_width = Keyword.get(opts, :max_width) || default_max_width()
 
-      "#{tool_name}(#{formatted_args})"
+      if Yoke.CLI.LineEditor.expand_tool_calls?() do
+        formatted_args =
+          Enum.map_join(visible_args, ", ", fn
+            {k, v} when is_binary(k) -> "#{k}: #{inspect_val(v)}"
+            {k, v} -> "#{inspect(k)}: #{inspect_val(v)}"
+          end)
+
+        "#{tool_name}(#{formatted_args})"
+      else
+        format_smart_tool_call(tool_name, visible_args, max_width)
+      end
     end
   end
 
-  def format_tool_call(tool_name, args) do
+  def format_tool_call(tool_name, args, _opts) do
     "#{tool_name}(#{inspect(args)})"
   end
 
-  defp format_arg_val("command", val) do
-    inspect(val)
+  defp default_max_width do
+    case :io.columns() do
+      {:ok, c} when is_integer(c) and c > 15 -> max(c - 8, 20)
+      _ -> 112
+    end
   end
 
-  defp format_arg_val(key, val) do
-    if Yoke.CLI.LineEditor.expand_tool_calls?() do
-      case val do
-        s when is_binary(s) -> inspect(s)
-        other -> inspect(other)
-      end
-    else
-      inspected = inspect(val)
+  defp inspect_val(val) when is_binary(val), do: inspect(val)
+  defp inspect_val(val), do: inspect(val)
 
-      if key in [
-           "changes",
-           "content",
-           "replacement",
-           "code",
-           "TargetContent",
-           "ReplacementContent",
-           "CodeContent"
-         ] or
-           String.contains?(inspected, "\n") or byte_size(inspected) > 60 do
-        make_payload_link(key, val)
-      else
-        inspected
+  defp format_smart_tool_call(tool_name, visible_args, max_width) do
+    arg_items =
+      Enum.map(visible_args, fn {k, v} ->
+        k_str = if is_binary(k), do: k, else: inspect(k)
+        full_val_str = inspect_val(v)
+        full_kv_str = "#{k_str}: #{full_val_str}"
+        full_kv_width = Yoke.CLI.Formatter.display_width(full_kv_str)
+
+        trimmed_val_str = make_payload_link(k_str, v)
+        trimmed_kv_str = "#{k_str}: #{trimmed_val_str}"
+        trimmed_kv_width = Yoke.CLI.Formatter.display_width(trimmed_kv_str)
+
+        %{
+          key: k_str,
+          val: v,
+          full_kv: full_kv_str,
+          full_kv_width: full_kv_width,
+          trimmed_kv: trimmed_kv_str,
+          trimmed_kv_width: trimmed_kv_width,
+          is_trimmed: false
+        }
+      end)
+
+    full_line_str = build_call_string(tool_name, arg_items)
+    full_line_width = Yoke.CLI.Formatter.display_width(full_line_str)
+
+    if full_line_width <= max_width do
+      full_line_str
+    else
+      trim_longest_args_until_fits(tool_name, arg_items, max_width)
+    end
+  end
+
+  defp build_call_string(tool_name, arg_items) do
+    formatted_args =
+      Enum.map_join(arg_items, ", ", fn item ->
+        if item.is_trimmed do
+          item.trimmed_kv
+        else
+          item.full_kv
+        end
+      end)
+
+    "#{tool_name}(#{formatted_args})"
+  end
+
+  defp trim_longest_args_until_fits(tool_name, arg_items, max_width) do
+    current_line_str = build_call_string(tool_name, arg_items)
+    current_width = Yoke.CLI.Formatter.display_width(current_line_str)
+
+    if current_width <= max_width do
+      current_line_str
+    else
+      untrimmed_candidates =
+        arg_items
+        |> Enum.with_index()
+        |> Enum.reject(fn {item, _idx} -> item.is_trimmed end)
+        |> Enum.filter(fn {item, _idx} -> item.full_kv_width > item.trimmed_kv_width end)
+
+      case untrimmed_candidates do
+        [] ->
+          current_line_str
+
+        candidates ->
+          {_best_item, max_idx} =
+            Enum.max_by(candidates, fn {item, _idx} -> item.full_kv_width end)
+
+          updated_items =
+            List.update_at(arg_items, max_idx, fn item -> %{item | is_trimmed: true} end)
+
+          trim_longest_args_until_fits(tool_name, updated_items, max_width)
       end
     end
   end
