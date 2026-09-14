@@ -85,7 +85,14 @@ defmodule Yoke.Config do
     global_cfg = read_json_config(global_path)
     local_cfg = read_json_config(local_path)
 
-    Map.merge(@default_config, Map.merge(global_cfg, local_cfg))
+    merged_cfg = Map.merge(global_cfg, local_cfg)
+
+    global_perms = Map.get(global_cfg, "tool_permissions", %{})
+    local_perms = Map.get(local_cfg, "tool_permissions", %{})
+    combined_perms = Map.merge(global_perms, local_perms)
+
+    Map.merge(@default_config, merged_cfg)
+    |> Map.put("tool_permissions", combined_perms)
   end
 
   @doc "Discovers project rule files (.yokerules, .yoke/rules.md, .yoke/SYSTEM.md) in current workspace."
@@ -139,6 +146,16 @@ defmodule Yoke.Config do
     else
       err -> {:error, "Failed to save local config: #{inspect(err)}"}
     end
+  end
+
+  @doc "Persists a per-tool permission policy override in global system config (~/.yoke/config.json)."
+  def set_global_tool_permission(tool_name, policy) do
+    global_path = Path.expand("~/.yoke/config.json")
+    global_cfg = read_json_config(global_path)
+    perms = Map.get(global_cfg, "tool_permissions", %{})
+    updated_perms = Map.put(perms, tool_name, policy)
+    updated_cfg = Map.put(global_cfg, "tool_permissions", updated_perms)
+    save_global_config(updated_cfg)
   end
 
   @doc "Persists a per-tool permission policy override in local workspace config (.yoke/config.json)."

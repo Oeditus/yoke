@@ -5,13 +5,28 @@ defmodule Yoke.ExternalCallTest do
 
   describe "run/4" do
     test "executes successful call and logs metrics" do
-      result = ExternalCall.run(:test_service, [target: "api"], fn -> {:ok, "success"} end)
-      assert result == {:ok, "success"}
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          Logger.configure(level: :debug)
+
+          result =
+            ExternalCall.run(:deepseek_api, [model: "deepseek-chat"], fn -> {:ok, "success"} end)
+
+          assert result == {:ok, "success"}
+        end)
+
+      assert log =~ "☏  [✓ deepseek_api"
+      assert log =~ "%{model: \"deepseek-chat\"}"
     end
 
     test "captures error response and classifies failure" do
-      result = ExternalCall.run(:test_service, [target: "api"], fn -> {:error, :timeout} end)
-      assert result == {:error, :timeout}
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          result = ExternalCall.run(:test_service, [target: "api"], fn -> {:error, :timeout} end)
+          assert result == {:error, :timeout}
+        end)
+
+      assert log =~ "☏  [✗ test_service timeout"
     end
   end
 

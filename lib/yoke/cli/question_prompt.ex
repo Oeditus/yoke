@@ -584,6 +584,20 @@ defmodule Yoke.CLI.QuestionPrompt do
     " 󰋗 #{sub_prefix}Question from AI "
   end
 
+  @doc "Calculates terminal column count for modal width calculation."
+  def get_terminal_columns do
+    case :io.columns(:user) do
+      {:ok, cols} when is_integer(cols) and cols > 0 ->
+        cols
+
+      _ ->
+        case :io.columns() do
+          {:ok, cols} when is_integer(cols) and cols > 0 -> cols
+          _ -> 72
+        end
+    end
+  end
+
   @doc """
   Renders the question modal box.
 
@@ -593,9 +607,9 @@ defmodule Yoke.CLI.QuestionPrompt do
   modal) has already erased it.
   """
   def render_modal(state, opts \\ []) do
-    # Total box width including left/right border chars is 72.
-    # Interior content width inside borders is 70 display columns.
-    inner_width = 70
+    # Total box width including left/right border chars adapts to screen width.
+    cols = get_terminal_columns()
+    inner_width = max(cols - 2, 40)
 
     if Keyword.get(opts, :erase?, true) and state.rendered_lines > 0 do
       # Move cursor to column 0, move UP rendered_lines, clear to bottom

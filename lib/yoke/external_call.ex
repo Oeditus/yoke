@@ -95,12 +95,12 @@ defmodule Yoke.ExternalCall do
   end
 
   defp log_success(service, meta, duration_ms) do
-    Logger.debug("[ExternalCall:#{service}] Success in #{duration_ms}ms | #{inspect(meta)}")
+    Logger.debug("☏  [✓ #{service} #{duration_ms}ms] #{inspect(meta)}")
   end
 
   defp log_failure(service, meta, classification, reason, duration_ms) do
     msg =
-      "[ExternalCall:#{service}] Failed (#{classification}) in #{duration_ms}ms: #{inspect(reason)} | #{inspect(meta)}"
+      "☏  [✗ #{service} #{classification} #{duration_ms}ms] #{inspect(reason)} | #{inspect(meta)}"
 
     case classification do
       :timeout -> Logger.warning(msg)

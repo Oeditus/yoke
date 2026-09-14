@@ -50,30 +50,79 @@ defmodule Yoke.TaskEngine.JobManager do
 
     {env, exec_cmd} = prepare_environment(command)
 
-    task =
-      Task.Supervisor.async_nolink(
-        Yoke.TaskEngine.TaskSupervisor,
-        fn ->
-          # Register in PackageTracker under worker task
-          PackageTracker.register("[job] #{label}", :job, id: id)
+    # Monitor task completion asynchronously to record exit status.
+    # Spawning Task.Supervisor.async_nolink INSIDE the Task.start process ensures
+    # the monitor process is the owner of `task`, avoiding Task ownership ArgumentErrors
+    # when calling Task.yield/2.
+    {:ok, monitor_pid} =
+      Task.start(fn ->
+        task =
+          Task.Supervisor.async_nolink(
+            Yoke.TaskEngine.TaskSupervisor,
+            fn ->
+              # Register in PackageTracker under worker task
+              PackageTracker.register("[job] #{label}", :job, id: id)
 
-          try do
-            case System.cmd("sh", ["-c", exec_cmd],
-                   cd: cwd,
-                   env: env,
-                   stderr_to_stdout: true,
-                   into: File.stream!(log_file, [:append])
-                 ) do
-              {_, 0} -> :ok
-              {_, code} -> {:error, code}
+              try do
+                case System.cmd("sh", ["-c", exec_cmd],
+                       cd: cwd,
+                       env: env,
+                       stderr_to_stdout: true,
+                       into: File.stream!(log_file, [:append])
+                     ) do
+                  {_, 0} -> :ok
+                  {_, code} -> {:error, code}
+                end
+              rescue
+                e -> {:error, Exception.message(e)}
+              after
+                PackageTracker.unregister()
+              end
             end
-          rescue
-            e -> {:error, Exception.message(e)}
-          after
-            PackageTracker.unregister()
+          )
+
+        # Update job entry with worker pid and task
+        Agent.update(__MODULE__, fn state ->
+          case Map.get(state, id) do
+            nil -> state
+            info -> Map.put(state, id, %{info | task: task, worker_pid: task.pid})
           end
-        end
-      )
+        end)
+
+        res =
+          case Task.yield(task, :infinity) do
+            {:ok, :ok} -> {:exited, 0}
+            {:ok, {:error, code}} when is_integer(code) -> {:exited, code}
+            {:ok, {:error, msg}} -> {:failed, msg}
+            {:exit, _reason} -> {:exited, -1}
+            nil -> {:exited, -1}
+          end
+
+        finished_at = System.system_time(:second)
+
+        Agent.update(__MODULE__, fn state ->
+          case Map.get(state, id) do
+            nil ->
+              state
+
+            info ->
+              if info.status == :running do
+                updated =
+                  case res do
+                    {:exited, code} ->
+                      %{info | status: :finished, exit_code: code, finished_at: finished_at}
+
+                    {:failed, msg} ->
+                      %{info | status: :failed, exit_code: msg, finished_at: finished_at}
+                  end
+
+                Map.put(state, id, updated)
+              else
+                state
+              end
+          end
+        end)
+      end)
 
     job_info = %{
       id: id,
@@ -83,43 +132,12 @@ defmodule Yoke.TaskEngine.JobManager do
       status: :running,
       exit_code: nil,
       log_file: log_file,
-      task: task
+      task: nil,
+      worker_pid: nil,
+      monitor_pid: monitor_pid
     }
 
     Agent.update(__MODULE__, &Map.put(&1, id, job_info))
-
-    # Monitor task completion asynchronously to record exit status
-    Task.start(fn ->
-      res =
-        case Task.yield(task, :infinity) do
-          {:ok, :ok} -> {:exited, 0}
-          {:ok, {:error, code}} when is_integer(code) -> {:exited, code}
-          {:ok, {:error, msg}} -> {:failed, msg}
-          {:exit, _reason} -> {:exited, -1}
-          nil -> {:exited, -1}
-        end
-
-      finished_at = System.system_time(:second)
-
-      Agent.update(__MODULE__, fn state ->
-        case Map.get(state, id) do
-          nil ->
-            state
-
-          info ->
-            updated =
-              case res do
-                {:exited, code} ->
-                  %{info | status: :finished, exit_code: code, finished_at: finished_at}
-
-                {:failed, msg} ->
-                  %{info | status: :failed, exit_code: msg, finished_at: finished_at}
-              end
-
-            Map.put(state, id, updated)
-        end
-      end)
-    end)
 
     {:ok, id, log_file}
   end
@@ -185,8 +203,11 @@ defmodule Yoke.TaskEngine.JobManager do
       nil ->
         {:error, "No job found with ID '#{job_id}'."}
 
-      %{status: :running, task: task} = info ->
-        Task.shutdown(task, :brutal_kill)
+      %{status: :running} = info ->
+        if info.worker_pid do
+          Task.Supervisor.terminate_child(Yoke.TaskEngine.TaskSupervisor, info.worker_pid)
+        end
+
         now = System.system_time(:second)
 
         Agent.update(__MODULE__, fn state ->

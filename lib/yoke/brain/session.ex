@@ -962,7 +962,7 @@ defmodule Yoke.Brain.Session do
     end
   end
 
-  defp run_agent_loop(state, depth) do
+  defp run_agent_loop(state, depth, retries \\ 0) do
     opts = [model: state.model, api_key: state.api_key, endpoint: state.endpoint]
 
     opts =
@@ -982,9 +982,37 @@ defmodule Yoke.Brain.Session do
         handle_text_response_turn(state, response)
 
       {:error, reason} ->
-        {{:error, "Error communicating with DeepSeek API: #{reason}"}, %{state | status: :idle}}
+        if retries < 2 and api_request_error?(reason) do
+          Logger.warning(
+            "[Brain.Session] DeepSeek API returned request error: #{reason}. Attempting harness recovery (retry #{retries + 1})..."
+          )
+
+          repaired_messages =
+            if retries == 0 do
+              repair_tool_messages(state.messages)
+            else
+              convert_all_tool_roles_to_user_messages(state.messages)
+            end
+
+          repaired_state = %{state | messages: repaired_messages}
+          run_agent_loop(repaired_state, depth, retries + 1)
+        else
+          {{:error, "Error communicating with DeepSeek API: #{reason}"}, %{state | status: :idle}}
+        end
     end
   end
+
+  defp api_request_error?(reason) when is_binary(reason) do
+    c = String.downcase(reason)
+
+    String.contains?(c, "invalid_request_error") or
+      String.contains?(c, "role 'tool'") or
+      String.contains?(c, "tool_calls") or
+      String.contains?(c, "http status 400") or
+      String.contains?(c, "400")
+  end
+
+  defp api_request_error?(_), do: false
 
   defp handle_tool_calls_turn(state, response, tool_calls, depth) do
     state = accumulate_usage(state, response[:usage])
@@ -1183,48 +1211,101 @@ defmodule Yoke.Brain.Session do
 
   @doc "Sanitizes message history to ensure all assistant tool_calls are followed by matching tool response messages."
   def sanitize_messages(messages) when is_list(messages) do
-    Enum.reduce(messages, [], fn msg, acc ->
-      case msg do
-        %{"role" => "user"} = user_msg ->
-          acc = fill_missing_tool_responses(acc)
-          acc ++ [user_msg]
+    repair_tool_messages(messages)
+  end
 
-        %{"role" => "system"} = sys_msg ->
-          acc = fill_missing_tool_responses(acc)
-          acc ++ [sys_msg]
+  def sanitize_messages(_), do: []
 
-        %{"role" => "assistant", "tool_calls" => calls} = ast_msg
-        when is_list(calls) and calls != [] ->
-          acc = fill_missing_tool_responses(acc)
-          acc ++ [ast_msg]
+  @doc "Repairs malformed tool sequences in message history."
+  def repair_tool_messages(messages) when is_list(messages) do
+    {acc, pending} =
+      Enum.reduce(messages, {[], []}, fn msg, {acc_messages, pending_ids} ->
+        role = Map.get(msg, "role") || Map.get(msg, :role)
+        calls = Map.get(msg, "tool_calls") || Map.get(msg, :tool_calls)
 
-        _ ->
-          acc ++ [msg]
+        cond do
+          role == "tool" ->
+            call_id = Map.get(msg, "tool_call_id") || Map.get(msg, :tool_call_id)
+
+            if call_id != nil and call_id in pending_ids do
+              new_pending = List.delete(pending_ids, call_id)
+              {acc_messages ++ [msg], new_pending}
+            else
+              content = Map.get(msg, "content") || Map.get(msg, :content, "")
+
+              converted = %{
+                "role" => "user",
+                "content" => "[Tool Output #{call_id || "unknown"}]: #{content}"
+              }
+
+              {acc_messages ++ [converted], pending_ids}
+            end
+
+          role == "assistant" and is_list(calls) and calls != [] ->
+            acc_messages = fill_pending_tool_responses(acc_messages, pending_ids)
+
+            new_ids =
+              calls
+              |> Enum.map(fn tc -> Map.get(tc, "id") || Map.get(tc, :id) end)
+              |> Enum.reject(&is_nil/1)
+
+            {acc_messages ++ [msg], new_ids}
+
+          true ->
+            acc_messages = fill_pending_tool_responses(acc_messages, pending_ids)
+            {acc_messages ++ [msg], []}
+        end
+      end)
+
+    fill_pending_tool_responses(acc, pending)
+  end
+
+  def repair_tool_messages(_), do: []
+
+  defp fill_pending_tool_responses(messages, []) do
+    messages
+  end
+
+  defp fill_pending_tool_responses(messages, pending_ids) when is_list(pending_ids) do
+    tool_responses =
+      Enum.map(pending_ids, fn id ->
+        %{
+          "role" => "tool",
+          "tool_call_id" => id,
+          "content" => "SYSTEM NOTICE: Tool execution result unavailable."
+        }
+      end)
+
+    messages ++ tool_responses
+  end
+
+  @doc "Aggressively converts all tool-role messages into user messages to recover from strict API 400 validation failures."
+  def convert_all_tool_roles_to_user_messages(messages) when is_list(messages) do
+    Enum.map(messages, fn msg ->
+      role = Map.get(msg, "role") || Map.get(msg, :role)
+      calls = Map.get(msg, "tool_calls") || Map.get(msg, :tool_calls)
+
+      cond do
+        role == "tool" ->
+          call_id = Map.get(msg, "tool_call_id") || Map.get(msg, :tool_call_id) || "unknown"
+          content = Map.get(msg, "content") || Map.get(msg, :content, "")
+
+          %{
+            "role" => "user",
+            "content" => "[Tool Output #{call_id}]: #{content}"
+          }
+
+        role == "assistant" and is_list(calls) ->
+          content = Map.get(msg, "content") || ""
+          msg |> Map.drop(["tool_calls", :tool_calls]) |> Map.put("content", content)
+
+        true ->
+          msg
       end
     end)
-    |> fill_missing_tool_responses()
   end
 
-  defp fill_missing_tool_responses(messages) do
-    case Enum.reverse(messages) do
-      [%{"role" => "assistant", "tool_calls" => calls} | _rest] when is_list(calls) ->
-        tool_responses =
-          Enum.map(calls, fn tc ->
-            call_id = Map.get(tc, "id") || Map.get(tc, :id)
-
-            %{
-              "role" => "tool",
-              "tool_call_id" => call_id,
-              "content" => "SYSTEM NOTICE: Tool execution result unavailable."
-            }
-          end)
-
-        messages ++ tool_responses
-
-      _ ->
-        messages
-    end
-  end
+  def convert_all_tool_roles_to_user_messages(_), do: []
 
   defp handle_text_response_turn(state, response) do
     state = accumulate_usage(state, response[:usage])
@@ -1487,7 +1568,7 @@ defmodule Yoke.Brain.Session do
       policy == "deny" ->
         {:deny, "Tool '#{tool_name}' execution denied by configuration policy.", state}
 
-      policy == "allow" or ragex_tool?(tool_name) ->
+      policy == "allow" or ragex_tool?(tool_name) or read_only_tool?(tool_name) ->
         {:allow, state}
 
       destructive_bash_command?(tool_name, args) ->
@@ -1505,6 +1586,25 @@ defmodule Yoke.Brain.Session do
         {:allow, state}
     end
   end
+
+  @doc "Returns true if tool is a read-only tool allowed by default."
+  def read_only_tool?(tool_name) when is_binary(tool_name) do
+    tool_name in ~w(read_file read_files glob_search grep_search list_dir job_status view_file find_by_name search_web read_url_content inspect_file get_file) or
+      String.starts_with?(tool_name, "read_") or
+      String.starts_with?(tool_name, "glob_") or
+      String.starts_with?(tool_name, "grep_") or
+      String.starts_with?(tool_name, "list_") or
+      String.starts_with?(tool_name, "search_") or
+      String.starts_with?(tool_name, "find_") or
+      String.starts_with?(tool_name, "view_") or
+      String.starts_with?(tool_name, "inspect_") or
+      String.ends_with?(tool_name, "_search") or
+      String.ends_with?(tool_name, "_read") or
+      String.ends_with?(tool_name, "_list") or
+      String.ends_with?(tool_name, "_status")
+  end
+
+  def read_only_tool?(_), do: false
 
   defp ragex_tool?(tool_name) when is_binary(tool_name) do
     String.starts_with?(tool_name, "mcp_ragex_") or
@@ -1555,7 +1655,10 @@ defmodule Yoke.Brain.Session do
         "Allow once",
         "Allow always for this session",
         "Allow always (save to project config)",
-        "Deny tool execution"
+        "Allow always (save to global config)",
+        "Deny tool execution",
+        "Deny always (save to project config)",
+        "Deny always (save to global config)"
       ]
 
       ans =
@@ -1566,10 +1669,33 @@ defmodule Yoke.Brain.Session do
       case ans do
         %{selected: [sel]} ->
           cond do
-            String.contains?(sel, "save to project config") ->
+            String.contains?(sel, "save to global config") and
+                String.contains?(String.downcase(sel), "allow") ->
+              Config.set_global_tool_permission(tool_name, "allow")
+              perms = Map.put(Map.get(state, :session_tool_permissions, %{}), tool_name, "allow")
+              {:allow, %{state | session_tool_permissions: perms}}
+
+            String.contains?(sel, "save to global config") and
+                String.contains?(String.downcase(sel), "deny") ->
+              Config.set_global_tool_permission(tool_name, "deny")
+              perms = Map.put(Map.get(state, :session_tool_permissions, %{}), tool_name, "deny")
+
+              {:deny, "Tool execution denied by user (saved globally).",
+               %{state | session_tool_permissions: perms}}
+
+            String.contains?(sel, "save to project config") and
+                String.contains?(String.downcase(sel), "allow") ->
               Config.set_tool_permission(tool_name, "allow", state.cwd)
               perms = Map.put(Map.get(state, :session_tool_permissions, %{}), tool_name, "allow")
               {:allow, %{state | session_tool_permissions: perms}}
+
+            String.contains?(sel, "save to project config") and
+                String.contains?(String.downcase(sel), "deny") ->
+              Config.set_tool_permission(tool_name, "deny", state.cwd)
+              perms = Map.put(Map.get(state, :session_tool_permissions, %{}), tool_name, "deny")
+
+              {:deny, "Tool execution denied by user (saved to project).",
+               %{state | session_tool_permissions: perms}}
 
             String.contains?(sel, "this session") ->
               perms = Map.put(Map.get(state, :session_tool_permissions, %{}), tool_name, "allow")

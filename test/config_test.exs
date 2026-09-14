@@ -119,4 +119,27 @@ defmodule Yoke.ConfigTest do
 
     File.rm_rf!(tmp_dir)
   end
+
+  test "saves and loads global tool permissions with local overrides" do
+    tmp_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "config_global_perm_test_#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(tmp_dir)
+
+    # Save to global config
+    assert {:ok, _} = Config.set_global_tool_permission("glob_tool_test", "allow")
+
+    loaded = Config.load_config(tmp_dir)
+    assert loaded["tool_permissions"]["glob_tool_test"] == "allow"
+
+    # Local override wins
+    assert :ok = Config.set_tool_permission("glob_tool_test", "deny", tmp_dir)
+    loaded_override = Config.load_config(tmp_dir)
+    assert loaded_override["tool_permissions"]["glob_tool_test"] == "deny"
+
+    File.rm_rf!(tmp_dir)
+  end
 end

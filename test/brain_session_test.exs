@@ -306,4 +306,56 @@ defmodule Yoke.BrainSessionTest do
     assert {:allow, _} = Session.tool_permitted?("ragex_symbol_location", %{}, state)
     assert {:allow, _} = Session.tool_permitted?("ragex", %{}, state)
   end
+
+  test "permits read-only tools by default in ask_confirm mode" do
+    state = %{
+      cwd: File.cwd!(),
+      sandbox_workspace: false,
+      permission_mode: :ask_confirm,
+      session_tool_permissions: %{}
+    }
+
+    assert Session.read_only_tool?("read_file")
+    assert Session.read_only_tool?("read_files")
+    assert Session.read_only_tool?("glob_search")
+    assert Session.read_only_tool?("grep_search")
+    assert Session.read_only_tool?("list_dir")
+    assert Session.read_only_tool?("job_status")
+    refute Session.read_only_tool?("write_file")
+    refute Session.read_only_tool?("replace_file")
+    refute Session.read_only_tool?("bash")
+
+    assert {:allow, _} = Session.tool_permitted?("read_file", %{}, state)
+    assert {:allow, _} = Session.tool_permitted?("read_files", %{}, state)
+    assert {:allow, _} = Session.tool_permitted?("glob_search", %{}, state)
+    assert {:allow, _} = Session.tool_permitted?("grep_search", %{}, state)
+    assert {:allow, _} = Session.tool_permitted?("list_dir", %{}, state)
+    assert {:allow, _} = Session.tool_permitted?("job_status", %{}, state)
+  end
+
+  test "repairs malformed tool sequences and converts orphaned tool messages to user role" do
+    orphaned_msg = %{"role" => "tool", "tool_call_id" => "call_99", "content" => "output"}
+
+    repaired =
+      Session.repair_tool_messages([%{"role" => "user", "content" => "hi"}, orphaned_msg])
+
+    assert length(repaired) == 2
+    [user1, converted] = repaired
+    assert user1["role"] == "user"
+    assert converted["role"] == "user"
+    assert converted["content"] =~ "[Tool Output call_99]: output"
+
+    # Aggressive recovery conversion
+    ast_with_tools = %{
+      "role" => "assistant",
+      "content" => "thinking",
+      "tool_calls" => [%{"id" => "c1"}]
+    }
+
+    tool_resp = %{"role" => "tool", "tool_call_id" => "c1", "content" => "res"}
+
+    converted_all = Session.convert_all_tool_roles_to_user_messages([ast_with_tools, tool_resp])
+    assert Enum.all?(converted_all, fn m -> m["role"] in ["user", "assistant"] end)
+    refute Map.has_key?(Enum.at(converted_all, 0), "tool_calls")
+  end
 end
