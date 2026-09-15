@@ -114,4 +114,28 @@ defmodule Yoke.HandsExecutorTest do
     refute String.contains?(formatted, long_change)
     assert String.contains?(formatted, "replacement:")
   end
+
+  test "bash command log displays full command when it fits max_width" do
+    Application.put_env(:yoke, :expand_tool_calls, false)
+
+    cmd = "mix test test/hands_executor_test.exs"
+    formatted = Executor.format_tool_call("bash", %{"command" => cmd}, max_width: 80)
+
+    assert formatted == ~s|bash(command: "mix test test/hands_executor_test.exs")|
+    refute String.contains?(formatted, "…")
+  end
+
+  test "bash command log shows maximum possible symbols when command exceeds max_width" do
+    Application.put_env(:yoke, :expand_tool_calls, false)
+
+    long_cmd =
+      "git commit -m 'feat: implement single line terminal width truncation for bash command logs in yoke CLI'"
+
+    formatted = Executor.format_tool_call("bash", %{"command" => long_cmd}, max_width: 60)
+
+    # Command symbols should be partially visible, not fully collapsed to `bash(command: …)`
+    assert String.contains?(formatted, "git commit -m 'feat:")
+    assert String.contains?(formatted, "…")
+    assert Yoke.CLI.Formatter.display_width(formatted) <= 60
+  end
 end

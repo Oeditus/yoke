@@ -262,25 +262,100 @@ defmodule Yoke.Hands.Executor do
         arg_items
         |> Enum.with_index()
         |> Enum.reject(fn {item, _idx} -> item.is_trimmed end)
-        |> Enum.filter(fn {item, _idx} -> item.full_kv_width > item.trimmed_kv_width end)
 
       case untrimmed_candidates do
         [] ->
           current_line_str
 
         candidates ->
-          {_best_item, max_idx} =
+          {best_item, max_idx} =
             Enum.max_by(candidates, fn {item, _idx} -> item.full_kv_width end)
 
-          updated_items =
-            List.update_at(arg_items, max_idx, fn item -> %{item | is_trimmed: true} end)
+          other_items = List.delete_at(arg_items, max_idx)
 
+          other_widths =
+            Enum.map(other_items, fn item ->
+              if item.is_trimmed, do: item.trimmed_kv_width, else: item.full_kv_width
+            end)
+
+          commas_count = max(length(arg_items) - 1, 0)
+
+          overhead =
+            Yoke.CLI.Formatter.display_width(tool_name) + 2 + commas_count * 2 +
+              Enum.sum(other_widths)
+
+          avail_kv_budget = max_width - overhead
+          key_prefix_width = Yoke.CLI.Formatter.display_width("#{best_item.key}: ")
+          avail_val_budget = avail_kv_budget - key_prefix_width
+
+          trimmed_val_str = format_trimmed_val(best_item.key, best_item.val, avail_val_budget)
+          trimmed_kv_str = "#{best_item.key}: #{trimmed_val_str}"
+          trimmed_kv_width = Yoke.CLI.Formatter.display_width(trimmed_kv_str)
+
+          updated_item = %{
+            best_item
+            | trimmed_kv: trimmed_kv_str,
+              trimmed_kv_width: trimmed_kv_width,
+              is_trimmed: true
+          }
+
+          updated_items = List.replace_at(arg_items, max_idx, updated_item)
           trim_longest_args_until_fits(tool_name, updated_items, max_width)
       end
     end
   end
 
-  defp make_payload_link(key, val) do
+  defp format_trimmed_val(key, val, avail_val_budget) do
+    if avail_val_budget > 3 do
+      raw_str =
+        case val do
+          s when is_binary(s) ->
+            s |> String.replace("\r\n", " ") |> String.replace("\n", " ")
+
+          other ->
+            ins = inspect(other)
+
+            if String.starts_with?(ins, "\"") and String.ends_with?(ins, "\"") and
+                 String.length(ins) >= 2 do
+              String.slice(ins, 1..(String.length(ins) - 2))
+            else
+              ins
+            end
+        end
+
+      content_budget = avail_val_budget - 3
+      sliced = slice_to_display_width(raw_str, content_budget)
+
+      if Yoke.CLI.Formatter.display_width(raw_str) > Yoke.CLI.Formatter.display_width(sliced) do
+        display_text = "\"#{sliced}…\""
+        make_payload_link(key, val, display_text)
+      else
+        display_text = inspect_val(val)
+        make_payload_link(key, val, display_text)
+      end
+    else
+      make_payload_link(key, val, "…")
+    end
+  end
+
+  defp slice_to_display_width(_str, target_width) when target_width <= 0, do: ""
+
+  defp slice_to_display_width(str, target_width) do
+    str
+    |> String.graphemes()
+    |> Enum.reduce_while({"", 0}, fn grapheme, {acc, w} ->
+      gw = Yoke.CLI.Formatter.display_width(grapheme)
+
+      if w + gw > target_width do
+        {:halt, {acc, w}}
+      else
+        {:cont, {acc <> grapheme, w + gw}}
+      end
+    end)
+    |> elem(0)
+  end
+
+  defp make_payload_link(key, val, display_text \\ "…") do
     dir = Path.expand(".yoke/payloads")
     File.mkdir_p!(dir)
     timestamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%d_%H%M%S_%f")
@@ -296,9 +371,9 @@ defmodule Yoke.Hands.Executor do
     File.write!(abs_path, content)
 
     # OSC 8 Terminal Hyperlink format: \e]8;;file:///path\e\…\e]8;;\e\
-    "\e]8;;file://#{abs_path}\e\\…\e]8;;\e\\"
+    "\e]8;;file://#{abs_path}\e\\#{display_text}\e]8;;\e\\"
   rescue
-    _ -> "…"
+    _ -> display_text
   end
 
   defp format_output(output) when is_binary(output), do: output
