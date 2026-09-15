@@ -910,7 +910,14 @@ defmodule Yoke.Brain.Session do
     Logger.error("[Brain.Session] Agent turn task crashed: #{inspect(reason)}")
     err_str = "Agent turn crashed unexpectedly: #{inspect(reason)}"
     error_msg = %{"role" => "system", "content" => "[HARNESS ERROR]\n" <> err_str}
-    new_state = %{state | messages: state.messages ++ [error_msg], active_turn: nil, status: :idle}
+
+    new_state = %{
+      state
+      | messages: state.messages ++ [error_msg],
+        active_turn: nil,
+        status: :idle
+    }
+
     SessionStore.save_session(new_state, state.cwd)
     SessionStore.append_transcript(state.session_id, "ERROR", err_str, state.cwd)
 

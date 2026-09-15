@@ -217,35 +217,33 @@ defmodule Yoke.CLI.Formatter do
   an `ArgumentError` and crash the caller.
   """
   def safe_puts(device \\ :stdio, item) do
-    try do
-      IO.puts(device, item)
-    rescue
-      _ in ArgumentError ->
-        try do
-          str =
-            cond do
-              is_binary(item) ->
-                String.replace_invalid(item)
+    IO.puts(device, item)
+  rescue
+    _ in ArgumentError ->
+      try do
+        str =
+          cond do
+            is_binary(item) ->
+              String.replace_invalid(item)
 
-              is_list(item) ->
-                item |> IO.chardata_to_string() |> String.replace_invalid()
+            is_list(item) ->
+              item |> IO.chardata_to_string() |> String.replace_invalid()
 
-              true ->
-                inspect(item)
-            end
+            true ->
+              inspect(item)
+          end
 
-          IO.puts(device, str)
-        rescue
-          _ -> IO.binwrite(device, inspect(item) <> "\n")
-        end
-    catch
-      _, _ ->
-        try do
-          IO.binwrite(device, inspect(item) <> "\n")
-        rescue
-          _ -> :ok
-        end
-    end
+        IO.puts(device, str)
+      rescue
+        _ -> IO.binwrite(device, inspect(item) <> "\n")
+      end
+  catch
+    _, _ ->
+      try do
+        IO.binwrite(device, inspect(item) <> "\n")
+      rescue
+        _ -> :ok
+      end
   end
 
   @doc """

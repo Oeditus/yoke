@@ -243,14 +243,7 @@ defmodule Yoke.CLIReplTest do
         # or simulate loop error handling
         send(self(), :test)
         # We invoke handle_repl_error via loop error path
-        apply(Repl, :handle_repl_error, [
-          :error,
-          err,
-          [],
-          pid,
-          id,
-          []
-        ])
+        Repl.handle_repl_error(:error, err, [], pid, id, [])
       end)
 
     # Harness reported the error without crashing

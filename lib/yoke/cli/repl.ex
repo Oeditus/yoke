@@ -161,9 +161,7 @@ defmodule Yoke.CLI.Repl do
   def handle_repl_error(kind, reason, stacktrace, session_pid, session_id, history) do
     formatted_err = Exception.format(kind, reason, stacktrace)
 
-    Formatter.safe_puts(
-      Formatter.format_error("REPL error caught by harness:\n#{formatted_err}")
-    )
+    Formatter.safe_puts(Formatter.format_error("REPL error caught by harness:\n#{formatted_err}"))
 
     session_pid = ensure_session_alive(session_pid, session_id)
 
