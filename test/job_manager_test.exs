@@ -59,6 +59,25 @@ defmodule Yoke.TaskEngine.JobManagerTest do
     assert status_out =~ "KILLED"
   end
 
+  test "await_all/1 returns promptly once a running job finishes on its own" do
+    assert {:ok, job_id, _log} = JobManager.start_job("sleep 0.2")
+
+    assert JobManager.running_jobs() |> Enum.any?(&(&1.id == job_id))
+
+    assert :ok = JobManager.await_all(5_000)
+    refute JobManager.running_jobs() |> Enum.any?(&(&1.id == job_id))
+  end
+
+  test "await_all/1 force-kills jobs still running after the timeout" do
+    assert {:ok, job_id, _log} = JobManager.start_job("sleep 10")
+
+    assert :ok = JobManager.await_all(300)
+
+    assert {:ok, status_out} = JobManager.get_job_status(job_id)
+    assert status_out =~ "KILLED"
+    refute JobManager.running_jobs() |> Enum.any?(&(&1.id == job_id))
+  end
+
   test "read_file supports start_line and end_line parameters" do
     tmp_path = Path.join(System.tmp_dir!(), "line_test_#{System.unique_integer([:positive])}.txt")
     File.write!(tmp_path, "line 1\nline 2\nline 3\nline 4\nline 5\n")

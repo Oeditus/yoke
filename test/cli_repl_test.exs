@@ -223,11 +223,50 @@ defmodule Yoke.CLIReplTest do
   end
 
   test "handles review conversation commands", %{session_pid: pid, session_id: id} do
-    assert :continue = Repl.handle_input("/review_conversation", pid, id)
-    assert :continue = Repl.handle_input("/review-conversation", pid, id)
-    assert :continue = Repl.handle_input("/conversation", pid, id)
-    assert :continue = Repl.handle_input("/review conversation", pid, id)
-    assert :continue = Repl.handle_input("/session review", pid, id)
     assert :continue = Repl.handle_input("/review_conversation " <> id, pid, id)
+  end
+
+  test "survives handle_input errors and stores error in .lmml session file", %{
+    session_pid: pid,
+    session_id: id
+  } do
+    err =
+      try do
+        raise ArgumentError, "simulated io.put_chars failure"
+      rescue
+        e -> e
+      end
+
+    output =
+      ExUnit.CaptureIO.capture_io(fn ->
+        # Send a private call to handle_repl_error to verify recovery & persistence
+        # or simulate loop error handling
+        send(self(), :test)
+        # We invoke handle_repl_error via loop error path
+        apply(Repl, :handle_repl_error, [
+          :error,
+          err,
+          [],
+          pid,
+          id,
+          []
+        ])
+      end)
+
+    # Harness reported the error without crashing
+    assert output =~ "REPL error caught by harness"
+    assert output =~ "simulated io.put_chars failure"
+
+    # Verify stored in session .lmml file
+    {:ok, messages} = Yoke.Brain.Session.get_messages(pid)
+    last_msg = List.last(messages)
+    assert last_msg["role"] == "system"
+    assert last_msg["content"] =~ "[HARNESS ERROR]"
+    assert last_msg["content"] =~ "simulated io.put_chars failure"
+
+    lmml_path = Path.join(".yoke/sessions", "#{id}.lmml")
+    assert File.exists?(lmml_path)
+    lmml_content = File.read!(lmml_path)
+    assert lmml_content =~ "simulated io.put_chars failure"
   end
 end

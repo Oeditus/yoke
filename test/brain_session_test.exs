@@ -358,4 +358,25 @@ defmodule Yoke.BrainSessionTest do
     assert Enum.all?(converted_all, fn m -> m["role"] in ["user", "assistant"] end)
     refute Map.has_key?(Enum.at(converted_all, 0), "tool_calls")
   end
+
+  test "records harness error into messages and persists to .lmml file", %{
+    pid: pid,
+    session_id: session_id
+  } do
+    err_text = "** (ArgumentError) argument error in test\n  io.erl:205"
+    assert :ok = Session.record_error(pid, err_text)
+
+    {:ok, messages} = Session.get_messages(pid)
+    error_msg = List.last(messages)
+    assert error_msg["role"] == "system"
+    assert error_msg["content"] =~ "[HARNESS ERROR]"
+    assert error_msg["content"] =~ err_text
+
+    # Verify on-disk .lmml persistence
+    lmml_path = Path.join(".yoke/sessions", "#{session_id}.lmml")
+    assert File.exists?(lmml_path)
+    lmml_content = File.read!(lmml_path)
+    assert lmml_content =~ "[HARNESS ERROR]"
+    assert lmml_content =~ "ArgumentError"
+  end
 end

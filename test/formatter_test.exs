@@ -83,4 +83,15 @@ defmodule Yoke.FormatterTest do
     res = Formatter.copy_to_clipboard("test_clipboard_content")
     assert res == :ok or match?({:error, _}, res)
   end
+
+  test "safe_puts handles valid text, invalid UTF-8, and improper chardata without raising" do
+    invalid_utf8 = <<0xFF, 0xFE, 0xFD>>
+    bad_chardata = ["valid string", 123_456_789, invalid_utf8]
+
+    assert ExUnit.CaptureIO.capture_io(fn ->
+             Formatter.safe_puts("hello world")
+             Formatter.safe_puts(invalid_utf8)
+             Formatter.safe_puts(bad_chardata)
+           end) =~ "hello world"
+  end
 end

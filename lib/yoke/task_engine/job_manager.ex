@@ -229,6 +229,44 @@ defmodule Yoke.TaskEngine.JobManager do
     Agent.get(__MODULE__, &Map.values/1)
   end
 
+  @doc "Lists only currently `:running` background jobs."
+  def running_jobs do
+    list_jobs() |> Enum.filter(&(&1.status == :running))
+  end
+
+  @doc """
+  Waits up to `timeout_ms` (default 5000ms) for all currently running jobs to
+  finish on their own, polling every 200ms, then force-kills (via `kill_job/1`)
+  any that are still running once the deadline passes.
+
+  Intended to be called right before the REPL halts (see `Yoke.CLI.Repl`), so
+  quitting mid-turn doesn't silently orphan long-lived `mix test`/`mix compile`
+  child OS processes spawned by `start_job/2` -- those are direct children of
+  this BEAM VM (via `System.cmd/3`), so once the VM halts they'd otherwise be
+  abandoned rather than terminated.
+  """
+  def await_all(timeout_ms \\ 5_000) do
+    ensure_started()
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    await_all_loop(deadline)
+    running_jobs() |> Enum.each(&kill_job(&1.id))
+    :ok
+  end
+
+  defp await_all_loop(deadline) do
+    cond do
+      running_jobs() == [] ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        :ok
+
+      true ->
+        Process.sleep(200)
+        await_all_loop(deadline)
+    end
+  end
+
   # Automatically injects user toolchain paths into PATH / env if present
   def prepare_environment(command) do
     user_home = System.user_home() || System.get_env("HOME") || "/home/am"

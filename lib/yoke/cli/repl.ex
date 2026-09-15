@@ -112,28 +112,84 @@ defmodule Yoke.CLI.Repl do
         trimmed = String.trim(line)
         updated_history = if trimmed != "", do: [trimmed | history], else: history
 
-        case handle_input(trimmed, session_pid, session_id) do
-          :continue ->
-            loop(session_pid, session_id, updated_history, false)
+        try do
+          case handle_input(trimmed, session_pid, session_id) do
+            :continue ->
+              loop(session_pid, session_id, updated_history, false)
 
-          :toggle_console ->
-            IO.puts(
-              Formatter.format_success(
-                "Flipped into pure console mode -- plain shell passthrough, no AI/tooling in between. Type !! again to return to Yoke."
+            :toggle_console ->
+              Formatter.safe_puts(
+                Formatter.format_success(
+                  "Flipped into pure console mode -- plain shell passthrough, no AI/tooling in between. Type !! again to return to Yoke."
+                )
               )
+
+              loop(session_pid, session_id, updated_history, true)
+
+            {:switch_session, new_id, new_pid} ->
+              loop(new_pid, new_id, updated_history, false)
+
+            :exit ->
+              graceful_shutdown()
+              print_resume_banner(session_id)
+              :ok
+          end
+        rescue
+          exception ->
+            handle_repl_error(
+              :error,
+              exception,
+              __STACKTRACE__,
+              session_pid,
+              session_id,
+              updated_history
             )
+        catch
+          kind, reason ->
+            handle_repl_error(
+              kind,
+              reason,
+              __STACKTRACE__,
+              session_pid,
+              session_id,
+              updated_history
+            )
+        end
+    end
+  end
 
-            loop(session_pid, session_id, updated_history, true)
+  def handle_repl_error(kind, reason, stacktrace, session_pid, session_id, history) do
+    formatted_err = Exception.format(kind, reason, stacktrace)
 
-          {:switch_session, new_id, new_pid} ->
-            loop(new_pid, new_id, updated_history, false)
+    Formatter.safe_puts(
+      Formatter.format_error("REPL error caught by harness:\n#{formatted_err}")
+    )
 
-          :exit ->
-            graceful_shutdown()
-            print_resume_banner(session_id)
+    session_pid = ensure_session_alive(session_pid, session_id)
+
+    case Session.record_error(session_pid, formatted_err) do
+      :ok ->
+        :ok
+
+      _ ->
+        case Yoke.Brain.SessionStore.load_session(session_id) do
+          {:ok, state} ->
+            error_msg = %{
+              "role" => "system",
+              "content" => "[HARNESS ERROR]\n" <> String.replace_invalid(formatted_err)
+            }
+
+            updated_state =
+              Map.update(state, :messages, [error_msg], fn msgs -> msgs ++ [error_msg] end)
+
+            Yoke.Brain.SessionStore.save_session(updated_state)
+
+          _ ->
             :ok
         end
     end
+
+    loop(session_pid, session_id, history, false)
   end
 
   # Stops any externally spawned processes (e.g. the per-project Ragex/dllb
@@ -142,8 +198,35 @@ defmodule Yoke.CLI.Repl do
   # this the per-project `dllb-server` OS process is left running as an
   # orphan, and the next launch can't reliably reuse its on-disk cache --
   # forcing a full re-index every time instead of an instant cache hit.
+  #
+  # Also briefly waits on (then force-kills) any still-running background
+  # jobs started via `bash(..., async: true)` -- see
+  # `Yoke.TaskEngine.JobManager.await_all/1`. Those jobs' shell commands are
+  # direct OS children of this same BEAM VM, so exiting (whether via `/exit`
+  # or an EOF on stdin, e.g. the terminal pane closing) without this step
+  # would otherwise abandon them as orphaned processes instead of letting
+  # them finish or terminating them cleanly.
   defp graceful_shutdown do
+    await_running_jobs()
     MCPServerManager.stop_ragex()
+  catch
+    _, _ -> :ok
+  end
+
+  defp await_running_jobs do
+    case Yoke.TaskEngine.JobManager.running_jobs() do
+      [] ->
+        :ok
+
+      jobs ->
+        IO.puts(
+          Formatter.format_info(
+            "Waiting up to 5s for #{length(jobs)} background job(s) to finish before exiting…"
+          )
+        )
+
+        Yoke.TaskEngine.JobManager.await_all(5_000)
+    end
   catch
     _, _ -> :ok
   end
@@ -736,7 +819,7 @@ defmodule Yoke.CLI.Repl do
 
     case res do
       {:ok, %{content: review_md}} ->
-        IO.puts("\n" <> Formatter.format_agent_response(review_md) <> "\n")
+        Formatter.safe_puts("\n" <> Formatter.format_agent_response(review_md) <> "\n")
         Formatter.flush()
 
         findings = Yoke.PRReview.parse_findings(review_md)
@@ -2229,7 +2312,7 @@ defmodule Yoke.CLI.Repl do
 
     case res do
       {:ok, %{content: content}} ->
-        IO.puts("\n" <> Formatter.format_agent_response(content) <> "\n")
+        Formatter.safe_puts("\n" <> Formatter.format_agent_response(content) <> "\n")
         # Flush so the response is guaranteed on the terminal before the
         # LineEditor re-enters raw mode to redraw the prompt -- otherwise a
         # buffered response can be swallowed/corrupted by the next raw-mode

@@ -187,6 +187,16 @@ defmodule Yoke.Brain.Session do
     GenServer.call(pid, :get_messages, :infinity)
   end
 
+  @doc """
+  Records an error message (including stacktrace/harness failure details)
+  into the session's message log and immediately persists it to disk (.lmml / .lmmlz).
+  """
+  def record_error(pid, error_text) do
+    GenServer.call(pid, {:record_error, error_text}, :infinity)
+  catch
+    :exit, _ -> {:error, "Session process unavailable"}
+  end
+
   # Server Callbacks
 
   @impl true
@@ -760,6 +770,24 @@ defmodule Yoke.Brain.Session do
     end
   end
 
+  @impl true
+  def handle_call({:record_error, error_text}, _from, state) do
+    clean_text =
+      error_text
+      |> to_string()
+      |> String.replace_invalid()
+
+    error_msg = %{
+      "role" => "system",
+      "content" => "[HARNESS ERROR]\n" <> clean_text
+    }
+
+    new_state = %{state | messages: state.messages ++ [error_msg], status: :idle}
+    SessionStore.save_session(new_state, state.cwd)
+    SessionStore.append_transcript(state.session_id, "ERROR", clean_text, state.cwd)
+    {:reply, :ok, new_state}
+  end
+
   defp export_session_content(:json, state, export_path) do
     content =
       Yoke.Json.encode!(
@@ -880,8 +908,14 @@ defmodule Yoke.Brain.Session do
     # than returning a `{final_response, new_state}` result -- reply with
     # an error instead of leaving the original caller hanging forever.
     Logger.error("[Brain.Session] Agent turn task crashed: #{inspect(reason)}")
-    GenServer.reply(from, {:error, "Agent turn crashed unexpectedly: #{inspect(reason)}"})
-    {:noreply, %{state | active_turn: nil, status: :idle}}
+    err_str = "Agent turn crashed unexpectedly: #{inspect(reason)}"
+    error_msg = %{"role" => "system", "content" => "[HARNESS ERROR]\n" <> err_str}
+    new_state = %{state | messages: state.messages ++ [error_msg], active_turn: nil, status: :idle}
+    SessionStore.save_session(new_state, state.cwd)
+    SessionStore.append_transcript(state.session_id, "ERROR", err_str, state.cwd)
+
+    GenServer.reply(from, {:error, err_str})
+    {:noreply, new_state}
   end
 
   @impl true

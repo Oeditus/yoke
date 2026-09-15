@@ -201,7 +201,8 @@ defmodule Yoke.CLI.Formatter do
 
   @doc "Renders markdown text using Marcli library into styled ANSI terminal text."
   def format_markdown(text) when is_binary(text) do
-    Marcli.render(text)
+    safe_text = String.replace_invalid(text)
+    Marcli.render(safe_text)
   rescue
     _ -> text
   catch
@@ -209,6 +210,43 @@ defmodule Yoke.CLI.Formatter do
   end
 
   def format_markdown(text), do: inspect(text)
+
+  @doc """
+  Safely writes to an IO device (default `:stdio`), ensuring invalid UTF-8 byte
+  sequences or invalid iodata constructs never cause `:io.put_chars` to raise
+  an `ArgumentError` and crash the caller.
+  """
+  def safe_puts(device \\ :stdio, item) do
+    try do
+      IO.puts(device, item)
+    rescue
+      _ in ArgumentError ->
+        try do
+          str =
+            cond do
+              is_binary(item) ->
+                String.replace_invalid(item)
+
+              is_list(item) ->
+                item |> IO.chardata_to_string() |> String.replace_invalid()
+
+              true ->
+                inspect(item)
+            end
+
+          IO.puts(device, str)
+        rescue
+          _ -> IO.binwrite(device, inspect(item) <> "\n")
+        end
+    catch
+      _, _ ->
+        try do
+          IO.binwrite(device, inspect(item) <> "\n")
+        rescue
+          _ -> :ok
+        end
+    end
+  end
 
   @doc """
   Formats context window memory usage percentage and token cost gauge bar.
@@ -265,13 +303,20 @@ defmodule Yoke.CLI.Formatter do
       "#{color}#{bold()}#{hint}#{reset()}"
   end
 
-  def format_agent_response(content) do
-    rendered = format_markdown(content)
+  def format_agent_response(content) when is_binary(content) do
+    safe_content = String.replace_invalid(content)
+    rendered = format_markdown(safe_content)
 
     header =
       "#{cyan()}#{bold()}✦ DeepSeek >#{reset()} #{dim()}─────────────────────────────────────────────────#{reset()}"
 
     "\n#{header}\n\n#{rendered}\n"
+  end
+
+  def format_agent_response(content) do
+    format_agent_response(to_string(content))
+  rescue
+    _ -> inspect(content)
   end
 
   def format_error(msg) do
