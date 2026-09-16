@@ -52,7 +52,9 @@ defmodule Yoke.FormatterTest do
     cmd_lines =
       Enum.filter(lines, fn line ->
         clean = Regex.replace(~r/\e\[[0-9;]*m/, line, "")
-        String.starts_with?(clean, "!command") or String.starts_with?(clean, "!!") or String.starts_with?(clean, "/")
+
+        String.starts_with?(clean, "!command") or String.starts_with?(clean, "!!") or
+          String.starts_with?(clean, "/")
       end)
 
     cmds =
