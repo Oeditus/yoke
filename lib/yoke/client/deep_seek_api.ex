@@ -202,11 +202,12 @@ defmodule Yoke.Client.DeepSeekAPI do
   end
 
   defp real_chat_completion(messages, tools, %ClientConfig{} = config) do
+    sanitized_messages = sanitize_utf8(messages)
     formatted_tools = format_tools(tools)
 
     body = %{
       "model" => config.model,
-      "messages" => messages,
+      "messages" => sanitized_messages,
       "temperature" => config.temperature
     }
 
@@ -281,6 +282,50 @@ defmodule Yoke.Client.DeepSeekAPI do
 
       {:error, reason} ->
         {:error, "HTTP request failed: #{inspect(reason)}"}
+    end
+  rescue
+    e ->
+      if attempts_left > 1 do
+        Logger.warning(
+          "[DeepSeekAPI] Exception during API request (#{Exception.message(e)}). Retrying in #{backoff_ms}ms... (#{attempts_left - 1} attempts left)"
+        )
+
+        Process.sleep(backoff_ms)
+        post_with_retry(endpoint, req_opts, attempts_left - 1, backoff_ms * 2)
+      else
+        {:error, "API request failed with exception: #{Exception.message(e)}"}
+      end
+  end
+
+  @doc "Recursively sanitizes binary strings within data structures to ensure valid UTF-8 encoding."
+  def sanitize_utf8(binary) when is_binary(binary) do
+    if String.valid?(binary) do
+      binary
+    else
+      scrub_utf8(binary, "")
+    end
+  end
+
+  def sanitize_utf8(list) when is_list(list), do: Enum.map(list, &sanitize_utf8/1)
+
+  def sanitize_utf8(map) when is_map(map) and not is_struct(map) do
+    Map.new(map, fn {k, v} -> {sanitize_utf8(k), sanitize_utf8(v)} end)
+  end
+
+  def sanitize_utf8(other), do: other
+
+  defp scrub_utf8(<<>>, acc), do: acc
+
+  defp scrub_utf8(str, acc) when is_binary(str) do
+    case :unicode.characters_to_binary(str, :utf8, :utf8) do
+      cleaned when is_binary(cleaned) ->
+        acc <> cleaned
+
+      {:error, valid, <<_bad_byte, rest::binary>>} ->
+        scrub_utf8(rest, acc <> valid <> "")
+
+      {:incomplete, valid, bad} ->
+        acc <> valid <> String.duplicate("", byte_size(bad))
     end
   end
 

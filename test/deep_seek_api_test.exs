@@ -83,4 +83,34 @@ defmodule Yoke.DeepSeekAPITest do
       assert "deepseek-reasoner" in models
     end
   end
+
+  describe "sanitize_utf8/1" do
+    test "preserves valid UTF-8 strings" do
+      assert DeepSeekAPI.sanitize_utf8("Hello World 🚀") == "Hello World 🚀"
+    end
+
+    test "scrubs invalid bytes like 0x80 from binary strings" do
+      invalid_binary =
+        <<70, 111, 117, 110, 100, 32, 49, 51, 32, 0x80, 109, 97, 116, 99, 104, 101, 115>>
+
+      sanitized = DeepSeekAPI.sanitize_utf8(invalid_binary)
+      assert String.valid?(sanitized)
+      assert String.contains?(sanitized, "Found 13")
+      assert String.contains?(sanitized, "matches")
+    end
+
+    test "recursively sanitizes nested maps and lists" do
+      invalid_binary = <<70, 0x80, 111, 117, 110, 100>>
+
+      input = %{
+        "role" => "tool",
+        "content" => invalid_binary,
+        "nested" => [invalid_binary]
+      }
+
+      sanitized = DeepSeekAPI.sanitize_utf8(input)
+      assert String.valid?(sanitized["content"])
+      assert String.valid?(hd(sanitized["nested"]))
+    end
+  end
 end

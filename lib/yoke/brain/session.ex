@@ -1048,37 +1048,69 @@ defmodule Yoke.Brain.Session do
         handle_text_response_turn(state, response)
 
       {:error, reason} ->
-        if retries < 2 and api_request_error?(reason) do
-          Logger.warning(
-            "[Brain.Session] DeepSeek API returned request error: #{reason}. Attempting harness recovery (retry #{retries + 1})..."
-          )
-
-          repaired_messages =
-            if retries == 0 do
-              repair_tool_messages(state.messages)
-            else
-              convert_all_tool_roles_to_user_messages(state.messages)
-            end
-
-          repaired_state = %{state | messages: repaired_messages}
-          run_agent_loop(repaired_state, depth, retries + 1)
-        else
-          {{:error, "Error communicating with DeepSeek API: #{reason}"}, %{state | status: :idle}}
-        end
+        handle_api_error(state, depth, retries, reason)
     end
   end
 
-  defp api_request_error?(reason) when is_binary(reason) do
-    c = String.downcase(reason)
+  defp handle_api_error(state, depth, retries, reason) do
+    max_retries = 3
 
-    String.contains?(c, "invalid_request_error") or
-      String.contains?(c, "role 'tool'") or
-      String.contains?(c, "tool_calls") or
-      String.contains?(c, "http status 400") or
-      String.contains?(c, "400")
+    if retries < max_retries do
+      backoff_ms = (retries + 1) * 500
+
+      Logger.warning(
+        "[Brain.Session] DeepSeek API or tool error: #{reason}. Harness retrying turn in #{backoff_ms}ms (attempt #{retries + 1}/#{max_retries})..."
+      )
+
+      Process.sleep(backoff_ms)
+
+      repaired_messages =
+        if retries == 0 do
+          sanitize_messages(state.messages)
+        else
+          convert_all_tool_roles_to_user_messages(state.messages)
+        end
+
+      repaired_state = %{state | messages: repaired_messages}
+      run_agent_loop(repaired_state, depth, retries + 1)
+    else
+      if top_level_session?(state.session_id) do
+        prompt_user_on_error(state, depth, reason)
+      else
+        {{:error, "Error communicating with DeepSeek API: #{reason}"}, %{state | status: :idle}}
+      end
+    end
   end
 
-  defp api_request_error?(_), do: false
+  defp prompt_user_on_error(state, depth, reason) do
+    question =
+      "Remote API or tool execution error occurred after multiple retries:\n\n" <>
+        "  #{reason}\n\n" <>
+        "Would you like to retry the request or stop the turn?"
+
+    choices = [
+      "Retry API call",
+      "Stop turn here"
+    ]
+
+    ans =
+      Yoke.CLI.Spinner.with_paused(fn ->
+        Yoke.CLI.QuestionPrompt.ask_single_question(question, choices, false)
+      end)
+
+    case ans do
+      %{selected: [sel]} ->
+        if String.contains?(sel, "Retry") do
+          Logger.info("[Brain.Session] User authorized retry for failed API/tool call.")
+          run_agent_loop(state, depth, 0)
+        else
+          {{:error, "Error communicating with DeepSeek API: #{reason}"}, %{state | status: :idle}}
+        end
+
+      _ ->
+        {{:error, "Error communicating with DeepSeek API: #{reason}"}, %{state | status: :idle}}
+    end
+  end
 
   defp handle_tool_calls_turn(state, response, tool_calls, depth) do
     state = accumulate_usage(state, response[:usage])
@@ -1275,9 +1307,11 @@ defmodule Yoke.Brain.Session do
     |> String.trim()
   end
 
-  @doc "Sanitizes message history to ensure all assistant tool_calls are followed by matching tool response messages."
+  @doc "Sanitizes message history to ensure all assistant tool_calls are followed by matching tool response messages and all strings are valid UTF-8."
   def sanitize_messages(messages) when is_list(messages) do
-    repair_tool_messages(messages)
+    messages
+    |> Enum.map(&DeepSeekAPI.sanitize_utf8/1)
+    |> repair_tool_messages()
   end
 
   def sanitize_messages(_), do: []
