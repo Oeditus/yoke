@@ -108,38 +108,38 @@ defmodule Yoke.CLI.Formatter do
     #{dim()}─────────────────────────────────────────────────────────────────────────────#{reset()}
       #{cyan()}!command#{reset()}                 Execute shell command directly (e.g. !ls -la or !git status)
       #{cyan()}!!#{reset()}                      Flip into/out of pure console mode (plain shell passthrough, no AI/tooling)
-      #{cyan()}/help#{reset()}                   Show this help menu
-      #{cyan()}/guide#{reset()} or #{cyan()}/docs#{reset()}        Display Getting Started & Customization Guide summary
-      #{cyan()}/model#{reset()} or #{cyan()}/models#{reset()}        List available API models dynamically or switch model (/model <id>)
-      #{cyan()}/mode [local|remote|docker]#{reset()}  Set Hands execution target
-      #{cyan()}/plugins [reload]#{reset()}       List tools or hot-reload plugins live without dropping state
-      #{cyan()}/mcp [list|add|load]#{reset()}    Manage Model Context Protocol (MCP) servers and tools
-      #{cyan()}/ragex#{reset()}                  Mount first-class Ragex code analysis & refactoring MCP tools (@../ragex)
-      #{cyan()}/skills [show|path|edit|new|<name>]#{reset()} List, inspect, scaffold, or execute skills
+      #{cyan()}/cb#{reset()} or #{cyan()}/clipboard#{reset()}       Copy latest assistant response to system clipboard (Markdown)
+      #{cyan()}/checkpoint [label]#{reset()}     Create a temporal state snapshot
+      #{cyan()}/clear#{reset()}                  Clear terminal output
+      #{cyan()}/commit <message>#{reset()}       Auto-commit staged workspace changes to git
       #{cyan()}/compact#{reset()}                Compress conversation context to save tokens
+      #{cyan()}/cost#{reset()}                   Display token usage and session cost statistics
       #{cyan()}/diff#{reset()}                   Show colorized git diff of workspace changes
+      #{cyan()}/exit#{reset()} or #{cyan()}/quit#{reset()}            Exit Yoke
+      #{cyan()}/explorer#{reset()}               Launch interactive TUI for exploring & managing .yoke configs, rules, history & jobs
+      #{cyan()}/god [on|off|status]#{reset()}    Toggle God mode (auto-answer all model questions/confirmations)
+      #{cyan()}/guide#{reset()} or #{cyan()}/docs#{reset()}        Display Getting Started & Customization Guide summary
+      #{cyan()}/help#{reset()}                   Show this help menu
+      #{cyan()}/import <path> [id]#{reset()}     Import an external session .lmml or JSON file into Yoke's session store
+      #{cyan()}/lessons [add <text>]#{reset()}   View or record operational lessons learned in project/lessons.md
+      #{cyan()}/mcp [list|add|load]#{reset()}    Manage Model Context Protocol (MCP) servers and tools
+      #{cyan()}/mode [local|remote|docker]#{reset()}  Set Hands execution target
+      #{cyan()}/model#{reset()} or #{cyan()}/models#{reset()}        List available API models dynamically or switch model (/model <id>)
+      #{cyan()}/nodes#{reset()}                  View distributed Erlang node cluster status
+      #{cyan()}/permissions [auto|ask]#{reset()} Set tool execution safety mode
+      #{cyan()}/plugins [reload]#{reset()}       List tools or hot-reload plugins live without dropping state
+      #{cyan()}/ragex#{reset()}                  Mount first-class Ragex code analysis & refactoring MCP tools (@../ragex)
+      #{cyan()}/reset#{reset()}                  Reset conversation context, history, and clear screen
       #{cyan()}/review [<base> [head] | <pr_num>]#{reset()} Interactive PR Code Review with finding selection, GitHub posting, and auto-fix
       #{cyan()}/review_conversation [id]#{reset()} Review conversation history (current session or specific ID)
-      #{cyan()}/commit <message>#{reset()}       Auto-commit staged workspace changes to git
-      #{cyan()}/import <path> [id]#{reset()}     Import an external session .lmml or JSON file into Yoke's session store
-      #{cyan()}/cost#{reset()}                   Display token usage and session cost statistics
-      #{cyan()}/permissions [auto|ask]#{reset()} Set tool execution safety mode
-      #{cyan()}/subagent <prompt>#{reset()}      Spawn a background subagent worker for sub-tasks
-      #{cyan()}/workflow [cmd]#{reset()}         Run customizable multi-step workflows (list|run|status|resume|abort|init)
-      #{cyan()}/spar [soc|adv] <topic>#{reset()} Prompt Socratic or Adversarial sparring session with prior-art sweep
-      #{cyan()}/sweep <tokens>#{reset()}         Run multi-corpus prior-art search across workflow, reference, lessons, and vault
       #{cyan()}/scrap [note|clear]#{reset()}     Capture or view transient scratch notes in project/scrap.md
-      #{cyan()}/lessons [add <text>]#{reset()}   View or record operational lessons learned in project/lessons.md
-      #{cyan()}/checkpoint [label]#{reset()}     Create a temporal state snapshot
-      #{cyan()}/undo#{reset()}                   Roll back state to previous checkpoint
       #{cyan()}/session#{reset()}                Display active session metadata & statistics
-      #{cyan()}/nodes#{reset()}                  View distributed Erlang node cluster status
-      #{cyan()}/cb#{reset()} or #{cyan()}/clipboard#{reset()}       Copy latest assistant response to system clipboard (Markdown)
-      #{cyan()}/clear#{reset()}                  Clear terminal output
-      #{cyan()}/reset#{reset()}                  Reset conversation context, history, and clear screen
-      #{cyan()}/god [on|off|status]#{reset()}    Toggle God mode (auto-answer all model questions/confirmations)
-      #{cyan()}/explorer#{reset()}               Launch interactive TUI for exploring & managing .yoke configs, rules, history & jobs
-      #{cyan()}/exit#{reset()} or #{cyan()}/quit#{reset()}            Exit Yoke
+      #{cyan()}/skills [show|path|edit|new|<name>]#{reset()} List, inspect, scaffold, or execute skills
+      #{cyan()}/spar [soc|adv] <topic>#{reset()} Prompt Socratic or Adversarial sparring session with prior-art sweep
+      #{cyan()}/subagent <prompt>#{reset()}      Spawn a background subagent worker for sub-tasks
+      #{cyan()}/sweep <tokens>#{reset()}         Run multi-corpus prior-art search across workflow, reference, lessons, and vault
+      #{cyan()}/undo#{reset()}                   Roll back state to previous checkpoint
+      #{cyan()}/workflow [cmd]#{reset()}         Run customizable multi-step workflows (list|run|status|resume|abort|init)
 
     #{bold()}#{cyan()}HOTKEYS:#{reset()}
     #{dim()}─────────────────────────────────────────────────────────────────────────────#{reset()}

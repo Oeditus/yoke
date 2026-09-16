@@ -43,6 +43,30 @@ defmodule Yoke.FormatterTest do
     assert String.contains?(menu, "/review")
     assert String.contains?(menu, "/skills")
     assert String.contains?(menu, "/compact")
+
+    lines =
+      menu
+      |> String.split("\n")
+      |> Enum.map(&String.trim/1)
+
+    cmd_lines =
+      Enum.filter(lines, fn line ->
+        clean = Regex.replace(~r/\e\[[0-9;]*m/, line, "")
+        String.starts_with?(clean, "!command") or String.starts_with?(clean, "!!") or String.starts_with?(clean, "/")
+      end)
+
+    cmds =
+      Enum.map(cmd_lines, fn line ->
+        clean = Regex.replace(~r/\e\[[0-9;]*m/, line, "")
+        [first | _] = String.split(clean)
+        first
+      end)
+
+    assert Enum.at(cmds, 0) == "!command"
+    assert Enum.at(cmds, 1) == "!!"
+
+    slash_cmds = Enum.drop(cmds, 2)
+    assert slash_cmds == Enum.sort(slash_cmds)
   end
 
   test "renders getting started guide summary" do
