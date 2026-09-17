@@ -56,12 +56,29 @@ defmodule Yoke.Linter do
   def run(input, cwd) when is_binary(input) do
     trimmed = String.trim(input)
 
-    if trimmed == "" or trimmed == "help" do
-      {:ok, help_text()}
-    else
-      parts = String.split(trimmed, " ", trim: true)
-      [tool | rest] = parts
-      normalize_and_run(tool, rest, cwd)
+    cond do
+      trimmed == "" or trimmed == "help" ->
+        {:ok, help_text()}
+
+      String.starts_with?(trimmed, "fix ") or trimmed == "fix" ->
+        target_input =
+          if trimmed == "fix",
+            do: "credo",
+            else: String.trim_leading(trimmed, "fix ") |> String.trim()
+
+        target_input = if target_input == "", do: "credo", else: target_input
+        parts = String.split(target_input, " ", trim: true)
+        [tool | _] = parts
+
+        case run(target_input, cwd) do
+          {:ok, output} -> Yoke.Linter.Interactive.run(output, tool, cwd)
+          error -> error
+        end
+
+      true ->
+        parts = String.split(trimmed, " ", trim: true)
+        [tool | rest] = parts
+        normalize_and_run(tool, rest, cwd)
     end
   end
 
@@ -213,7 +230,7 @@ defmodule Yoke.Linter do
 
   def help_text do
     """
-    Usage: /linter <tool> [project | diff [ref] | cr [base] [head] | <args>]
+    Usage: /linter [fix] <tool> [project | diff [ref] | cr [base] [head] | <args>]
 
     Available External Tools:
       • oeditus_credo (aliases: oeditus, oeditus-credo) - CWE security checks & Phoenix anti-patterns (https://oeditus_credo.hexdocs.pm)
@@ -223,13 +240,13 @@ defmodule Yoke.Linter do
       • all - Run all tools sequentially
 
     Examples:
-      /linter propwise                       (run propwise on entire project)
+      /linter credo                          (run credo on entire project)
+      /linter fix credo                      (interactively review & approve proposed diff fixes for Credo)
+      /linter fix credo diff                 (interactively fix Credo findings on active git working tree diff)
+      /linter fix credo cr main              (interactively fix Credo findings on PR/branch diff against main)
+      /linter fix oeditus_credo cr main      (interactively fix security/anti-pattern findings on PR branch)
+      /linter fix all cr main                (interactively review & approve diff fixes across all tools for a PR)
       /linter propwise cr main               (run propwise on files changed against main)
-      /linter propwise diff                  (run propwise on working tree diff)
-      /linter oeditus_credo                  (run oeditus_credo on entire project)
-      /linter oeditus_credo cr main          (run oeditus_credo diff against main branch)
-      /linter oeditus_credo diff             (run oeditus_credo on working tree diff)
-      /linter all cr main                    (run all tools on CR diff against main)
     """
   end
 end
