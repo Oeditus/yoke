@@ -81,12 +81,12 @@ defmodule Yoke.Clipboard do
   # --- Private Helpers ---
 
   defp fetch_wl_paste_image(exec) do
-    case System.cmd(exec, ["-t", "image/png"]) do
+    case System.cmd(exec, ["-t", "image/png"], stderr_to_stdout: true) do
       {bytes, 0} when byte_size(bytes) > 0 ->
         {:ok, "image/png", bytes}
 
       _ ->
-        case System.cmd(exec, ["-t", "image/jpeg"]) do
+        case System.cmd(exec, ["-t", "image/jpeg"], stderr_to_stdout: true) do
           {bytes, 0} when byte_size(bytes) > 0 -> {:ok, "image/jpeg", bytes}
           _ -> {:error, "No image found on clipboard."}
         end
@@ -96,12 +96,16 @@ defmodule Yoke.Clipboard do
   end
 
   defp fetch_xclip_image(exec) do
-    case System.cmd(exec, ["-selection", "clipboard", "-t", "image/png", "-o"]) do
+    case System.cmd(exec, ["-selection", "clipboard", "-t", "image/png", "-o"],
+           stderr_to_stdout: true
+         ) do
       {bytes, 0} when byte_size(bytes) > 0 ->
         {:ok, "image/png", bytes}
 
       _ ->
-        case System.cmd(exec, ["-selection", "clipboard", "-t", "image/jpeg", "-o"]) do
+        case System.cmd(exec, ["-selection", "clipboard", "-t", "image/jpeg", "-o"],
+               stderr_to_stdout: true
+             ) do
           {bytes, 0} when byte_size(bytes) > 0 -> {:ok, "image/jpeg", bytes}
           _ -> {:error, "No image found on clipboard."}
         end
@@ -111,7 +115,7 @@ defmodule Yoke.Clipboard do
   end
 
   defp fetch_pngpaste_image(exec) do
-    case System.cmd(exec, ["-"]) do
+    case System.cmd(exec, ["-"], stderr_to_stdout: true) do
       {bytes, 0} when byte_size(bytes) > 0 -> {:ok, "image/png", bytes}
       _ -> {:error, "No image found on clipboard."}
     end
@@ -123,7 +127,7 @@ defmodule Yoke.Clipboard do
     script =
       "try\n  set imgData to the clipboard as «class PNGf»\n  return imgData\non error\n  return \"\"\nend try"
 
-    case System.cmd(exec, ["-e", script]) do
+    case System.cmd(exec, ["-e", script], stderr_to_stdout: true) do
       {bytes, 0} when byte_size(bytes) > 0 -> {:ok, "image/png", bytes}
       _ -> {:error, "No image found on clipboard."}
     end
@@ -135,7 +139,7 @@ defmodule Yoke.Clipboard do
     cmd =
       "[Reflection.Assembly]::LoadWithPartialName('System.Drawing'); [System.Windows.Forms.Clipboard]::GetImage()"
 
-    case System.cmd(exec, ["-command", cmd]) do
+    case System.cmd(exec, ["-command", cmd], stderr_to_stdout: true) do
       {bytes, 0} when byte_size(bytes) > 0 -> {:ok, "image/png", bytes}
       _ -> {:error, "No image found on clipboard."}
     end
