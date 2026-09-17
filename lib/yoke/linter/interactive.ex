@@ -107,7 +107,8 @@ defmodule Yoke.Linter.Interactive do
                 true ->
                   IO.puts(
                     Formatter.dim() <>
-                      "  ✗ Skipped finding at #{finding.file}:#{finding.line}" <> Formatter.reset()
+                      "  ✗ Skipped finding at #{finding.file}:#{finding.line}" <>
+                      Formatter.reset()
                   )
 
                   loop_findings(rest, idx + 1, total, cwd, false, {applied, skipped + 1})

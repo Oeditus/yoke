@@ -42,7 +42,11 @@ defmodule Yoke.Linter.Parser do
         []
 
       # Credo / oeditus_credo oneline style with [C]: lib/foo.ex:12:34 [C] Credo.Check.Name: Message
-      match = Regex.named_captures(~r/^(?<file>[a-zA-Z0-9_\/\.\-]+\.exs?):(?<line>\d+)(?::(?<col>\d+))?\s+\[(?<prio>[A-Za-z])\]\s*(?:(?<check>[A-Z][a-zA-Z0-9_\.]+):\s*)?(?<msg>.+)$/, trimmed) ->
+      match =
+          Regex.named_captures(
+            ~r/^(?<file>[a-zA-Z0-9_\/\.\-]+\.exs?):(?<line>\d+)(?::(?<col>\d+))?\s+\[(?<prio>[A-Za-z])\]\s*(?:(?<check>[A-Z][a-zA-Z0-9_\.]+):\s*)?(?<msg>.+)$/,
+            trimmed
+          ) ->
         check_or_msg = match["check"]
         msg = match["msg"]
 
@@ -67,7 +71,11 @@ defmodule Yoke.Linter.Parser do
         ]
 
       # Dialyzer / generic style: lib/foo.ex:12:34: Message...
-      match = Regex.named_captures(~r/^(?<file>[a-zA-Z0-9_\/\.\-]+\.exs?):(?<line>\d+)(?::(?<col>\d+))?:\s*(?<msg>.+)$/, trimmed) ->
+      match =
+          Regex.named_captures(
+            ~r/^(?<file>[a-zA-Z0-9_\/\.\-]+\.exs?):(?<line>\d+)(?::(?<col>\d+))?:\s*(?<msg>.+)$/,
+            trimmed
+          ) ->
         [
           %Finding{
             file: match["file"],
@@ -80,7 +88,11 @@ defmodule Yoke.Linter.Parser do
         ]
 
       # mix format style: "  lib/foo.ex" or "lib/foo.ex"
-      match = Regex.named_captures(~r/^(?:Would format|\*|\-)?\s*(?<file>[a-zA-Z0-9_\/\.\-]+\.exs?)$/, trimmed) ->
+      match =
+          Regex.named_captures(
+            ~r/^(?:Would format|\*|\-)?\s*(?<file>[a-zA-Z0-9_\/\.\-]+\.exs?)$/,
+            trimmed
+          ) ->
         [
           %Finding{
             file: match["file"],
@@ -102,7 +114,8 @@ defmodule Yoke.Linter.Parser do
   defp parse_int(""), do: nil
   defp parse_int(str), do: String.to_integer(str)
 
-  defp valid_finding?(%Finding{file: file, line: line}) when is_binary(file) and is_integer(line) do
+  defp valid_finding?(%Finding{file: file, line: line})
+       when is_binary(file) and is_integer(line) do
     String.ends_with?(file, ".ex") or String.ends_with?(file, ".exs")
   end
 

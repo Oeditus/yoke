@@ -8,7 +8,16 @@ defmodule Yoke.Linter.Fixer do
 
   defmodule ProposedPatch do
     @moduledoc "Represents a proposed fix with a diff for a linter finding."
-    defstruct [:finding, :file, :start_line, :end_line, :original_text, :replacement_text, :diff, :fix_type]
+    defstruct [
+      :finding,
+      :file,
+      :start_line,
+      :end_line,
+      :original_text,
+      :replacement_text,
+      :diff,
+      :fix_type
+    ]
 
     @type t :: %__MODULE__{
             finding: Finding.t(),
@@ -217,7 +226,9 @@ defmodule Yoke.Linter.Fixer do
       Enum.map(old_lines, fn line -> "- #{line}" end) ++
         Enum.map(new_lines, fn line -> "+ #{line}" end)
 
-    header = "--- a/#{file}\n+++ b/#{file}\n@@ -#{line_offset},#{length(old_lines)} +#{line_offset},#{length(new_lines)} @@\n"
+    header =
+      "--- a/#{file}\n+++ b/#{file}\n@@ -#{line_offset},#{length(old_lines)} +#{line_offset},#{length(new_lines)} @@\n"
+
     header <> Enum.join(hunk, "\n")
   end
 end
