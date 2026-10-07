@@ -358,7 +358,13 @@ The full reference lives in [`docs/cheat_sheet.md`](docs/cheat_sheet.md); the es
 #### Git & Code Review
 | Command | Action |
 | :--- | :--- |
-| `/cr [base]` | Generate Code Review for current branch against `main` or custom base |
+| `/review [<base> [head] \| <pr>]` | Interactive Human-in-the-Loop PR Code Review with finding triage (`[i] Include`, `[e] Edit`, `[d] Drop`), atomic inline diff comments, and living memory |
+| `/cr [base]` | Fast shortcut to generate Code Review for current branch against `main` or custom base |
+| `/prboard` \| `/review queue` | Live Pull Request review queue board (CI state, approval thresholds, re-review readiness) |
+| `/review next` | Auto-advance and start reviewing the next recommended PR in the queue |
+| `/review skip <pr>` \| `/review unskip <pr>` | Commit-pinned PR skip (hides PR until author pushes new commits) |
+| `/review patterns` | View living codebase review tripwires (`.yoke/review_patterns.md`) |
+| `/review help` | Display comprehensive in-terminal review guide |
 | `/diff [branch]` | Display colorized git diff of workspace or against target branch |
 | `/commit <message>` | Auto-stage and commit workspace changes |
 | `/linter <tool> [project\|diff\|cr]` | Run `oeditus_credo`, `propwise`, `credo`, or `dialyzer` (alias: `/lint`) |

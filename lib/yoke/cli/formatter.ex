@@ -47,9 +47,8 @@ defmodule Yoke.CLI.Formatter do
     "Use /compact to compress conversation context to save tokens",
     "Use /diff to show colorized git diff of workspace changes",
     "Use /linter <tool> [cr|diff|project] to run native Elixir linters (oeditus_credo, propwise, credo)",
-    "Use /review <base> [head] to compare two git branches and generate a detailed Code Review",
+    "Use /review [queue|next|skip|patterns|<base> [head]|<pr>] or /prboard for PR reviews & queue triage",
     "Use /commit <message> to auto-commit staged workspace changes to git",
-    "Use /cost to display token usage and session cost statistics",
     "Use /permissions [auto|ask] to set tool execution safety mode",
     "Use /subagent <prompt> to spawn a background subagent worker for sub-tasks",
     "Use /workflow [list|run|status|resume|abort|init] to run customizable multi-step workflows (branch, describe, split & parallelize, test/docs, lint, commit)",
@@ -128,9 +127,10 @@ defmodule Yoke.CLI.Formatter do
       #{cyan()}/nodes#{reset()}                  View distributed Erlang node cluster status
       #{cyan()}/permissions [auto|ask]#{reset()} Set tool execution safety mode
       #{cyan()}/plugins [reload]#{reset()}       List tools or hot-reload plugins live without dropping state
+      #{cyan()}/prboard#{reset()}                 Live PR review queue board (alias for /review queue)
       #{cyan()}/ragex#{reset()}                  Mount first-class Ragex code analysis & refactoring MCP tools (@../ragex)
       #{cyan()}/reset#{reset()}                  Reset conversation context, history, and clear screen
-      #{cyan()}/review [<base> [head] | <pr_num>]#{reset()} Interactive PR Code Review with finding selection, GitHub posting, and auto-fix
+      #{cyan()}/review [queue|next|skip|patterns|<pr>]#{reset()} Interactive PR review, queue triage, atomic inline comments, living memory
       #{cyan()}/review_conversation [id]#{reset()} Review conversation history (current session or specific ID)
       #{cyan()}/scrap [note|clear]#{reset()}     Capture or view transient scratch notes in project/scrap.md
       #{cyan()}/session#{reset()}                Display active session metadata & statistics
@@ -429,5 +429,51 @@ defmodule Yoke.CLI.Formatter do
       nil ->
         {:error, "No system clipboard utility found (install xclip, wl-copy, xsel, or pbcopy)."}
     end
+  end
+
+  @doc """
+  Renders comprehensive help menu for Pull Request and Code Review commands.
+  """
+  def review_help do
+    """
+
+    #{bold()}#{cyan()}YOKE PULL REQUEST & CODE REVIEW SUBSYSTEM (/review, /prboard):#{reset()}
+    #{dim()}─────────────────────────────────────────────────────────────────────────────#{reset()}
+
+    #{bold()}Commands:#{reset()}
+      #{cyan()}/review [<base> [head] | <pr_num>]#{reset()}
+          Start conversational code review for branch range or GitHub pull request.
+          Interactively triage findings with #{bold()}[i] Include#{reset()}, #{bold()}[e] Edit#{reset()}, and #{bold()}[d] Drop#{reset()}.
+          Posts atomically via GitHub API with inline diff comments and committable suggestions.
+
+      #{cyan()}/prboard#{reset()} or #{cyan()}/review queue#{reset()}
+          Display live Pull Request review queue board:
+          - Shows visible vs. hidden PRs (drafts, author, approvals, CI status).
+          - Categorizes by review readiness (#{yellow()}re-review#{reset()}, #{cyan()}new#{reset()}, #{dim()}waiting on author#{reset()}).
+          - Highlights suggested next PR to review.
+
+      #{cyan()}/review next#{reset()}
+          Auto-advance and begin reviewing the top recommended PR in the review queue.
+
+      #{cyan()}/review skip <pr_num>#{reset()}
+          Commit-pinned skip: hides PR from review queue until author pushes new commits.
+
+      #{cyan()}/review unskip <pr_num>#{reset()}
+          Restores previously skipped PR to the active review queue.
+
+      #{cyan()}/review patterns#{reset()}
+          Inspect living codebase review memory (#{dim()}.yoke/review_patterns.md#{reset()}).
+          Patterns with #{red()}[MANDATORY Seen: 3+]#{reset()} are automatically enforced as tripwires.
+
+      #{cyan()}/cr [base]#{reset()}
+          Quick shortcut to review active branch against target base (default: main).
+
+    #{bold()}Design & Review Standards:#{reset()}
+      • #{bold()}Human-in-the-loop:#{reset()} Claude/DeepSeek proposes; engineer decides every comment.
+      • #{bold()}Atomic Reviews:#{reset()} Submits review event (#{green()}APPROVE#{reset()}, #{cyan()}COMMENT#{reset()}, #{red()}REQUEST_CHANGES#{reset()})
+        with right-side diff inline comments and committable ```suggestion blocks in a single call.
+      • #{bold()}Self-Critique:#{reset()} 10-point checklist filtering false flags, bikeshedding, and linters.
+      • #{bold()}Typography:#{reset()} Enforces real em dashes (—) and proper typographic quotes (“ ” and ‘ ’).
+    """
   end
 end

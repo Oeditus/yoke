@@ -776,29 +776,63 @@ defmodule Yoke.CLI.Repl do
     handle_review_conversation(nil, session_pid, session_id)
   end
 
+  def handle_input("/prboard help", _session_pid, _session_id) do
+    IO.puts(Formatter.review_help())
+    :continue
+  end
+
+  def handle_input("/review help", _session_pid, _session_id) do
+    IO.puts(Formatter.review_help())
+    :continue
+  end
+
+  def handle_input("/prboard", session_pid, session_id) do
+    handle_pr_queue(session_pid, session_id)
+  end
+
+  def handle_input("/review queue", session_pid, session_id) do
+    handle_pr_queue(session_pid, session_id)
+  end
+
+  def handle_input("/review next", session_pid, session_id) do
+    handle_review_next(session_pid, session_id)
+  end
+
+  def handle_input("/review skip " <> pr_str, _session_pid, _session_id) do
+    handle_skip_pr(String.trim(pr_str))
+  end
+
+  def handle_input("/review unskip " <> pr_str, _session_pid, _session_id) do
+    handle_unskip_pr(String.trim(pr_str))
+  end
+
+  def handle_input("/review patterns", _session_pid, _session_id) do
+    handle_review_patterns()
+  end
+
   def handle_input("/review " <> args, session_pid, _session_id) do
     parts = String.split(args, " ", trim: true)
 
-    {base_branch, head_branch} =
+    {base_branch, head_branch, pr_number} =
       case parts do
         [pr_num] ->
           if Regex.match?(~r/^\d+$/, pr_num) do
             case Yoke.PRReview.detect_pr(pr_num) do
               {:ok, info} ->
-                {info.base || "main", info.head || "HEAD"}
+                {info.base || "main", info.head || "HEAD", pr_num}
 
               _ ->
-                {"main", "HEAD"}
+                {"main", "HEAD", pr_num}
             end
           else
-            {pr_num, "HEAD"}
+            {pr_num, "HEAD", nil}
           end
 
         [base, head | _] ->
-          {base, head}
+          {base, head, nil}
 
         _ ->
-          {"main", "HEAD"}
+          {"main", "HEAD", nil}
       end
 
     IO.puts(
@@ -831,11 +865,13 @@ defmodule Yoke.CLI.Repl do
             fix_prompt = Yoke.PRReview.build_fix_prompt(accepted_findings)
             pr_body = Yoke.PRReview.build_pr_comment_body(accepted_findings, fix_prompt)
 
-            post_question = "Post accepted findings to GitHub PR?"
+            post_question = "Choose GitHub PR review action for accepted findings:"
 
             post_options = [
-              "Yes, post findings to GitHub PR (Recommended)",
-              "No, skip posting to GitHub"
+              "Submit APPROVE review with inline comments (Recommended)",
+              "Submit COMMENT review with inline comments",
+              "Submit REQUEST_CHANGES review with inline comments",
+              "Skip posting to GitHub"
             ]
 
             post_choice = Yoke.CLI.QuestionPrompt.ask_single_question(post_question, post_options)
@@ -844,21 +880,77 @@ defmodule Yoke.CLI.Repl do
               case post_choice do
                 %{selected: [c | _]} -> c
                 %{custom: c} when is_binary(c) -> c
-                _ -> "Yes"
+                _ -> "Submit APPROVE"
               end
 
-            if String.starts_with?(selected_post, "Yes") or String.contains?(selected_post, "Yes") do
-              case Yoke.PRReview.post_to_github_pr(head_branch, pr_body) do
+            event =
+              cond do
+                String.contains?(selected_post, "APPROVE") -> "APPROVE"
+                String.contains?(selected_post, "REQUEST_CHANGES") -> "REQUEST_CHANGES"
+                String.contains?(selected_post, "COMMENT") -> "COMMENT"
+                true -> nil
+              end
+
+            if event do
+              valid_lines =
+                if pr_number do
+                  case Yoke.PRReview.fetch_pr_diff(pr_number) do
+                    {:ok, diff} -> Yoke.PRReview.parse_diff_right_lines(diff)
+                    _ -> nil
+                  end
+                else
+                  nil
+                end
+
+              atomic_payload =
+                Yoke.PRReview.build_atomic_review_payload(
+                  accepted_findings,
+                  pr_body,
+                  event,
+                  valid_lines
+                )
+
+              case Yoke.PRReview.post_atomic_review(head_branch, atomic_payload) do
                 {:ok, pr_info} ->
+                  comments_count = length(atomic_payload["comments"])
+
                   IO.puts(
                     Formatter.format_success(
-                      "Successfully posted review findings to GitHub PR ##{pr_info.number} (#{pr_info.url})"
+                      "Successfully posted #{event} review with #{comments_count} inline comment(s) to GitHub PR ##{pr_info.number} (#{pr_info.url})"
                     )
                   )
 
                 {:error, err} ->
                   IO.puts(Formatter.format_warning("Could not post to GitHub PR: #{err}"))
               end
+            end
+
+            pattern_q = "Record accepted findings in .yoke/review_patterns.md living document?"
+
+            pattern_opts = [
+              "Yes, update living review patterns (Recommended)",
+              "No, skip pattern update"
+            ]
+
+            pattern_choice = Yoke.CLI.QuestionPrompt.ask_single_question(pattern_q, pattern_opts)
+
+            selected_pattern =
+              case pattern_choice do
+                %{selected: [c | _]} -> c
+                %{custom: c} when is_binary(c) -> c
+                _ -> "Yes"
+              end
+
+            if String.starts_with?(selected_pattern, "Yes") or
+                 String.contains?(selected_pattern, "Yes") do
+              pr_ref = if pr_number, do: "PR ##{pr_number}", else: "PR #{head_branch}"
+              Enum.each(accepted_findings, &Yoke.PRReview.Patterns.record_finding(&1, pr_ref))
+
+              IO.puts(
+                Formatter.format_success(
+                  "Updated living review patterns in .yoke/review_patterns.md"
+                )
+              )
             end
 
             IO.puts(
@@ -2331,6 +2423,204 @@ defmodule Yoke.CLI.Repl do
   catch
     :exit, reason ->
       {:error, "Session process crashed or stopped: #{inspect(reason)}"}
+  end
+
+  defp handle_pr_queue(_session_pid, _session_id) do
+    IO.puts(Formatter.format_info("Fetching Pull Request queue from GitHub…"))
+
+    case Yoke.PRReview.Queue.fetch_queue() do
+      {:ok, queue} ->
+        print_pr_board(queue)
+
+      {:error, err} ->
+        IO.puts(Formatter.format_error("Failed to fetch PR queue: #{err}"))
+    end
+
+    :continue
+  end
+
+  defp print_pr_board(queue) do
+    visible = queue.visible
+    hidden = queue.hidden
+    repo = queue.repo
+
+    IO.puts(
+      "\n" <>
+        Formatter.cyan() <>
+        "╭─ 󰋗 Pull Request Review Queue (#{repo}) ───────────────────────────────────╮" <>
+        Formatter.reset()
+    )
+
+    IO.puts(
+      "│ " <>
+        Formatter.bold() <>
+        "#{length(visible)} Visible · #{length(hidden)} Hidden" <>
+        Formatter.reset()
+    )
+
+    IO.puts("│")
+
+    if visible == [] do
+      IO.puts(
+        "│ " <>
+          Formatter.dim() <>
+          "No reviewable PRs currently waiting. Great job!" <>
+          Formatter.reset()
+      )
+    else
+      Enum.each(visible, fn pr ->
+        ci_badge =
+          case pr.ci do
+            "SUCCESS" -> Formatter.green() <> "✓" <> Formatter.reset()
+            "FAILURE" -> Formatter.red() <> "✗" <> Formatter.reset()
+            "ERROR" -> Formatter.red() <> "✗" <> Formatter.reset()
+            "PENDING" -> Formatter.yellow() <> "…" <> Formatter.reset()
+            _ -> Formatter.gray() <> "·" <> Formatter.reset()
+          end
+
+        state_badge =
+          case pr.my_state do
+            "re-review" -> Formatter.yellow() <> "re-review" <> Formatter.reset()
+            "new" -> Formatter.cyan() <> "new" <> Formatter.reset()
+            other -> Formatter.dim() <> other <> Formatter.reset()
+          end
+
+        appr_count = length(pr.approvers)
+        title_trunc = String.slice(pr.title, 0, 36) |> String.pad_trailing(36)
+        author_trunc = String.slice(pr.author, 0, 12) |> String.pad_trailing(12)
+        diff_stat = "+#{pr.additions}/-#{pr.deletions}" |> String.pad_leading(10)
+
+        IO.puts(
+          "│  #{Formatter.bold()}##{pr.number}#{Formatter.reset()}  #{title_trunc}  ✓#{appr_count}/2  #{ci_badge}  #{author_trunc}  #{diff_stat}  [#{state_badge}]"
+        )
+      end)
+    end
+
+    IO.puts("│")
+    next = Yoke.PRReview.Queue.pick_next(visible)
+
+    if next do
+      IO.puts(
+        "│ " <>
+          Formatter.cyan() <>
+          "▶ Next: " <>
+          Formatter.bold() <>
+          "##{next.number} \"#{next.title}\"" <>
+          Formatter.reset() <>
+          Formatter.dim() <>
+          " (use /review next)" <>
+          Formatter.reset()
+      )
+    else
+      IO.puts("│ " <> Formatter.dim() <> "▶ Next: None" <> Formatter.reset())
+    end
+
+    if hidden != [] do
+      hidden_summary =
+        hidden
+        |> Enum.group_by(fn {_pr, reason} -> reason end)
+        |> Enum.map_join(", ", fn {reason, list} -> "#{length(list)} #{reason}" end)
+
+      IO.puts("│ " <> Formatter.dim() <> "Hidden: #{hidden_summary}" <> Formatter.reset())
+    end
+
+    IO.puts(
+      Formatter.cyan() <>
+        "╰──────────────────────────────────────────────────────────────────────────────╯" <>
+        Formatter.reset() <> "\n"
+    )
+  end
+
+  defp handle_review_next(session_pid, session_id) do
+    case Yoke.PRReview.Queue.fetch_queue() do
+      {:ok, queue} ->
+        case Yoke.PRReview.Queue.pick_next(queue.visible) do
+          nil ->
+            IO.puts(Formatter.format_info("No reviewable PRs currently waiting in the queue."))
+            :continue
+
+          next_pr ->
+            IO.puts(
+              Formatter.format_info(
+                "Reviewing next queued PR ##{next_pr.number}: #{next_pr.title}…"
+              )
+            )
+
+            handle_input("/review #{next_pr.number}", session_pid, session_id)
+        end
+
+      {:error, err} ->
+        IO.puts(Formatter.format_error("Failed to fetch PR queue: #{err}"))
+        :continue
+    end
+  end
+
+  defp handle_skip_pr(pr_str) do
+    case Yoke.PRReview.Queue.skip_pr(pr_str) do
+      {:ok, sha} ->
+        IO.puts(
+          Formatter.format_success(
+            "Skipped PR ##{pr_str} at commit #{String.slice(sha, 0, 7)}. Hidden until author pushes new commits."
+          )
+        )
+
+      {:error, err} ->
+        IO.puts(Formatter.format_error("Failed to skip PR ##{pr_str}: #{err}"))
+    end
+
+    :continue
+  end
+
+  defp handle_unskip_pr(pr_str) do
+    Yoke.PRReview.Queue.unskip_pr(pr_str)
+    IO.puts(Formatter.format_success("Unskipped PR ##{pr_str}. Restored to review queue."))
+    :continue
+  end
+
+  defp handle_review_patterns do
+    patterns = Yoke.PRReview.Patterns.load_patterns()
+
+    if patterns == [] do
+      IO.puts(
+        Formatter.format_info(
+          "No review patterns found. A template will be created upon first review."
+        )
+      )
+    else
+      IO.puts(
+        "\n" <>
+          Formatter.cyan() <>
+          "╭─ 󰋗 Living Review Patterns (.yoke/review_patterns.md) ─────────────────────────╮" <>
+          Formatter.reset()
+      )
+
+      patterns
+      |> Enum.group_by(& &1.category)
+      |> Enum.each(fn {cat, list} ->
+        IO.puts("│ " <> Formatter.bold() <> cat <> Formatter.reset())
+
+        Enum.each(list, fn p ->
+          seen_badge =
+            if p.seen >= 3 do
+              Formatter.red() <> "[MANDATORY Seen: #{p.seen}x]" <> Formatter.reset()
+            else
+              Formatter.dim() <> "[Seen: #{p.seen}x]" <> Formatter.reset()
+            end
+
+          IO.puts("│   • #{Formatter.bold()}#{p.name}#{Formatter.reset()} #{seen_badge}: #{p.what}")
+        end)
+
+        IO.puts("│")
+      end)
+
+      IO.puts(
+        Formatter.cyan() <>
+          "╰──────────────────────────────────────────────────────────────────────────────╯" <>
+          Formatter.reset() <> "\n"
+      )
+    end
+
+    :continue
   end
 
   # Returns the token count consumed by the most recently completed turn, or

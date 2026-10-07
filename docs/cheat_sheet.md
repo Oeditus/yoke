@@ -94,7 +94,12 @@ my_app deepseek-chat >
 | Slash Command | Description | Example |
 | :--- | :--- | :--- |
 | `!!` | Flip into/out of pure console mode (plain shell passthrough, no AI/tooling) | `!!` |
-| `/cr [base]` | Code review current branch against `main` or custom base branch | `/cr main` |
+| `/review [<base> [head] \| <pr>]` | Human-in-the-loop PR review with inline triage (`[i] Include`, `[e] Edit`, `[d] Drop`) | `/review 142` |
+| `/prboard` \| `/review queue` | Live Pull Request review queue board (CI, approvals, status) | `/prboard` |
+| `/review next` | Auto-advance and review next queued PR | `/review next` |
+| `/review skip <pr>` \| `unskip` | Commit-pinned PR skip (hidden until author pushes new commits) | `/review skip 142` |
+| `/review patterns` | View living codebase review patterns (`.yoke/review_patterns.md`) | `/review patterns` |
+| `/cr [base]` | Shortcut to review active branch against `main` or custom base | `/cr main` |
 | `/diff [target]` | View colorized git diff of workspace or against target branch | `/diff main` |
 | `/resume [id]` | Resume specific session ID or open interactive conversation picker modal | `/resume` |
 | `/rules [add\|delete]` | List, add, or open checkbox modal to delete prompt rules | `/rules add cr: format tables 80 cols` |
@@ -152,27 +157,54 @@ The Rule Engine allows defining persistent prompt preambles and formatting const
 
 ---
 
-## 5. Code Review & Git Workflow (`/cr`, `/diff`, `/commit`)
+## 5. Code Review & Git Workflow (`/review`, `/prboard`, `/cr`, `/diff`, `/commit`)
 
-### 1. Branch Code Review (`/cr`)
-Runs a comprehensive AI code review comparing the active branch (`HEAD`) against a base branch:
+### 1. Human-in-the-Loop PR Code Review (`/review`, `/cr`)
+Runs a comprehensive AI code review comparing branches or evaluating a GitHub Pull Request:
 ```bash
 # Review active branch against default base 'main'
 /cr
+/review main HEAD
 
-# Review active branch against custom base branch
-/cr origin/main
-/cr release/v1.0
+# Review specific GitHub PR by number
+/review 142
+
+# Inline review help & standards
+/review help
 ```
-**Code Review Output Structure**:
-1. Executive Summary & Architectural Purpose
-2. Key Modifications & File-by-File Breakdown
-3. Risk & Edge Case Assessment (Security, Performance, Breaking Changes)
-4. Actionable Refactoring Recommendations & Code Snippets
-5. Test & Verification Coverage Audit
-6. Ready-to-post GitHub PR Review Comment Block
 
-### 2. Workspace & Branch Diffing (`/diff`)
+**Key Review Capabilities**:
+- **Granular Triage**: Review findings one by one with `[i] Include`, `[e] Edit` (modify comment inline), or `[d] Drop`.
+- **Atomic GitHub Review Posting**: Submits review events (`APPROVE`, `COMMENT`, `REQUEST_CHANGES`) alongside native right-side inline diff comments and committable ` ```suggestion ` blocks via `gh api`.
+- **10-Point Self-Critique Checklist**: Discards suggestions if gated by feature flags/supervisors, speculative, bikeshedding, or already flagged by linters/CI.
+- **Typographic Standards**: Enforces real em dashes (`—`) for parenthetical clauses/breaks and proper typographic quotes (`“ ”` and `‘ ’`) in prose explanations.
+
+### 2. Live PR Review Queue Board (`/prboard`, `/review queue`)
+Manage and triage your repository's open pull requests without switching contexts:
+```bash
+# Open live review queue board
+/prboard
+/review queue
+
+# Step through the queue automatically
+/review next
+
+# Commit-pinned skip (hides PR until author pushes new commits)
+/review skip 142
+/review unskip 142
+```
+Categorizes open PRs into **Visible** (ranked by readiness: `re-review` > `new`) and **Hidden** (`draft`, `yours`, `approved`, `waiting on author`, `skipped`).
+
+### 3. Living Codebase Review Memory (`/review patterns`)
+Maintains an evolving codebase memory in `.yoke/review_patterns.md`:
+```bash
+# View active review patterns and tripwires
+/review patterns
+```
+- Real accepted comments are recorded to `.yoke/review_patterns.md` after each review.
+- Patterns with `[Seen: 3+]` are automatically enforced as **mandatory tripwire checks** on future reviews.
+
+### 4. Workspace & Branch Diffing (`/diff`)
 ```bash
 # View colorized diff of unstaged/staged workspace changes
 /diff

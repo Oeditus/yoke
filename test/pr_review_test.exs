@@ -180,4 +180,90 @@ defmodule Yoke.PRReviewTest do
       assert match?({:ok, _}, res) or match?({:error, _}, res)
     end
   end
+
+  describe "parse_diff_right_lines/1" do
+    test "correctly parses right-side lines from unified diff" do
+      diff =
+        """
+        diff --git a/lib/test.ex b/lib/test.ex
+        index 1234567..89abcdef 100644
+        --- a/lib/test.ex
+        +++ b/lib/test.ex
+        @@ -10,4 +10,5 @@ defmodule Test do
+         context_line_10
+        - deleted_line
+        + added_line_11
+        + added_line_12
+         context_line_13
+        """
+
+      lines = PRReview.parse_diff_right_lines(diff)
+
+      assert MapSet.member?(lines, {"lib/test.ex", 10})
+      assert MapSet.member?(lines, {"lib/test.ex", 11})
+      assert MapSet.member?(lines, {"lib/test.ex", 12})
+      assert MapSet.member?(lines, {"lib/test.ex", 13})
+      refute MapSet.member?(lines, {"lib/test.ex", 9})
+      refute MapSet.member?(lines, {"lib/test.ex", 14})
+    end
+  end
+
+  describe "build_atomic_review_payload/4" do
+    test "constructs review JSON payload with inline comments on valid diff lines" do
+      findings = [
+        %{
+          id: 1,
+          file: "lib/test.ex",
+          line: 11,
+          title: "Style issue",
+          description: "Use pattern matching",
+          severity: "medium",
+          fix_suggestion: "def foo(:bar), do: :ok"
+        },
+        %{
+          id: 2,
+          file: "lib/other.ex",
+          line: 99,
+          title: "Outside diff issue",
+          description: "Old code has a bug",
+          severity: "low",
+          fix_suggestion: ""
+        }
+      ]
+
+      valid_lines = MapSet.new([{"lib/test.ex", 11}])
+
+      payload =
+        PRReview.build_atomic_review_payload(
+          findings,
+          "## Summary",
+          "APPROVE",
+          valid_lines
+        )
+
+      assert payload["event"] == "APPROVE"
+      assert length(payload["comments"]) == 1
+
+      [c] = payload["comments"]
+      assert c["path"] == "lib/test.ex"
+      assert c["line"] == 11
+      assert c["side"] == "RIGHT"
+      assert String.contains?(c["body"], "```suggestion")
+      assert String.contains?(c["body"], "def foo(:bar), do: :ok")
+
+      # Finding 2 should be in body sidenotes
+      assert String.contains?(payload["body"], "Outside diff issue")
+    end
+  end
+
+  describe "prompt_instructions self-critique and tone" do
+    test "contains self-critique rules, typography enforcement, and tone guidelines" do
+      prompt = PRReview.prompt_instructions()
+      assert String.contains?(prompt, "Self-Critique Checklist")
+      assert String.contains?(prompt, "em dashes (—)")
+      assert String.contains?(prompt, "typographic quotes (“ ” and ‘ ’)")
+      assert String.contains?(prompt, "Ask rather than assert")
+      assert String.contains?(prompt, "Tone & Comment Phrasing Rules")
+    end
+  end
 end

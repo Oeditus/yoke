@@ -117,9 +117,15 @@ yoke --help
 ### Git & Code Audit Commands
 
 ```bash
-# Branch Code Review
+# PR & Branch Code Review
+/review 142             # Review specific GitHub PR with interactive triage
+/review main HEAD       # Compare branches with 10-point self-critique
 /cr                     # Compare active branch against default 'main'
-/cr origin/main         # Compare active branch against custom base branch
+/prboard                # View live PR review queue triage board
+/review next            # Auto-review next queued pull request
+/review skip 142        # Commit-pinned skip (hidden until next commit)
+/review patterns        # View living review patterns memory (.yoke/review_patterns.md)
+/review help            # Print in-terminal review guide
 
 # Workspace & Branch Diffs
 /diff                   # View colorized diff of unstaged/staged changes

@@ -26,11 +26,34 @@ Flags:
 
 ---
 
-## 3. Autonomous Code Reviews & Branch Comparison
-Compare active branch against main and generate a structured Code Review:
+## 3. Human-in-the-Loop PR Reviews & Queue Triage
+Yoke provides an interactive code review workstation inspired by pair-review workflows:
+
 ```bash
+# Review open GitHub Pull Request
+/review 142
+
+# Compare active branch against main
 /review main HEAD
+# Or quick shortcut:
+/cr
+
+# Manage live PR review queue
+/prboard
+/review next
+/review skip 142
+/review patterns
 ```
+
+### The Review Lifecycle
+1. **Queue Triage (`/prboard`)**: Displays live repository PRs categorized by readiness (`re-review`, `new`, `waiting on author`). Skipping a PR pins it to its current commit SHA until new commits land.
+2. **Context & Living Patterns**: Reviews diffs against mandatory tripwires (`.yoke/review_patterns.md`) and excludes existing reviewer comments or CI checks.
+3. **Interactive Decision Making**: Presents each finding one by one for engineering approval:
+   - `[i] Include`: queues comment for atomic submission.
+   - `[e] Edit`: opens inline prompt to adjust title, description, or fix suggestion.
+   - `[d] Drop`: discards finding.
+4. **Atomic GitHub Submission**: Validates right-side diff lines and posts all inline comments and the summary review atomically via `gh api` (`APPROVE`, `COMMENT`, or `REQUEST_CHANGES`).
+5. **Memory Loop & Typography**: Accepted findings can be saved to `.yoke/review_patterns.md` to reinforce organizational knowledge over time. Reviews strictly adhere to typographic standards (real em dashes `—` and proper typographic quotes `“ ”` and `‘ ’`).
 
 ---
 
