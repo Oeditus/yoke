@@ -85,6 +85,8 @@ defmodule Yoke.Workflow.Plan do
     call_opts =
       [model: Keyword.get(opts, :model, "deepseek-chat")]
       |> maybe_put(:api_key, opts)
+      |> maybe_put(:endpoint, opts)
+      |> maybe_put(:session_id, opts)
       |> maybe_put(:max_tokens, opts)
       |> maybe_put_mock(opts)
 

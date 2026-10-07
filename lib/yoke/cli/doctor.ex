@@ -82,7 +82,12 @@ defmodule Yoke.CLI.Doctor do
   defp check_provider do
     deepseek_key = System.get_env("DEEPSEEK_API_KEY")
     openrouter_key = System.get_env("OPENROUTER_API_KEY")
-    provider_endpoint = System.get_env("DEEPSEEK_ENDPOINT") || "https://api.deepseek.com"
+    opencode_key = System.get_env("OPENCODE_API_KEY") || System.get_env("OPENCODE_ZEN_API_KEY")
+
+    provider_endpoint =
+      System.get_env("DEEPSEEK_ENDPOINT") ||
+        System.get_env("OPENCODE_BASE_URL") ||
+        "https://api.deepseek.com"
 
     cond do
       is_binary(deepseek_key) and byte_size(deepseek_key) > 0 ->
@@ -97,6 +102,13 @@ defmodule Yoke.CLI.Doctor do
           category: "AI Provider Credentials",
           status: :ok,
           details: "OPENROUTER_API_KEY detected"
+        }
+
+      is_binary(opencode_key) and byte_size(opencode_key) > 0 ->
+        %{
+          category: "AI Provider Credentials",
+          status: :ok,
+          details: "OPENCODE_API_KEY detected (#{provider_endpoint})"
         }
 
       true ->

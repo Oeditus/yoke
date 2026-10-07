@@ -84,6 +84,61 @@ defmodule Yoke.DeepSeekAPITest do
     end
   end
 
+  describe "OpenCode and session routing helpers" do
+    test "normalize_endpoint/1 handles opencode alias" do
+      assert DeepSeekAPI.normalize_endpoint("opencode") ==
+               "https://opencode.ai/zen/go/v1/chat/completions"
+
+      assert DeepSeekAPI.normalize_endpoint("https://opencode.ai/zen/go/v1") ==
+               "https://opencode.ai/zen/go/v1/chat/completions"
+    end
+
+    test "opencode_endpoint?/1 identifies OpenCode URLs" do
+      assert DeepSeekAPI.opencode_endpoint?("https://opencode.ai/zen/go/v1/chat/completions") ==
+               true
+
+      assert DeepSeekAPI.opencode_endpoint?("https://api.opencode.ai/v1") == true
+      assert DeepSeekAPI.opencode_endpoint?("https://api.deepseek.com/chat/completions") == false
+    end
+
+    test "build_config/1 captures explicit session_id" do
+      cfg = DeepSeekAPI.build_config(session_id: "test-sess-1234")
+      assert cfg.session_id == "test-sess-1234"
+    end
+
+    test "build_config/1 auto-generates session_id for opencode endpoints when none is provided" do
+      cfg = DeepSeekAPI.build_config(endpoint: "opencode")
+      assert is_binary(cfg.session_id)
+      assert String.length(cfg.session_id) == 36
+    end
+
+    test "build_headers/2 attaches x-opencode-session header when session_id is present" do
+      cfg = DeepSeekAPI.build_config(session_id: "sess-abc-789", api_key: "test-key")
+      headers = DeepSeekAPI.build_headers(cfg)
+
+      assert {"x-opencode-session", "sess-abc-789"} in headers
+      assert {"Authorization", "Bearer test-key"} in headers
+      assert {"Content-Type", "application/json"} in headers
+    end
+
+    test "build_headers/2 attaches x-opencode-session header automatically for opencode endpoints" do
+      cfg = DeepSeekAPI.build_config(endpoint: "https://opencode.ai/zen/go/v1/chat/completions")
+      headers = DeepSeekAPI.build_headers(cfg)
+
+      opencode_header = Enum.find(headers, fn {k, _v} -> k == "x-opencode-session" end)
+      assert opencode_header != nil
+      {_k, sess_id} = opencode_header
+      assert is_binary(sess_id)
+      assert String.length(sess_id) == 36
+    end
+
+    test "generate_session_id/0 generates valid UUID v4 string" do
+      id = DeepSeekAPI.generate_session_id()
+      assert is_binary(id)
+      assert Regex.match?(~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, id)
+    end
+  end
+
   describe "sanitize_utf8/1" do
     test "preserves valid UTF-8 strings" do
       assert DeepSeekAPI.sanitize_utf8("Hello World 🚀") == "Hello World 🚀"

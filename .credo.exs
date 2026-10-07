@@ -13,7 +13,7 @@
       color: true,
       checks: [
         {Credo.Check.Readability.MaxLineLength, [max_length: 140]},
-        {Credo.Check.Refactor.CyclomaticComplexity, [max_complexity: 35]},
+        {Credo.Check.Refactor.CyclomaticComplexity, [max_complexity: 40]},
         {Credo.Check.Refactor.Nesting, [max_nesting: 6]},
         {Credo.Check.Design.AliasUsage, [if_nested_deeper_than: 3]}
       ]

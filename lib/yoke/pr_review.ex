@@ -272,7 +272,10 @@ defmodule Yoke.PRReview do
     IO.puts(Formatter.dim() <> "Current description: " <> f.description <> Formatter.reset())
     new_desc = prompt_line("New description (press Enter to keep): ", f.description)
 
-    IO.puts(Formatter.dim() <> "Current fix suggestion: " <> f.fix_suggestion <> Formatter.reset())
+    IO.puts(
+      Formatter.dim() <> "Current fix suggestion: " <> f.fix_suggestion <> Formatter.reset()
+    )
+
     new_fix = prompt_line("New fix suggestion (press Enter to keep): ", f.fix_suggestion)
 
     %{
@@ -285,8 +288,12 @@ defmodule Yoke.PRReview do
 
   defp prompt_line(prompt_text, default_val) do
     case IO.gets(prompt_text) do
-      :eof -> default_val
-      {:error, _} -> default_val
+      :eof ->
+        default_val
+
+      {:error, _} ->
+        default_val
+
       input ->
         trimmed = String.trim(input)
         if trimmed == "", do: default_val, else: trimmed
@@ -468,7 +475,12 @@ defmodule Yoke.PRReview do
   and top-level body sidenotes (lines outside diff or general architectural findings).
   `event` can be "APPROVE", "COMMENT", or "REQUEST_CHANGES".
   """
-  def build_atomic_review_payload(accepted_findings, review_body, event \\ "COMMENT", valid_diff_lines \\ nil) do
+  def build_atomic_review_payload(
+        accepted_findings,
+        review_body,
+        event \\ "COMMENT",
+        valid_diff_lines \\ nil
+      ) do
     event_str = normalize_review_event(event)
 
     {inline_comments, body_sidenotes} =
@@ -553,7 +565,12 @@ defmodule Yoke.PRReview do
         with {:ok, pr_info} <- detect_pr(target_or_head, cwd),
              {:ok, repo_name} <- get_repo_name(cwd) do
           pr_num = to_string(pr_info.number)
-          temp_file = Path.join(System.tmp_dir!(), "yoke_review_#{pr_num}_#{System.unique_integer([:positive])}.json")
+
+          temp_file =
+            Path.join(
+              System.tmp_dir!(),
+              "yoke_review_#{pr_num}_#{System.unique_integer([:positive])}.json"
+            )
 
           File.write!(temp_file, Json.encode!(payload))
 
@@ -567,13 +584,15 @@ defmodule Yoke.PRReview do
 
             {err, _code} ->
               File.rm(temp_file)
+
               # If atomic reviews fail (e.g. invalid line number rejection), fall back to top-level PR comment
               case post_to_github_pr(target_or_head, payload["body"], cwd) do
                 {:ok, res} ->
                   {:ok, Map.put(res, :fallback_comment, true)}
 
                 {:error, fallback_err} ->
-                  {:error, "Atomic review failed: #{String.trim(err)}; fallback comment failed: #{fallback_err}"}
+                  {:error,
+                   "Atomic review failed: #{String.trim(err)}; fallback comment failed: #{fallback_err}"}
               end
           end
         end

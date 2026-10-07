@@ -53,9 +53,9 @@ Yoke supports the full suite of official DeepSeek models, local open-weights mod
 | **DeepSeek-Coder-V2.5** | `deepseek-coder`<br>`/model coder` | **Direct code generation, syntax completion & refactoring** | Trained specifically on **338+ programming languages**. Produces idiomatic Elixir/C++/Rust code with high precision on syntax and language conventions. |
 | **DeepSeek-R1** | `deepseek-reasoner`<br>`/model reasoner` | **Complex debugging & architectural design** | Reinforcement Learning (RL) reasoning model. Yoke captures and streams `[DeepSeek-R1 Reasoning]` Chain-of-Thought output live before tool execution. |
 
-### 3. OpenRouter & Local Model Integration (Ollama, LM Studio, vLLM)
+### 3. OpenRouter, OpenCode Go & Local Model Integration (SGLang, Ollama, LM Studio, vLLM)
 
-While `yoke` defaults to the official remote **DeepSeek API** (`https://api.deepseek.com/chat/completions` with `deepseek-chat`), it provides native support for **OpenRouter** (including free models) and **Local Open-Weights Models** running via Ollama, LM Studio, vLLM, or LocalAI.
+While `yoke` defaults to the official remote **DeepSeek API** (`https://api.deepseek.com/chat/completions` with `deepseek-chat`), it provides native support for **OpenRouter**, **OpenCode Go (Console Go)**, and local inference engines (**SGLang**, **Ollama**, **LM Studio**, **vLLM**).
 
 #### A. OpenRouter Configuration
 Connect `yoke` to OpenRouter endpoints (such as `meta-llama/llama-3.3-70b-instruct:free`, `qwen/qwen-2.5-coder-32b-instruct:free`, or `deepseek/deepseek-r1:free`):
@@ -78,9 +78,33 @@ Connect `yoke` to OpenRouter endpoints (such as `meta-llama/llama-3.3-70b-instru
   /model openrouter-free
   ```
 
-#### B. Local Models (Ollama, LM Studio, vLLM)
+#### B. OpenCode Go (Console Go) Configuration
+Connect `yoke` to OpenCode Go / Zen endpoints:
+
+- **Automatic `x-opencode-session` Routing Header**:
+  OpenCode Go requires the `x-opencode-session` header on every request for backend routing and prompt caching optimization. Yoke automatically attaches this header using the session's unique identifier.
+- **Environment Variables**:
+  ```bash
+  export OPENCODE_API_KEY="your-opencode-key"
+  # Optional custom base URL (defaults to OpenCode Go endpoint when using shortcut):
+  export OPENCODE_BASE_URL="https://opencode.ai/zen/go/v1/chat/completions"
+
+  yoke
+  ```
+- **CLI Flags & REPL**:
+  ```bash
+  yoke -e opencode -m deepseek-chat
+  # Or switch live in REPL:
+  /endpoint opencode
+  ```
+
+#### C. Local Models (SGLang, Ollama, LM Studio, vLLM)
 Run `yoke` completely offline against local LLM servers without requiring API keys:
 
+- **SGLang (`http://localhost:30000`)**:
+  ```bash
+  yoke -e http://localhost:30000/v1 -m deepseek-ai/DeepSeek-V3
+  ```
 - **Ollama (`http://localhost:11434`)**:
   ```bash
   # 1. Start Ollama model
@@ -373,7 +397,7 @@ The full reference lives in [`docs/cheat_sheet.md`](docs/cheat_sheet.md); the es
 | Command | Action |
 | :--- | :--- |
 | `/model [chat\|coder\|reasoner\|openrouter-free\|ollama-qwen]` | Switch active model (`deepseek-chat`, `deepseek-coder`, `deepseek-reasoner`, OpenRouter/Ollama shortcuts, or custom model string) |
-| `/endpoint [url\|default\|openrouter\|ollama\|lmstudio]` | Switch API base endpoint URL dynamically |
+| `/endpoint [url\|default\|openrouter\|opencode\|ollama\|lmstudio]` | Switch API base endpoint URL dynamically |
 | `/mode [local\|remote\|docker]` | Set Hands execution target |
 | `/sandbox [on\|off]` | Restrict file references & tools to the workspace directory |
 | `/permissions [auto\|ask]` | Set tool execution safety mode |

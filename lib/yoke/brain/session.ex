@@ -228,6 +228,7 @@ defmodule Yoke.Brain.Session do
         opts[:endpoint] ||
           System.get_env("DEEPSEEK_ENDPOINT") ||
           System.get_env("OPENROUTER_BASE_URL") ||
+          System.get_env("OPENCODE_BASE_URL") ||
           System.get_env("OLLAMA_HOST") ||
           Map.get(
             Config.load_config(cwd),
@@ -241,6 +242,8 @@ defmodule Yoke.Brain.Session do
         opts[:api_key] ||
           System.get_env("DEEPSEEK_API_KEY") ||
           System.get_env("OPENROUTER_API_KEY") ||
+          System.get_env("OPENCODE_API_KEY") ||
+          System.get_env("OPENCODE_ZEN_API_KEY") ||
           System.get_env("LLM_API_KEY") ||
           Map.get(Config.load_config(cwd), "api_key"),
       hands: %HandsExecutor{mode: :local},
@@ -430,7 +433,12 @@ defmodule Yoke.Brain.Session do
 
   @impl true
   def handle_call(:compact_context, _from, state) do
-    opts = [model: state.model, api_key: state.api_key, endpoint: state.endpoint]
+    opts = [
+      model: state.model,
+      api_key: state.api_key,
+      endpoint: state.endpoint,
+      session_id: state.session_id
+    ]
 
     opts =
       if is_integer(state.max_tokens) and state.max_tokens > 0 do
@@ -1029,7 +1037,12 @@ defmodule Yoke.Brain.Session do
   end
 
   defp run_agent_loop(state, depth, retries \\ 0) do
-    opts = [model: state.model, api_key: state.api_key, endpoint: state.endpoint]
+    opts = [
+      model: state.model,
+      api_key: state.api_key,
+      endpoint: state.endpoint,
+      session_id: state.session_id
+    ]
 
     opts =
       if is_integer(state.max_tokens) and state.max_tokens > 0 do

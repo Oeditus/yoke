@@ -126,7 +126,10 @@ defmodule Yoke.PRReview.Patterns do
     title = Map.get(finding, :title, "Unspecified Issue") |> to_string() |> String.trim()
     desc = Map.get(finding, :description, "") |> to_string() |> String.trim()
     file = Map.get(finding, :file)
-    loc_note = if file, do: "#{file}#{if Map.get(finding, :line), do: ":#{finding.line}"}", else: ""
+
+    loc_note =
+      if file, do: "#{file}#{if Map.get(finding, :line), do: ":#{finding.line}"}", else: ""
+
     pr_note = if pr_ref != "", do: "#{pr_ref} (#{loc_note})", else: loc_note
 
     existing_patterns = parse_markdown(content)
@@ -206,7 +209,7 @@ defmodule Yoke.PRReview.Patterns do
   defp parse_seen_field(seen_str) do
     case Regex.run(~r/^(\d+)(?:\+)?(?:\s*[—\-]\s*(.*))?/, seen_str) do
       [_, cnt, notes] ->
-        {String.to_integer(cnt), String.trim(notes || "")}
+        {String.to_integer(cnt), String.trim(notes)}
 
       [_, cnt] ->
         {String.to_integer(cnt), ""}
@@ -218,7 +221,8 @@ defmodule Yoke.PRReview.Patterns do
 
   defp increment_existing_pattern(content, name, pr_note) do
     # Find pattern header and replace Seen line
-    header_pattern = ~r/(###\s+#{Regex.escape(name)}[\s\S]*?-\s*\*\*Seen\*\*:\s*)(\d+)(\+)?([^\n]*)/
+    header_pattern =
+      ~r/(###\s+#{Regex.escape(name)}[\s\S]*?-\s*\*\*Seen\*\*:\s*)(\d+)(\+)?([^\n]*)/
 
     Regex.replace(header_pattern, content, fn _full, pre, cnt_str, plus, rest ->
       next_count = String.to_integer(cnt_str) + 1
@@ -259,13 +263,33 @@ defmodule Yoke.PRReview.Patterns do
   end
 
   defp guess_category(finding) do
-    title = (Map.get(finding, :title, "") <> " " <> Map.get(finding, :description, "")) |> String.downcase()
+    title =
+      (Map.get(finding, :title, "") <> " " <> Map.get(finding, :description, ""))
+      |> String.downcase()
 
     cond do
-      String.contains?(title, ["auth", "security", "token", "leak", "secret", "sql", "inject", "sanitize"]) ->
+      String.contains?(title, [
+        "auth",
+        "security",
+        "token",
+        "leak",
+        "secret",
+        "sql",
+        "inject",
+        "sanitize"
+      ]) ->
         "Security / Safety"
 
-      String.contains?(title, ["schema", "database", "migration", "index", "column", "table", "ecto", "foreign key"]) ->
+      String.contains?(title, [
+        "schema",
+        "database",
+        "migration",
+        "index",
+        "column",
+        "table",
+        "ecto",
+        "foreign key"
+      ]) ->
         "Data / Schema"
 
       String.contains?(title, ["test", "coverage", "assert", "mock", "exunit", "flaky"]) ->

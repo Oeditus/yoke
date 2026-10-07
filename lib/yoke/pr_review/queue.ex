@@ -161,7 +161,9 @@ defmodule Yoke.PRReview.Queue do
   end
 
   defp get_pr_head(pr_num, cwd) do
-    case System.cmd("gh", ["pr", "view", to_string(pr_num), "--json", "headRefOid", "-q", ".headRefOid"],
+    case System.cmd(
+           "gh",
+           ["pr", "view", to_string(pr_num), "--json", "headRefOid", "-q", ".headRefOid"],
            cd: cwd,
            stderr_to_stdout: true
          ) do
@@ -218,6 +220,7 @@ defmodule Yoke.PRReview.Queue do
     ci_state = get_in(last_commit, ["commit", "statusCheckRollup", "state"]) || "NONE"
 
     approver_list = extract_approvers(reviews)
+
     changes_requested_by =
       reviews
       |> Enum.filter(&(&1.state == "CHANGES_REQUESTED"))
@@ -233,10 +236,14 @@ defmodule Yoke.PRReview.Queue do
 
     my_state =
       cond do
-        me in approver_list -> "approved"
+        me in approver_list ->
+          "approved"
+
         my_last_review != nil ->
           if last_commit_at > my_last_review.submitted_at, do: "re-review", else: "waiting"
-        true -> "new"
+
+        true ->
+          "new"
       end
 
     %{
@@ -263,6 +270,7 @@ defmodule Yoke.PRReview.Queue do
     |> Enum.filter(&(&1.state in ["APPROVED", "CHANGES_REQUESTED", "DISMISSED"]))
     |> Enum.reduce(%{}, fn r, acc ->
       prev = Map.get(acc, r.author)
+
       if is_nil(prev) or prev.submitted_at <= r.submitted_at do
         Map.put(acc, r.author, r)
       else

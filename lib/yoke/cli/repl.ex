@@ -1504,6 +1504,7 @@ defmodule Yoke.CLI.Repl do
         "default" -> "https://api.deepseek.com/chat/completions"
         "deepseek" -> "https://api.deepseek.com/chat/completions"
         "openrouter" -> "https://openrouter.ai/api/v1/chat/completions"
+        "opencode" -> "https://opencode.ai/zen/go/v1/chat/completions"
         "ollama" -> "http://localhost:11434/v1/chat/completions"
         "lmstudio" -> "http://localhost:1234/v1/chat/completions"
         "vllm" -> "http://localhost:8000/v1/chat/completions"
@@ -1518,7 +1519,7 @@ defmodule Yoke.CLI.Repl do
   def handle_input("/endpoint", _session_pid, _session_id) do
     IO.puts(
       Formatter.format_error(
-        "Usage: /endpoint <url|default|deepseek|openrouter|ollama|lmstudio|vllm>"
+        "Usage: /endpoint <url|default|deepseek|openrouter|opencode|ollama|lmstudio|vllm>"
       )
     )
 
@@ -2607,7 +2608,9 @@ defmodule Yoke.CLI.Repl do
               Formatter.dim() <> "[Seen: #{p.seen}x]" <> Formatter.reset()
             end
 
-          IO.puts("│   • #{Formatter.bold()}#{p.name}#{Formatter.reset()} #{seen_badge}: #{p.what}")
+          IO.puts(
+            "│   • #{Formatter.bold()}#{p.name}#{Formatter.reset()} #{seen_badge}: #{p.what}"
+          )
         end)
 
         IO.puts("│")

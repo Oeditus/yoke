@@ -21,7 +21,10 @@ defmodule Yoke.Client.DeepSeekAPI do
               max_tokens: nil,
               stream: false,
               stream_fun: nil,
-              mock: false
+              mock: false,
+              # Stable session identifier attached as `x-opencode-session` header
+              # for OpenCode Go and other session-routed providers.
+              session_id: nil
   end
 
   @doc """
@@ -88,24 +91,7 @@ defmodule Yoke.Client.DeepSeekAPI do
 
   defp fetch_real_models(%ClientConfig{} = config) do
     target_url = models_endpoint(config.endpoint)
-
-    headers =
-      if is_binary(config.api_key) and config.api_key != "" and config.api_key != "not-needed" do
-        [{"Authorization", "Bearer #{config.api_key}"}, {"Accept", "application/json"}]
-      else
-        [{"Accept", "application/json"}]
-      end
-
-    headers =
-      if String.contains?(config.endpoint, "openrouter.ai") do
-        headers ++
-          [
-            {"HTTP-Referer", "https://github.com/yoke"},
-            {"X-Title", "yoke"}
-          ]
-      else
-        headers
-      end
+    headers = build_headers(config, false)
 
     req_opts = [
       headers: headers,
@@ -170,6 +156,7 @@ defmodule Yoke.Client.DeepSeekAPI do
       opts[:endpoint] ||
         System.get_env("DEEPSEEK_ENDPOINT") ||
         System.get_env("OPENROUTER_BASE_URL") ||
+        System.get_env("OPENCODE_BASE_URL") ||
         System.get_env("OLLAMA_HOST") ||
         @default_endpoint
 
@@ -186,7 +173,27 @@ defmodule Yoke.Client.DeepSeekAPI do
         true ->
           System.get_env("DEEPSEEK_API_KEY") ||
             System.get_env("OPENROUTER_API_KEY") ||
+            System.get_env("OPENCODE_API_KEY") ||
+            System.get_env("OPENCODE_ZEN_API_KEY") ||
             System.get_env("LLM_API_KEY")
+      end
+
+    session_id =
+      cond do
+        opts[:session_id] ->
+          opts[:session_id]
+
+        System.get_env("OPENCODE_SESSION_ID") ->
+          System.get_env("OPENCODE_SESSION_ID")
+
+        System.get_env("YOKE_SESSION_ID") ->
+          System.get_env("YOKE_SESSION_ID")
+
+        opencode_endpoint?(normalized_endpoint) ->
+          generate_session_id()
+
+        true ->
+          nil
       end
 
     %ClientConfig{
@@ -197,8 +204,45 @@ defmodule Yoke.Client.DeepSeekAPI do
       max_tokens: opts[:max_tokens],
       stream: opts[:stream] || false,
       stream_fun: opts[:stream_fun],
-      mock: mock_default
+      mock: mock_default,
+      session_id: session_id
     }
+  end
+
+  @doc "Builds HTTP headers for API requests based on configuration."
+  def build_headers(%ClientConfig{} = config, content_type? \\ true) do
+    type_header =
+      if content_type?,
+        do: {"Content-Type", "application/json"},
+        else: {"Accept", "application/json"}
+
+    headers =
+      if is_binary(config.api_key) and config.api_key != "" and config.api_key != "not-needed" do
+        [{"Authorization", "Bearer #{config.api_key}"}, type_header]
+      else
+        [type_header]
+      end
+
+    headers =
+      if String.contains?(config.endpoint, "openrouter.ai") do
+        headers ++
+          [
+            {"HTTP-Referer", "https://github.com/yoke"},
+            {"X-Title", "yoke"}
+          ]
+      else
+        headers
+      end
+
+    session_id =
+      config.session_id ||
+        if(opencode_endpoint?(config.endpoint), do: generate_session_id(), else: nil)
+
+    if is_binary(session_id) and session_id != "" do
+      [{"x-opencode-session", session_id} | headers]
+    else
+      headers
+    end
   end
 
   defp real_chat_completion(messages, tools, %ClientConfig{} = config) do
@@ -227,23 +271,7 @@ defmodule Yoke.Client.DeepSeekAPI do
         Map.put(body, "tools", formatted_tools)
       end
 
-    headers =
-      if is_binary(config.api_key) and config.api_key != "" and config.api_key != "not-needed" do
-        [{"Authorization", "Bearer #{config.api_key}"}, {"Content-Type", "application/json"}]
-      else
-        [{"Content-Type", "application/json"}]
-      end
-
-    headers =
-      if String.contains?(config.endpoint, "openrouter.ai") do
-        headers ++
-          [
-            {"HTTP-Referer", "https://github.com/yoke"},
-            {"X-Title", "yoke"}
-          ]
-      else
-        headers
-      end
+    headers = build_headers(config, true)
 
     req_opts = [
       json: body,
@@ -396,6 +424,21 @@ defmodule Yoke.Client.DeepSeekAPI do
     trimmed = String.trim(endpoint)
 
     cond do
+      trimmed in ["openrouter", "https://openrouter.ai"] ->
+        "https://openrouter.ai/api/v1/chat/completions"
+
+      trimmed in ["opencode", "https://opencode.ai"] ->
+        "https://opencode.ai/zen/go/v1/chat/completions"
+
+      trimmed in ["ollama", "http://localhost:11434"] ->
+        "http://localhost:11434/v1/chat/completions"
+
+      trimmed in ["lmstudio", "http://localhost:1234"] ->
+        "http://localhost:1234/v1/chat/completions"
+
+      trimmed in ["vllm", "http://localhost:8000"] ->
+        "http://localhost:8000/v1/chat/completions"
+
       String.ends_with?(trimmed, "/chat/completions") ->
         trimmed
 
@@ -411,6 +454,21 @@ defmodule Yoke.Client.DeepSeekAPI do
   end
 
   def normalize_endpoint(endpoint), do: endpoint
+
+  @doc "Returns true if an endpoint target URL is an OpenCode service."
+  def opencode_endpoint?(endpoint) when is_binary(endpoint) do
+    String.contains?(String.downcase(endpoint), "opencode")
+  end
+
+  def opencode_endpoint?(_), do: false
+
+  @doc "Generates a unique UUID v4 string for session tracking."
+  def generate_session_id do
+    <<a::32, b::16, c::16, d::16, e::48>> = :crypto.strong_rand_bytes(16)
+
+    :io_lib.format("~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b", [a, b, c, d, e])
+    |> IO.iodata_to_binary()
+  end
 
   @doc "Returns true if an endpoint target URL is a local or loopback address."
   def local_endpoint?(endpoint) when is_binary(endpoint) do
