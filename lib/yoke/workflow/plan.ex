@@ -82,8 +82,12 @@ defmodule Yoke.Workflow.Plan do
       %{"role" => "user", "content" => user_prompt}
     ]
 
+    default_model =
+      System.get_env("DEEPSEEK_MODEL") ||
+        Map.get(Yoke.Config.load_config("."), "model", "deepseek-chat")
+
     call_opts =
-      [model: Keyword.get(opts, :model, "deepseek-chat")]
+      [model: Keyword.get(opts, :model, default_model)]
       |> maybe_put(:api_key, opts)
       |> maybe_put(:endpoint, opts)
       |> maybe_put(:session_id, opts)

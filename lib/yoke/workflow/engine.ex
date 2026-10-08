@@ -220,7 +220,11 @@ defmodule Yoke.Workflow.Engine do
       %{"role" => "user", "content" => user_prompt}
     ]
 
-    case DeepSeekAPI.chat_completion(messages, [], Keyword.put_new(opts, :model, "deepseek-chat")) do
+    default_model =
+      System.get_env("DEEPSEEK_MODEL") ||
+        Map.get(Yoke.Config.load_config("."), "model", "deepseek-chat")
+
+    case DeepSeekAPI.chat_completion(messages, [], Keyword.put_new(opts, :model, default_model)) do
       {:ok, %{content: content}} when is_binary(content) -> {:ok, content}
       {:ok, %{content: nil}} -> {:ok, ""}
       {:error, reason} -> {:error, reason}

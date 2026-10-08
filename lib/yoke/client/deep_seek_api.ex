@@ -175,7 +175,8 @@ defmodule Yoke.Client.DeepSeekAPI do
             System.get_env("OPENROUTER_API_KEY") ||
             System.get_env("OPENCODE_API_KEY") ||
             System.get_env("OPENCODE_ZEN_API_KEY") ||
-            System.get_env("LLM_API_KEY")
+            System.get_env("LLM_API_KEY") ||
+            Map.get(Yoke.Config.load_config(opts[:cwd] || "."), "api_key")
       end
 
     session_id =
@@ -196,8 +197,13 @@ defmodule Yoke.Client.DeepSeekAPI do
           nil
       end
 
+    configured_model =
+      opts[:model] ||
+        System.get_env("DEEPSEEK_MODEL") ||
+        Map.get(Yoke.Config.load_config(opts[:cwd] || "."), "model", @default_model)
+
     %ClientConfig{
-      model: opts[:model] || System.get_env("DEEPSEEK_MODEL") || @default_model,
+      model: configured_model,
       api_key: api_key,
       endpoint: normalized_endpoint,
       temperature: opts[:temperature] || 0.7,

@@ -33,6 +33,30 @@ defmodule Yoke.DeepSeekAPITest do
       assert cfg.max_tokens == 64_000
     end
 
+    test "respects DEEPSEEK_MODEL when model opt not provided" do
+      orig = System.get_env("DEEPSEEK_MODEL")
+      System.put_env("DEEPSEEK_MODEL", "deepseek-v4-flash")
+
+      try do
+        cfg = DeepSeekAPI.build_config([])
+        assert cfg.model == "deepseek-v4-flash"
+      after
+        if orig,
+          do: System.put_env("DEEPSEEK_MODEL", orig),
+          else: System.delete_env("DEEPSEEK_MODEL")
+      end
+    end
+
+    test "preserves explicit api_key on local endpoint when provided" do
+      cfg =
+        DeepSeekAPI.build_config(
+          api_key: "local-secret-key",
+          endpoint: "http://localhost:30000/v1"
+        )
+
+      assert cfg.api_key == "local-secret-key"
+    end
+
     test "preserves max_tokens through chat_completion opts" do
       messages = [%{"role" => "user", "content" => "Hello"}]
 

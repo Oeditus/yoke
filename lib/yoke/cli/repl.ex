@@ -27,9 +27,15 @@ defmodule Yoke.CLI.Repl do
         Yoke.CLI.Main.generate_uuid()
 
     session_opts = [
-      session_id: session_id,
-      model: opts[:model] || "deepseek-chat"
+      session_id: session_id
     ]
+
+    session_opts =
+      if opts[:model] do
+        Keyword.put(session_opts, :model, opts[:model])
+      else
+        session_opts
+      end
 
     session_opts =
       if opts[:endpoint] do

@@ -223,7 +223,14 @@ defmodule Yoke.Brain.Session do
 
     state = %{
       session_id: session_id,
-      model: opts[:model] || System.get_env("DEEPSEEK_MODEL") || "deepseek-chat",
+      model:
+        opts[:model] ||
+          System.get_env("DEEPSEEK_MODEL") ||
+          Map.get(
+            Config.load_config(cwd),
+            "model",
+            "deepseek-chat"
+          ),
       endpoint:
         opts[:endpoint] ||
           System.get_env("DEEPSEEK_ENDPOINT") ||

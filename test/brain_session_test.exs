@@ -25,6 +25,22 @@ defmodule Yoke.BrainSessionTest do
     assert info.model == "deepseek-reasoner"
   end
 
+  test "session actor initializes with DEEPSEEK_MODEL when model opt omitted" do
+    orig = System.get_env("DEEPSEEK_MODEL")
+    System.put_env("DEEPSEEK_MODEL", "deepseek-v4-flash")
+
+    try do
+      sess_id = "test_env_sess_#{System.unique_integer([:positive])}"
+      {:ok, sess_pid} = SessionSupervisor.start_session(session_id: sess_id)
+      info = Session.get_info(sess_pid)
+      assert info.model == "deepseek-v4-flash"
+    after
+      if orig,
+        do: System.put_env("DEEPSEEK_MODEL", orig),
+        else: System.delete_env("DEEPSEEK_MODEL")
+    end
+  end
+
   test "temporal state checkpoints and undo", %{pid: pid} do
     # Create manual checkpoint
     {:ok, cp1} = Session.checkpoint(pid, "Checkpoint 1")

@@ -11,12 +11,20 @@ defmodule Yoke.CLI.Main do
     # Ensure custom Yoke-style LogFormatter is installed
     Yoke.CLI.LogFormatter.install()
 
+    configure_ragex_ai()
+
     # Ensure application dependencies are started
     Application.ensure_all_started(:yoke)
 
     if workspace = System.get_env("YOKE_WORKSPACE") do
       File.cd!(workspace)
     end
+
+    args =
+      case args do
+        ["--" | rest] -> rest
+        other -> other
+      end
 
     {opts, extra_args, _invalid} =
       OptionParser.parse(args,
@@ -115,10 +123,16 @@ defmodule Yoke.CLI.Main do
 
   defp run_one_shot(opts, extra_args) do
     prompt = opts[:prompt] || Enum.join(extra_args, " ")
-    model = opts[:model] || "deepseek-chat"
     session_id = opts[:conversation] || opts[:resume] || generate_uuid()
 
-    session_opts = [session_id: session_id, model: model]
+    session_opts = [session_id: session_id]
+
+    session_opts =
+      if opts[:model] do
+        Keyword.put(session_opts, :model, opts[:model])
+      else
+        session_opts
+      end
 
     session_opts =
       if opts[:endpoint] do
@@ -166,6 +180,12 @@ defmodule Yoke.CLI.Main do
 
     :io_lib.format("~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b", [a, b, c, d, e])
     |> IO.iodata_to_binary()
+  end
+
+  @doc false
+  def configure_ragex_ai do
+    ai_cfg = Application.get_env(:ragex, :ai, [])
+    Application.put_env(:ragex, :ai, Keyword.put(ai_cfg, :providers, []))
   end
 
   defp print_usage do

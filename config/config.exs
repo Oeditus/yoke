@@ -15,6 +15,10 @@ config :ragex,
   dllb_mode: :per_project,
   start_stdio_server: false
 
+# Disable automatic AI provider validation in Ragex when embedded in Yoke.
+# Yoke manages its own LLM clients (DeepSeekAPI) and uses Ragex for graph/tools/embeddings.
+config :ragex, :ai, providers: []
+
 # Configure EXLA to disable log sink when NIF is uncompiled/unavailable.
 # Skipped entirely under the `escript` Mix env, which deliberately excludes
 # exla/nx/bumblebee/image from the dependency tree (see mix.exs) so the

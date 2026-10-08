@@ -408,9 +408,15 @@ defmodule Yoke.Practices do
         #{code_samples}
         """
 
+        target_model =
+          Keyword.get(opts, :model) ||
+            System.get_env("DEEPSEEK_MODEL") ||
+            Map.get(Yoke.Config.load_config(cwd), "model", "deepseek-chat")
+
         case Yoke.Client.DeepSeekAPI.chat_completion(
                [%{"role" => "user", "content" => prompt}],
-               model: "deepseek-chat",
+               [],
+               model: target_model,
                temperature: 0.3
              ) do
           {:ok, %{content: response_text}} ->

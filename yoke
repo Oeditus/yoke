@@ -101,8 +101,19 @@ release_needs_build() {
     return 0
   fi
 
+  local check_paths=()
+  for p in "${SCRIPT_DIR}/lib" "${SCRIPT_DIR}/config" "${SCRIPT_DIR}/priv" "${SCRIPT_DIR}/mix.exs" "${SCRIPT_DIR}/mix.lock"; do
+    [[ -e "$p" ]] && check_paths+=("$p")
+  done
+
+  if [[ ${#check_paths[@]} -eq 0 ]]; then
+    return 1
+  fi
+
   local newer_count
-  newer_count="$(find "${SCRIPT_DIR}/lib" "${SCRIPT_DIR}/config" "${SCRIPT_DIR}/priv" "${SCRIPT_DIR}/mix.exs" "${SCRIPT_DIR}/mix.lock" -type f -newer "${rel_bin}" 2>/dev/null | wc -l || echo 0)"
+  newer_count="$({ find "${check_paths[@]}" -type f -newer "${rel_bin}" 2>/dev/null || true; } | wc -l)"
+  newer_count="$(echo "${newer_count}" | tr -d '[:space:]')"
+  newer_count="${newer_count:-0}"
 
   if (( newer_count > 0 )); then
     echo "[INFO] Rebuilding release: ${newer_count} source file(s) newer than release binary."
@@ -133,7 +144,7 @@ case "$TARGET_ENV" in
     if release_needs_build "$PROD_REL"; then
       build_release "prod"
     fi
-    exec "$PROD_REL" eval "Yoke.CLI.Main.main(System.argv())" -- "${ARGS[@]}"
+    exec "$PROD_REL" eval "Yoke.CLI.Main.main(System.argv())" "${ARGS[@]}"
     ;;
 
   dev)
@@ -141,41 +152,41 @@ case "$TARGET_ENV" in
     if release_needs_build "$DEV_REL"; then
       build_release "dev"
     fi
-    exec "$DEV_REL" eval "Yoke.CLI.Main.main(System.argv())" -- "${ARGS[@]}"
+    exec "$DEV_REL" eval "Yoke.CLI.Main.main(System.argv())" "${ARGS[@]}"
     ;;
 
   *)
     if [[ -x "$PROD_REL" ]] && ! release_needs_build "$PROD_REL"; then
       export YOKE_ENV="prod"
-      exec "$PROD_REL" eval "Yoke.CLI.Main.main(System.argv())" -- "${ARGS[@]}"
+      exec "$PROD_REL" eval "Yoke.CLI.Main.main(System.argv())" "${ARGS[@]}"
     elif [[ -x "$DEV_REL" ]] && ! release_needs_build "$DEV_REL"; then
       export YOKE_ENV="dev"
-      exec "$DEV_REL" eval "Yoke.CLI.Main.main(System.argv())" -- "${ARGS[@]}"
+      exec "$DEV_REL" eval "Yoke.CLI.Main.main(System.argv())" "${ARGS[@]}"
     elif [[ -x "$PROD_REL" ]] || [[ -x "$DEV_REL" ]]; then
       # A release exists but is stale; rebuild the most recently used one.
       if [[ -x "$PROD_REL" ]] && [[ -x "$DEV_REL" ]]; then
         if [[ "$PROD_REL" -nt "$DEV_REL" ]]; then
           export YOKE_ENV="prod"
           build_release "prod"
-          exec "$PROD_REL" eval "Yoke.CLI.Main.main(System.argv())" -- "${ARGS[@]}"
+          exec "$PROD_REL" eval "Yoke.CLI.Main.main(System.argv())" "${ARGS[@]}"
         else
           export YOKE_ENV="dev"
           build_release "dev"
-          exec "$DEV_REL" eval "Yoke.CLI.Main.main(System.argv())" -- "${ARGS[@]}"
+          exec "$DEV_REL" eval "Yoke.CLI.Main.main(System.argv())" "${ARGS[@]}"
         fi
       elif [[ -x "$PROD_REL" ]]; then
         export YOKE_ENV="prod"
         build_release "prod"
-        exec "$PROD_REL" eval "Yoke.CLI.Main.main(System.argv())" -- "${ARGS[@]}"
+        exec "$PROD_REL" eval "Yoke.CLI.Main.main(System.argv())" "${ARGS[@]}"
       else
         export YOKE_ENV="dev"
         build_release "dev"
-        exec "$DEV_REL" eval "Yoke.CLI.Main.main(System.argv())" -- "${ARGS[@]}"
+        exec "$DEV_REL" eval "Yoke.CLI.Main.main(System.argv())" "${ARGS[@]}"
       fi
     else
       export YOKE_ENV="dev"
       cd "$SCRIPT_DIR"
-      exec mix run --no-halt -e "Yoke.CLI.Main.main(System.argv())" -- "${ARGS[@]}"
+      exec mix run --no-halt -e "Yoke.CLI.Main.main(System.argv())" "${ARGS[@]}"
     fi
     ;;
 esac
