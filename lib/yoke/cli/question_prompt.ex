@@ -148,8 +148,10 @@ defmodule Yoke.CLI.QuestionPrompt do
   end
 
   defp write_god_mode_notice(question, selected_opt) do
+    q_clean = question |> to_string() |> String.replace(~r/\s+/, " ") |> String.trim()
+
     q_short =
-      if String.length(question) > 60, do: String.slice(question, 0, 57) <> "...", else: question
+      if String.length(q_clean) > 60, do: String.slice(q_clean, 0, 57) <> "...", else: q_clean
 
     target = if Process.whereis(:user), do: :user, else: :stdio
 
@@ -648,16 +650,8 @@ defmodule Yoke.CLI.QuestionPrompt do
     blank_line =
       "#{Formatter.cyan()}│#{Formatter.reset()}#{String.duplicate(" ", inner_width)}#{Formatter.cyan()}│#{Formatter.reset()}"
 
-    # Question lines are indented 2 spaces left and 2 spaces right (usable text width 66)
-    q_wrapped = wrap_text(state.question, inner_width - 4)
-
-    q_lines =
-      Enum.map(q_wrapped, fn line ->
-        len = display_width(line)
-        pad = String.duplicate(" ", max(0, inner_width - 4 - len))
-
-        "#{Formatter.cyan()}│#{Formatter.reset()}  #{Formatter.bold()}#{line}#{Formatter.reset()}#{pad}  #{Formatter.cyan()}│#{Formatter.reset()}"
-      end)
+    # Question lines are formatted and wrapped to inner_width - 4 (usable width between borders)
+    q_lines = format_question_lines(state.question, inner_width - 4)
 
     search_lines =
       if Map.get(state, :filterable, false) do
@@ -760,6 +754,131 @@ defmodule Yoke.CLI.QuestionPrompt do
     %{state | rendered_lines: length(lines) - 1}
   end
 
+  @doc "Detects whether text contains markdown syntax, lists, or structured multi-line content."
+  def markdown?(text) when is_binary(text) do
+    String.contains?(text, ["\n", "##", "# ", "```", "`", "**", "* ", "- ", "+ ", "> "]) or
+      Regex.match?(~r/(^|\n)\s*(?:[-*+]|\d+\.)\s+/m, text)
+  end
+
+  def markdown?(_), do: false
+
+  @doc """
+  Formats and wraps question body lines for terminal modal rendering.
+
+  When markdown or plan formatting is detected, the text is rendered with
+  `Formatter.format_markdown/1` (Marcli) and wrapped to `max_len`, preserving
+  ANSI styling, list markers, and section breaks. Plain questions are wrapped
+  and rendered in bold.
+  """
+  def format_question_lines(question, max_len) when is_binary(question) do
+    if markdown?(question) do
+      rendered = Formatter.format_markdown(question) |> String.trim_trailing()
+
+      rendered
+      |> String.split(~r/\r?\n/)
+      |> Enum.flat_map(&wrap_marcli_line(&1, max_len))
+      |> Enum.map(fn line ->
+        len = display_width(line)
+        pad = String.duplicate(" ", max(0, max_len - len))
+
+        "#{Formatter.cyan()}│#{Formatter.reset()}  #{line}#{pad}  #{Formatter.cyan()}│#{Formatter.reset()}"
+      end)
+    else
+      question
+      |> wrap_text(max_len)
+      |> Enum.map(fn line ->
+        len = display_width(line)
+        pad = String.duplicate(" ", max(0, max_len - len))
+
+        "#{Formatter.cyan()}│#{Formatter.reset()}  #{Formatter.bold()}#{line}#{Formatter.reset()}#{pad}  #{Formatter.cyan()}│#{Formatter.reset()}"
+      end)
+    end
+  end
+
+  def format_question_lines(question, max_len) do
+    format_question_lines(to_string(question), max_len)
+  end
+
+  @doc "Wraps a single marcli-rendered line to fit within max_len columns, preserving list markers and ANSI styling."
+  def wrap_marcli_line(line, max_len) when is_binary(line) do
+    if display_width(line) <= max_len do
+      [line]
+    else
+      {prefix, cont_indent, content} = detect_line_indent(line)
+      words = String.split(content, ~r/\s+/, trim: true)
+      wrap_styled_words(words, max_len, prefix, cont_indent)
+    end
+  end
+
+  defp detect_line_indent(line) do
+    case Regex.run(~r/^(\s*(?:[▸•\-*+]|[①-⑳]|\d+[\.\)])\s*)/u, line) do
+      [_, prefix] ->
+        content = String.slice(line, String.length(prefix)..-1//1)
+        indent_len = display_width(prefix)
+        {prefix, String.duplicate(" ", indent_len), content}
+
+      _ ->
+        case Regex.run(~r/^(\s+)/, line) do
+          [_, spaces] ->
+            content = String.slice(line, String.length(spaces)..-1//1)
+            {spaces, spaces, content}
+
+          _ ->
+            {"", "", line}
+        end
+    end
+  end
+
+  defp wrap_styled_words([], _max_len, _first_prefix, _cont_prefix), do: [""]
+
+  defp wrap_styled_words(words, max_len, first_prefix, cont_prefix) do
+    init_state = {[], "", first_prefix, "", true}
+
+    {lines, current, _, _active_ansi, _} =
+      Enum.reduce(words, init_state, fn word, {lines_acc, cur, cur_pfx, active_ansi, is_first} ->
+        word_ansi = update_ansi_state(word, active_ansi)
+
+        word_str =
+          if not is_first and active_ansi != "" and not String.starts_with?(word, "\e[") do
+            active_ansi <> word
+          else
+            word
+          end
+
+        cand = if cur == "", do: cur_pfx <> word_str, else: cur <> " " <> word_str
+
+        if display_width(cand) <= max_len do
+          {lines_acc, cand, cur_pfx, word_ansi, false}
+        else
+          if cur == "" do
+            closed_cand = if active_ansi != "", do: cand <> "\e[0m", else: cand
+            {lines_acc ++ [closed_cand], "", cont_prefix, word_ansi, false}
+          else
+            closed_cur = if active_ansi != "", do: cur <> "\e[0m", else: cur
+
+            next_line_start =
+              if active_ansi != "" and not String.starts_with?(word, "\e[") do
+                cont_prefix <> active_ansi <> word
+              else
+                cont_prefix <> word
+              end
+
+            {lines_acc ++ [closed_cur], next_line_start, cont_prefix, word_ansi, false}
+          end
+        end
+      end)
+
+    if current != "", do: lines ++ [current], else: lines
+  end
+
+  defp update_ansi_state(text, current_ansi) do
+    Regex.scan(~r/\e\[[0-9;]*m/, text)
+    |> Enum.reduce(current_ansi, fn
+      ["\e[0m"], _acc -> ""
+      [seq], acc -> acc <> seq
+    end)
+  end
+
   defp wrap_text(text, max_len) do
     words = String.split(text, ~r/\s+/)
 
@@ -794,12 +913,34 @@ defmodule Yoke.CLI.QuestionPrompt do
           "#{sub_prefix}Question from AI"
       end
 
-    IO.write(
-      :user,
-      "\r\n" <>
-        Formatter.cyan() <>
-        "󰋗 #{label}: " <> Formatter.bold() <> question <> Formatter.reset() <> "\r\n"
-    )
+    if markdown?(question) do
+      rendered = Formatter.format_markdown(question) |> String.trim_trailing()
+
+      if String.contains?(question, "\n") do
+        IO.write(
+          :user,
+          "\r\n" <>
+            Formatter.cyan() <>
+            "󰋗 #{label}:\r\n" <>
+            Formatter.reset() <>
+            rendered <> "\r\n\r\n"
+        )
+      else
+        IO.write(
+          :user,
+          "\r\n" <>
+            Formatter.cyan() <>
+            "󰋗 #{label}: " <> Formatter.reset() <> rendered <> "\r\n"
+        )
+      end
+    else
+      IO.write(
+        :user,
+        "\r\n" <>
+          Formatter.cyan() <>
+          "󰋗 #{label}: " <> Formatter.bold() <> question <> Formatter.reset() <> "\r\n"
+      )
+    end
 
     options
     |> Enum.with_index()

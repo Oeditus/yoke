@@ -271,4 +271,103 @@ defmodule Yoke.CLI.QuestionPromptTest do
       assert state.clear_on_done == true
     end
   end
+
+  describe "Markdown and Plan rendering" do
+    test "markdown?/1 correctly detects markdown syntax and plans" do
+      refute QuestionPrompt.markdown?("Confirm?")
+      refute QuestionPrompt.markdown?("Select options:")
+      refute QuestionPrompt.markdown?("Which database to use?")
+
+      assert QuestionPrompt.markdown?("## Summary\n\nFix the bug")
+      assert QuestionPrompt.markdown?("- Item 1\n- Item 2")
+      assert QuestionPrompt.markdown?("`lib/yoke/cli/question_prompt.ex`")
+      assert QuestionPrompt.markdown?("Do you want to edit **important** file?")
+      assert QuestionPrompt.markdown?("Line 1\nLine 2")
+      assert QuestionPrompt.markdown?("1. First step\n2. Second step")
+    end
+
+    test "format_question_lines/2 formats plain questions in bold" do
+      lines = QuestionPrompt.format_question_lines("Confirm action?", 60)
+      assert length(lines) == 1
+      [line] = lines
+      assert line =~ "Confirm action?"
+      assert line =~ "\e[1m"
+      assert line =~ "│"
+    end
+
+    test "format_question_lines/2 renders plans with fancy Marcli styling" do
+      plan_md = """
+      Proposed plan:
+
+      ## Summary
+
+      Refactor prompt
+
+      ## Steps
+
+      - Step 1
+      - Step 2
+      """
+
+      lines = QuestionPrompt.format_question_lines(plan_md, 70)
+      joined = Enum.join(lines, "\n")
+
+      # Headers are Marcli-styled in bold cyan without raw "##"
+      assert joined =~ "Summary"
+      assert joined =~ "Steps"
+      refute joined =~ "## Summary"
+      refute joined =~ "## Steps"
+
+      # Lists are Marcli-styled with bullets
+      assert joined =~ "▸ Step 1"
+      assert joined =~ "▸ Step 2"
+
+      # Box borders │ are preserved on each line
+      Enum.each(lines, fn line ->
+        assert String.starts_with?(line, "\e[36m│")
+        assert String.ends_with?(line, "\e[36m│\e[0m")
+      end)
+    end
+
+    test "wrap_marcli_line/2 preserves list indentation across wrapped lines" do
+      long_bullet =
+        "  ▸ This is a very long step description that definitely exceeds fifty terminal columns in width and needs wrapping"
+
+      wrapped = QuestionPrompt.wrap_marcli_line(long_bullet, 50)
+      assert length(wrapped) > 1
+
+      [first | rest] = wrapped
+      assert String.starts_with?(first, "  ▸ ")
+
+      Enum.each(rest, fn line ->
+        assert String.starts_with?(line, "    ")
+      end)
+    end
+
+    test "render_modal displays fancy Marcli-formatted plan in question body" do
+      plan = %{
+        "summary" => "Add Marcli rendering to QuestionPrompt",
+        "steps" => [
+          "Format markdown with Marcli",
+          "Wrap lines respecting indentation and borders"
+        ],
+        "files" => ["lib/yoke/cli/question_prompt.ex"]
+      }
+
+      plan_text = Yoke.PlanGate.render_plan(plan)
+      question = "Here is the proposed plan -- approve it before I proceed:\n\n" <> plan_text
+
+      state = QuestionPrompt.new_state(question, ["Approve & execute", "Deny"], false, 2)
+      output = capture_io(:user, fn -> QuestionPrompt.render_modal(state) end)
+
+      assert output =~ "Question from AI"
+      assert output =~ "Summary"
+      assert output =~ "Steps"
+      assert output =~ "Files"
+      refute output =~ "## Summary"
+      refute output =~ "## Steps"
+      assert output =~ "▸ Format markdown with Marcli"
+      assert output =~ "lib/yoke/cli/question_prompt.ex"
+    end
+  end
 end
