@@ -54,6 +54,95 @@ defmodule Yoke.CLIReplTest do
     assert :continue = Repl.handle_input("/mcp", pid, id)
     assert :continue = Repl.handle_input("/mcp list", pid, id)
     assert :continue = Repl.handle_input("/mcp ls", pid, id)
+    assert :continue = Repl.handle_input("/jobs", pid, id)
+  end
+
+  describe "/jobs command surface" do
+    test "lists running jobs when empty or active", %{session_pid: pid, session_id: id} do
+      Yoke.TaskEngine.JobManager.kill_all_jobs()
+
+      out_empty =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/jobs", pid, id)
+        end)
+
+      assert out_empty =~ "No background jobs"
+
+      assert {:ok, job_id, _} = Yoke.TaskEngine.JobManager.start_job("sleep 10")
+
+      out_active =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/jobs", pid, id)
+        end)
+
+      assert out_active =~ "Running Background Jobs"
+      assert out_active =~ job_id
+      assert out_active =~ "sleep 10"
+
+      out_list =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/jobs list", pid, id)
+        end)
+
+      assert out_list =~ job_id
+
+      Yoke.TaskEngine.JobManager.kill_job(job_id)
+    end
+
+    test "kills specific job via /jobs kill <id>", %{session_pid: pid, session_id: id} do
+      assert {:ok, job_id, _} = Yoke.TaskEngine.JobManager.start_job("sleep 10")
+
+      out =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/jobs kill #{job_id}", pid, id)
+        end)
+
+      assert out =~ "Killed background job '#{job_id}'"
+      refute Yoke.TaskEngine.JobManager.running_jobs() |> Enum.any?(&(&1.id == job_id))
+
+      out_again =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/jobs kill #{job_id}", pid, id)
+        end)
+
+      assert out_again =~ "not currently running"
+    end
+
+    test "kills all jobs via /jobs kill all", %{session_pid: pid, session_id: id} do
+      assert {:ok, _j1, _} = Yoke.TaskEngine.JobManager.start_job("sleep 10")
+      assert {:ok, _j2, _} = Yoke.TaskEngine.JobManager.start_job("sleep 10")
+
+      out =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/jobs kill all", pid, id)
+        end)
+
+      assert out =~ "Killed"
+      assert Yoke.TaskEngine.JobManager.running_jobs() == []
+    end
+
+    test "handles error cases for /jobs kill", %{session_pid: pid, session_id: id} do
+      out_bare =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/jobs kill", pid, id)
+        end)
+
+      assert out_bare =~ "Usage: /jobs kill <id> | /jobs kill all"
+
+      out_unknown_sub =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/jobs foo", pid, id)
+        end)
+
+      assert out_unknown_sub =~ "Unknown jobs subcommand"
+
+      out_nonexistent =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/jobs kill non_existent_job_999", pid, id)
+        end)
+
+      assert out_nonexistent =~ "No job found with ID"
+    end
   end
 
   describe "/skills command surface" do

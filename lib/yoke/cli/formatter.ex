@@ -120,6 +120,7 @@ defmodule Yoke.CLI.Formatter do
       #{cyan()}/guide#{reset()} or #{cyan()}/docs#{reset()}        Display Getting Started & Customization Guide summary
       #{cyan()}/help#{reset()}                   Show this help menu
       #{cyan()}/import <path> [id]#{reset()}     Import an external session .lmml or JSON file into Yoke's session store
+      #{cyan()}/jobs [kill <id>|kill all]#{reset()} List or kill background jobs
       #{cyan()}/lessons [add <text>]#{reset()}   View or record operational lessons learned in project/lessons.md
       #{cyan()}/mcp [list|add|load]#{reset()}    Manage Model Context Protocol (MCP) servers and tools
       #{cyan()}/mode [local|remote|docker]#{reset()}  Set Hands execution target

@@ -118,6 +118,7 @@ my_app deepseek-chat >
 | `/cost` \| `/tokens` | Display token usage breakdown and cumulative session cost | `/cost` |
 | `/permissions` | Set tool execution safety mode (`auto` or `ask`) | `/permissions ask` |
 | `/subagent <prompt>` | Spawn a background subagent worker for heavy sub-tasks | `/subagent "Search all TODOs"` |
+| `/jobs [kill <id>|kill all]` | List running background jobs or kill specific/all jobs | `/jobs kill all` |
 | `/workflow [cmd]` | Run customizable multi-step workflows: `list\|run\|status\|resume\|abort\|init` | `/workflow run elixir Add dark mode` |
 | `/cb` \| `/clipboard` | Copy latest assistant response to system clipboard | `/cb` |
 | `/clear` | Clear terminal output screen | `/clear` |

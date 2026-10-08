@@ -6,6 +6,8 @@ defmodule Yoke.TaskEngine.JobManagerTest do
 
   setup do
     JobManager.ensure_started()
+    JobManager.kill_all_jobs()
+    on_exit(fn -> JobManager.kill_all_jobs() end)
     :ok
   end
 
@@ -68,14 +70,72 @@ defmodule Yoke.TaskEngine.JobManagerTest do
     refute JobManager.running_jobs() |> Enum.any?(&(&1.id == job_id))
   end
 
-  test "await_all/1 force-kills jobs still running after the timeout" do
-    assert {:ok, job_id, _log} = JobManager.start_job("sleep 10")
+  test "kill_all_jobs/0 kills all currently running background jobs" do
+    assert {:ok, job_1, _} = JobManager.start_job("sleep 10")
+    assert {:ok, job_2, _} = JobManager.start_job("sleep 10")
 
-    assert :ok = JobManager.await_all(300)
+    running_ids = JobManager.running_jobs() |> Enum.map(& &1.id)
+    assert job_1 in running_ids
+    assert job_2 in running_ids
 
-    assert {:ok, status_out} = JobManager.get_job_status(job_id)
-    assert status_out =~ "KILLED"
-    refute JobManager.running_jobs() |> Enum.any?(&(&1.id == job_id))
+    assert {:ok, count} = JobManager.kill_all_jobs()
+    assert count >= 2
+
+    assert {:ok, s1} = JobManager.get_job_status(job_1)
+    assert {:ok, s2} = JobManager.get_job_status(job_2)
+    assert s1 =~ "KILLED"
+    assert s2 =~ "KILLED"
+
+    running_after = JobManager.running_jobs() |> Enum.map(& &1.id)
+    refute job_1 in running_after
+    refute job_2 in running_after
+  end
+
+  test "status line ruler updates and properly redraws showing 1 job less when a job finishes" do
+    alias Yoke.CLI.LineEditor
+    alias Yoke.CLI.TerminalOwner
+
+    # Clean any leftover jobs
+    JobManager.kill_all_jobs()
+
+    # Start two jobs
+    assert {:ok, _job_1, _} = JobManager.start_job("sleep 0.2")
+    assert {:ok, job_2, _} = JobManager.start_job("sleep 10")
+
+    # Verify ruler shows 2 running jobs
+    ruler_2 = LineEditor.ruler_line()
+    assert ruler_2 =~ "2 running"
+
+    # Register a mock foreground surface in TerminalOwner to track redrawing
+    test_pid = self()
+
+    TerminalOwner.set(
+      fn state -> send(test_pid, {:erased, state}) end,
+      fn state -> send(test_pid, {:redrawn, state, LineEditor.ruler_line()}) end,
+      %{custom: :state}
+    )
+
+    # Wait for job_1 to finish naturally
+    Process.sleep(350)
+
+    # Validate that TerminalOwner was triggered to redraw upon job completion
+    assert_receive {:redrawn, %{custom: :state}, redrawn_ruler}, 2_000
+    assert redrawn_ruler =~ "1 running"
+    refute redrawn_ruler =~ "2 running"
+
+    # Check live ruler_line now shows 1 running job (1 job less!)
+    ruler_1 = LineEditor.ruler_line()
+    assert ruler_1 =~ "1 running"
+    refute ruler_1 =~ "2 running"
+
+    # Now kill the remaining job
+    assert {:ok, _} = JobManager.kill_job(job_2)
+
+    # Live ruler should now show 0 running jobs (idle status bar, no running badge)
+    ruler_0 = LineEditor.ruler_line()
+    refute ruler_0 =~ "running"
+
+    TerminalOwner.clear()
   end
 
   test "read_file supports start_line and end_line parameters" do

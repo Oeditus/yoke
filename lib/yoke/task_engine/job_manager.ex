@@ -54,6 +54,8 @@ defmodule Yoke.TaskEngine.JobManager do
     # Spawning Task.Supervisor.async_nolink INSIDE the Task.start process ensures
     # the monitor process is the owner of `task`, avoiding Task ownership ArgumentErrors
     # when calling Task.yield/2.
+    caller = self()
+
     {:ok, monitor_pid} =
       Task.start(fn ->
         task =
@@ -62,6 +64,7 @@ defmodule Yoke.TaskEngine.JobManager do
             fn ->
               # Register in PackageTracker under worker task
               PackageTracker.register("[job] #{label}", :job, id: id)
+              send(caller, {:job_worker_ready, id, self()})
 
               try do
                 case System.cmd("sh", ["-c", exec_cmd],
@@ -126,6 +129,13 @@ defmodule Yoke.TaskEngine.JobManager do
         notify_session(command, id, res, opts)
       end)
 
+    worker_pid =
+      receive do
+        {:job_worker_ready, ^id, pid} -> pid
+      after
+        1_000 -> nil
+      end
+
     job_info = %{
       id: id,
       command: command,
@@ -135,7 +145,7 @@ defmodule Yoke.TaskEngine.JobManager do
       exit_code: nil,
       log_file: log_file,
       task: nil,
-      worker_pid: nil,
+      worker_pid: worker_pid,
       monitor_pid: monitor_pid
     }
 
@@ -210,6 +220,10 @@ defmodule Yoke.TaskEngine.JobManager do
           Task.Supervisor.terminate_child(Yoke.TaskEngine.TaskSupervisor, info.worker_pid)
         end
 
+        if info.monitor_pid && Process.alive?(info.monitor_pid) do
+          Process.exit(info.monitor_pid, :kill)
+        end
+
         now = System.system_time(:second)
 
         Agent.update(__MODULE__, fn state ->
@@ -232,6 +246,18 @@ defmodule Yoke.TaskEngine.JobManager do
   @doc "Lists only currently `:running` background jobs."
   def running_jobs do
     list_jobs() |> Enum.filter(&(&1.status == :running))
+  end
+
+  @doc "Kills all currently running background jobs."
+  def kill_all_jobs do
+    ensure_started()
+    running = running_jobs()
+
+    Enum.each(running, fn job ->
+      kill_job(job.id)
+    end)
+
+    {:ok, length(running)}
   end
 
   @doc """
@@ -333,6 +359,10 @@ defmodule Yoke.TaskEngine.JobManager do
         _ -> :ok
       catch
         :exit, _ -> :ok
+      end
+    else
+      if Yoke.CLI.TerminalOwner.active?() do
+        Yoke.CLI.TerminalOwner.redraw()
       end
     end
   end

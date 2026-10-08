@@ -20,7 +20,8 @@ defmodule Yoke.TaskEngine.Supervisor do
       # Duplicate registry tracking long-running named "packages" (async
       # subagents, workflow parallel subtasks) so the status bar & spinner
       # can surface them. See `TaskEngine.PackageTracker`.
-      {Registry, keys: :duplicate, name: Yoke.PackageRegistry}
+      {Registry, keys: :duplicate, name: Yoke.PackageRegistry},
+      {Yoke.TaskEngine.JobManager, []}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

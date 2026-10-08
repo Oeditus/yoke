@@ -353,6 +353,12 @@ defmodule Yoke.LineEditorTest do
       assert {:ok, "/ragex reindex"} = LineEditor.tab_complete("/ragex re")
       assert {:ok, "/export markdown"} = LineEditor.tab_complete("/export mark")
     end
+
+    test "completes /jobs and its subcommands" do
+      assert {:ok, "/jobs"} = LineEditor.tab_complete("/job")
+      assert {:ok, "/jobs kill all"} = LineEditor.tab_complete("/jobs kill a")
+      assert {:ok, "/jobs kill"} = LineEditor.tab_complete("/jobs k")
+    end
   end
 
   describe "syntax highlighting and ghost suggestions" do

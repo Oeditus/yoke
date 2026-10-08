@@ -46,6 +46,7 @@ defmodule Yoke.CLI.LineEditor do
     "/god",
     "/guide",
     "/help",
+    "/jobs",
     "/lint",
     "/linter",
     "/mcp",
@@ -202,8 +203,7 @@ defmodule Yoke.CLI.LineEditor do
     branch_str = if branch != "", do: " 󰘬 #{branch}", else: ""
     sandbox = if sandbox?, do: " 󰌾 sandbox", else: ""
 
-    active_tasks = Yoke.TaskEngine.Supervisor.list_active_tasks()
-    task_count = length(active_tasks)
+    task_count = running_units_count()
 
     task_badge =
       if task_count > 0 do
@@ -284,12 +284,7 @@ defmodule Yoke.CLI.LineEditor do
     config = Config.load_config()
 
     context =
-      context
-      |> Map.put_new_lazy(:serving_processes, fn -> length(Process.list()) end)
-      |> Map.put_new_lazy(:frozen_packages, fn -> PackageTracker.list() end)
-      |> Map.put_new_lazy(:frozen_active_tasks, fn ->
-        Yoke.TaskEngine.Supervisor.list_active_tasks()
-      end)
+      Map.put_new_lazy(context, :serving_processes, fn -> length(Process.list()) end)
 
     %{
       buffer: [],
@@ -682,6 +677,7 @@ defmodule Yoke.CLI.LineEditor do
   ]
   @export_subcommands ["/export json", "/export lmml", "/export lmmlz", "/export markdown"]
   @skills_subcommands ["/skills show", "/skills path", "/skills edit", "/skills new"]
+  @jobs_subcommands ["/jobs kill", "/jobs kill all"]
 
   @doc """
   Tab-completes slash commands and subcommands given input.
@@ -700,6 +696,9 @@ defmodule Yoke.CLI.LineEditor do
 
       String.starts_with?(input, "/skills ") ->
         complete_candidates(input, @skills_subcommands)
+
+      String.starts_with?(input, "/jobs ") ->
+        complete_candidates(input, @jobs_subcommands)
 
       String.starts_with?(input, "/") ->
         complete_candidates(input, @slash_commands)
@@ -1088,7 +1087,13 @@ defmodule Yoke.CLI.LineEditor do
     config = Map.get(state, :config) || Config.load_config()
     state = Map.put_new(state, :config, config)
 
-    ruler = ruler_line(Map.get(state, :context, %{}))
+    context =
+      state
+      |> Map.get(:context, %{})
+      |> Map.delete(:frozen_packages)
+      |> Map.delete(:frozen_active_tasks)
+
+    ruler = ruler_line(context)
     {prompt_str, text_str, cursor_offset} = compute_display(state)
     prompt_visible_len = strip_ansi_length(prompt_str)
 
@@ -1303,7 +1308,13 @@ defmodule Yoke.CLI.LineEditor do
     config = Map.get(state, :config) || Config.load_config()
     state = Map.put_new(state, :config, config)
 
-    ruler = ruler_line(Map.get(state, :context, %{}))
+    context =
+      state
+      |> Map.get(:context, %{})
+      |> Map.delete(:frozen_packages)
+      |> Map.delete(:frozen_active_tasks)
+
+    ruler = ruler_line(context)
     {prompt_str, text_str, cursor_offset} = compute_display(state)
     prompt_visible_len = strip_ansi_length(prompt_str)
 
@@ -1504,7 +1515,8 @@ defmodule Yoke.CLI.LineEditor do
   #      (token/cost gauge, or a compact session summary -- Ctrl+B/
   #      `/config toggle compact_status_bar` to switch)
   #   3. A plain dim divider, when the status bar is disabled entirely
-  defp ruler_line(context) do
+  @doc "Renders the status bar ruler line above the prompt."
+  def ruler_line(context \\ %{}) do
     cols = terminal_cols()
     packages = (is_map(context) && Map.get(context, :frozen_packages)) || PackageTracker.list()
 

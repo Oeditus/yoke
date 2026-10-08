@@ -76,6 +76,22 @@ defmodule Yoke.CLI.TerminalOwner do
     _, _ -> IO.write(line)
   end
 
+  @doc "Redraws the currently registered surface in place without printing any line."
+  def redraw do
+    case Process.whereis(__MODULE__) && Agent.get(__MODULE__, & &1) do
+      %{erase: erase, redraw: redraw, state: state} ->
+        erase.(state)
+        redraw.(state)
+
+      _ ->
+        :ok
+    end
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
   defp ensure_started do
     case Process.whereis(__MODULE__) do
       nil ->

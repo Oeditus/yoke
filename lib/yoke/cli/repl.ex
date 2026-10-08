@@ -15,6 +15,7 @@ defmodule Yoke.CLI.Repl do
   alias Yoke.Skill.Manager, as: SkillManager
 
   alias Yoke.CLI.LineEditor
+  alias Yoke.TaskEngine.JobManager
 
   def start(opts \\ []) do
     MCPServerManager.await_ragex()
@@ -2059,6 +2060,121 @@ defmodule Yoke.CLI.Repl do
       end)
 
     IO.puts(Formatter.format_success("Cleaned up #{removed_count} stale/empty session(s)."))
+    :continue
+  end
+
+  def handle_input("/jobs kill all", _session_pid, _session_id) do
+    case JobManager.kill_all_jobs() do
+      {:ok, 0} ->
+        IO.puts(Formatter.format_info("No background jobs currently running."))
+
+      {:ok, count} ->
+        IO.puts(Formatter.format_success("Killed #{count} background job(s)."))
+    end
+
+    :continue
+  end
+
+  def handle_input("/jobs kill " <> target, _session_pid, _session_id) do
+    target = String.trim(target)
+
+    cond do
+      target == "" ->
+        IO.puts(Formatter.format_error("Usage: /jobs kill <id> | /jobs kill all"))
+
+      target == "all" ->
+        handle_input("/jobs kill all", nil, nil)
+
+      true ->
+        case JobManager.kill_job(target) do
+          {:ok, msg} ->
+            if String.contains?(msg, "not currently running") do
+              IO.puts(Formatter.format_info(msg))
+            else
+              IO.puts(Formatter.format_success(msg))
+            end
+
+          {:error, err} ->
+            IO.puts(Formatter.format_error(err))
+        end
+    end
+
+    :continue
+  end
+
+  def handle_input("/jobs kill", _session_pid, _session_id) do
+    IO.puts(Formatter.format_error("Usage: /jobs kill <id> | /jobs kill all"))
+    :continue
+  end
+
+  def handle_input("/jobs status " <> target, _session_pid, _session_id) do
+    target = String.trim(target)
+
+    case JobManager.get_job_status(target) do
+      {:ok, out} ->
+        IO.puts("\n" <> out <> "\n")
+
+      {:error, err} ->
+        IO.puts(Formatter.format_error(err))
+    end
+
+    :continue
+  end
+
+  def handle_input("/jobs list", session_pid, session_id) do
+    handle_input("/jobs", session_pid, session_id)
+  end
+
+  def handle_input("/jobs", _session_pid, _session_id) do
+    running = JobManager.running_jobs()
+
+    if Enum.empty?(running) do
+      IO.puts(Formatter.format_info("No background jobs currently running."))
+    else
+      now = System.system_time(:second)
+
+      rows =
+        Enum.map_join(running, "\n", fn job ->
+          elapsed = max(0, now - job.started_at)
+          "- `#{job.id}`: `#{job.command}` (#{elapsed}s elapsed) — log: `#{job.log_file}`"
+        end)
+
+      md = """
+      ### Running Background Jobs (#{length(running)})
+
+      #{rows}
+
+      *Tip: Use `/jobs kill <id>` to kill a job, or `/jobs kill all` to kill all.*
+      """
+
+      IO.puts("\n" <> Formatter.format_markdown(md) <> "\n")
+    end
+
+    :continue
+  end
+
+  def handle_input("/jobs " <> other, session_pid, session_id) do
+    case String.trim(other) do
+      "" ->
+        handle_input("/jobs", session_pid, session_id)
+
+      "kill" ->
+        handle_input("/jobs kill", session_pid, session_id)
+
+      "kill " <> target ->
+        handle_input("/jobs kill " <> target, session_pid, session_id)
+
+      "status " <> target ->
+        handle_input("/jobs status " <> target, session_pid, session_id)
+
+      _ ->
+        IO.puts(
+          Formatter.format_error(
+            "Unknown jobs subcommand. Usage: /jobs | /jobs kill <id> | /jobs kill all"
+          )
+        )
+    end
+
     :continue
   end
 
