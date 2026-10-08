@@ -354,7 +354,8 @@ defmodule Yoke.Plugin.DefaultTools do
 
   def read_file(%{"path" => path} = args) do
     case File.read(path) do
-      {:ok, content} ->
+      {:ok, raw_content} ->
+        content = Yoke.Json.sanitize_utf8(raw_content)
         start_line = Map.get(args, "start_line")
         end_line = Map.get(args, "end_line")
 
@@ -483,8 +484,11 @@ defmodule Yoke.Plugin.DefaultTools do
       {env, exec_cmd} = Yoke.TaskEngine.JobManager.prepare_environment(cmd)
 
       case System.cmd("sh", ["-c", exec_cmd], env: env, stderr_to_stdout: true) do
-        {output, 0} -> {:ok, output}
-        {output, code} -> {:ok, "Command exited with status #{code}:\n#{output}"}
+        {output, 0} ->
+          {:ok, Yoke.Json.sanitize_utf8(output)}
+
+        {output, code} ->
+          {:ok, Yoke.Json.sanitize_utf8("Command exited with status #{code}:\n#{output}")}
       end
     end
   rescue

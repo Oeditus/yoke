@@ -1570,13 +1570,17 @@ defmodule Yoke.Brain.Session do
                   tool_msg =
                     case exec_res do
                       {:ok, result} ->
-                        %{"role" => "tool", "tool_call_id" => tc.id, "content" => result}
+                        %{
+                          "role" => "tool",
+                          "tool_call_id" => tc.id,
+                          "content" => Yoke.Json.sanitize_utf8(result)
+                        }
 
                       {:error, err} ->
                         %{
                           "role" => "tool",
                           "tool_call_id" => tc.id,
-                          "content" => "Tool execution failed: #{err}"
+                          "content" => Yoke.Json.sanitize_utf8("Tool execution failed: #{err}")
                         }
                     end
 

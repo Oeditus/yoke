@@ -61,4 +61,36 @@ defmodule Yoke.JsonTest do
       assert {:ok, ~s({"a":1})} = Json.encode(%{"a" => 1})
     end
   end
+
+  describe "sanitize_utf8/1 and resilient encoding" do
+    test "sanitizes invalid UTF-8 byte sequences including byte 29" do
+      bad = <<"hello ", 194, 29, " world">>
+      refute String.valid?(bad)
+
+      cleaned = Json.sanitize_utf8(bad)
+      assert String.valid?(cleaned)
+      assert cleaned == <<"hello \u001D world">>
+    end
+
+    test "encode!/1 successfully encodes maps containing invalid bytes" do
+      bad_map = %{"text" => <<"hello ", 194, 29, " world">>}
+      json = Json.encode!(bad_map)
+      assert {:ok, decoded} = Json.decode(json)
+      assert decoded["text"] == "hello \u001D world"
+    end
+
+    test "encode!/2 with pretty: true successfully encodes maps containing invalid bytes" do
+      bad_map = %{"text" => <<"hello ", 194, 29, " world">>}
+      json = Json.encode!(bad_map, pretty: true)
+      assert {:ok, decoded} = Json.decode(json)
+      assert decoded["text"] == "hello \u001D world"
+    end
+
+    test "encode/2 successfully returns {:ok, binary} on invalid byte input" do
+      bad_map = %{"text" => <<"hello ", 194, 29, " world">>}
+      assert {:ok, json} = Json.encode(bad_map)
+      assert {:ok, decoded} = Json.decode(json)
+      assert decoded["text"] == "hello \u001D world"
+    end
+  end
 end

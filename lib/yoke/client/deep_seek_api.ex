@@ -326,36 +326,7 @@ defmodule Yoke.Client.DeepSeekAPI do
   end
 
   @doc "Recursively sanitizes binary strings within data structures to ensure valid UTF-8 encoding."
-  def sanitize_utf8(binary) when is_binary(binary) do
-    if String.valid?(binary) do
-      binary
-    else
-      scrub_utf8(binary, "")
-    end
-  end
-
-  def sanitize_utf8(list) when is_list(list), do: Enum.map(list, &sanitize_utf8/1)
-
-  def sanitize_utf8(map) when is_map(map) and not is_struct(map) do
-    Map.new(map, fn {k, v} -> {sanitize_utf8(k), sanitize_utf8(v)} end)
-  end
-
-  def sanitize_utf8(other), do: other
-
-  defp scrub_utf8(<<>>, acc), do: acc
-
-  defp scrub_utf8(str, acc) when is_binary(str) do
-    case :unicode.characters_to_binary(str, :utf8, :utf8) do
-      cleaned when is_binary(cleaned) ->
-        acc <> cleaned
-
-      {:error, valid, <<_bad_byte, rest::binary>>} ->
-        scrub_utf8(rest, acc <> valid <> "")
-
-      {:incomplete, valid, bad} ->
-        acc <> valid <> String.duplicate("", byte_size(bad))
-    end
-  end
+  defdelegate sanitize_utf8(term), to: Yoke.Json
 
   defp format_tools(tools) do
     Enum.map(tools, fn t ->

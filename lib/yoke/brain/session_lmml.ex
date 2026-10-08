@@ -59,6 +59,7 @@ defmodule Yoke.Brain.SessionLmml do
   """
   @spec encode(map(), String.t()) :: {:ok, binary()} | {:error, term()}
   def encode(session_state, session_id) do
+    session_state = sanitize_session_state(session_state)
     manifest = build_manifest(session_state, session_id)
     messages = Map.get(session_state, :messages, [])
 
@@ -404,4 +405,22 @@ defmodule Yoke.Brain.SessionLmml do
   end
 
   defp readable_text(_), do: ""
+
+  defp sanitize_session_state(session_state) when is_map(session_state) do
+    images = Map.get(session_state, :images) || Map.get(session_state, "images")
+
+    clean_state =
+      session_state
+      |> Map.delete(:images)
+      |> Map.delete("images")
+      |> Yoke.Json.sanitize_utf8()
+
+    cond do
+      Map.has_key?(session_state, :images) -> Map.put(clean_state, :images, images)
+      Map.has_key?(session_state, "images") -> Map.put(clean_state, "images", images)
+      true -> clean_state
+    end
+  end
+
+  defp sanitize_session_state(other), do: other
 end

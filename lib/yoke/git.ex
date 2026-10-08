@@ -71,14 +71,17 @@ defmodule Yoke.Git do
     else
       case System.cmd("git", ["diff", target_str], cd: cwd, stderr_to_stdout: true) do
         {out, 0} ->
-          if String.trim(out) == "" do
+          clean_out = Yoke.Json.sanitize_utf8(out)
+
+          if String.trim(clean_out) == "" do
             {:ok, "No diff changes against '#{target_str}'."}
           else
-            {:ok, colorize_diff(out)}
+            {:ok, colorize_diff(clean_out)}
           end
 
         {out, code} ->
-          {:error, "git diff #{target_str} exited with status #{code}: #{out}"}
+          {:error,
+           "git diff #{target_str} exited with status #{code}: #{Yoke.Json.sanitize_utf8(out)}"}
       end
     end
   rescue
@@ -88,14 +91,16 @@ defmodule Yoke.Git do
   def diff(_, cwd) do
     case System.cmd("git", ["diff"], cd: cwd, stderr_to_stdout: true) do
       {out, 0} ->
-        if String.trim(out) == "" do
+        clean_out = Yoke.Json.sanitize_utf8(out)
+
+        if String.trim(clean_out) == "" do
           {:ok, "No unstaged changes in git repository."}
         else
-          {:ok, colorize_diff(out)}
+          {:ok, colorize_diff(clean_out)}
         end
 
       {out, code} ->
-        {:error, "git diff exited with status #{code}: #{out}"}
+        {:error, "git diff exited with status #{code}: #{Yoke.Json.sanitize_utf8(out)}"}
     end
   rescue
     e -> {:error, "Git diff failed: #{Exception.message(e)}"}
@@ -125,9 +130,11 @@ defmodule Yoke.Git do
          {raw_diff, 0} <- System.cmd("git", ["diff", range], cd: cwd, stderr_to_stdout: true) do
       diff_payload =
         if byte_size(raw_diff) > 300_000 do
-          binary_part(raw_diff, 0, 300_000) <> "\n... [Diff truncated at 300KB]"
+          binary_part(raw_diff, 0, 300_000)
+          |> Yoke.Json.sanitize_utf8()
+          |> Kernel.<>("\n... [Diff truncated at 300KB]")
         else
-          raw_diff
+          Yoke.Json.sanitize_utf8(raw_diff)
         end
 
       {:ok,

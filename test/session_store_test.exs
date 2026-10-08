@@ -391,4 +391,38 @@ defmodule Yoke.Brain.SessionStoreTest do
     assert log_content =~ "err_test_sess"
     assert log_content =~ "SUCCESS (JSON Fallback Saved)"
   end
+
+  test "successfully saves and round-trips a session containing invalid UTF-8 bytes like byte 29",
+       %{
+         tmp_dir: tmp_dir
+       } do
+    session_state = %{
+      session_id: "invalid_byte_session",
+      model: "deepseek-chat",
+      permission_mode: :ask_confirm,
+      step_count: 1,
+      total_prompt_tokens: 10,
+      total_completion_tokens: 10,
+      messages: [
+        %{"role" => "user", "content" => <<"bad byte prompt ", 194, 29, " test">>},
+        %{"role" => "assistant", "content" => "OK"},
+        %{
+          "role" => "tool",
+          "tool_call_id" => "call_1",
+          "content" => <<"tool result with byte ", 29>>
+        }
+      ],
+      snapshots: []
+    }
+
+    assert {:ok, file_path} = SessionStore.save_session(session_state, tmp_dir)
+    assert File.exists?(file_path)
+
+    dir = SessionStore.session_dir(tmp_dir)
+    log_path = Path.join(dir, "invalid_byte_session.lmml_error.log")
+    refute File.exists?(log_path)
+
+    assert {:ok, loaded} = SessionStore.load_session("invalid_byte_session", tmp_dir)
+    assert length(loaded["messages"]) == 3
+  end
 end

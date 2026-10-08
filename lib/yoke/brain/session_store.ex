@@ -24,6 +24,7 @@ defmodule Yoke.Brain.SessionStore do
 
   @doc "Saves session state and snapshots to disk as an `.lmml` narrative or `.lmmlz` zipped container."
   def save_session(session_state, cwd \\ ".") do
+    session_state = sanitize_session_state(session_state)
     session_id = session_state.session_id
     dir = session_dir(cwd)
     images = Map.get(session_state, :images) || Map.get(session_state, "images") || %{}
@@ -72,8 +73,27 @@ defmodule Yoke.Brain.SessionStore do
     inspect(err, pretty: true, limit: :infinity)
   end
 
+  defp sanitize_session_state(session_state) when is_map(session_state) do
+    images = Map.get(session_state, :images) || Map.get(session_state, "images")
+
+    clean_state =
+      session_state
+      |> Map.delete(:images)
+      |> Map.delete("images")
+      |> Yoke.Json.sanitize_utf8()
+
+    cond do
+      Map.has_key?(session_state, :images) -> Map.put(clean_state, :images, images)
+      Map.has_key?(session_state, "images") -> Map.put(clean_state, "images", images)
+      true -> clean_state
+    end
+  end
+
+  defp sanitize_session_state(other), do: other
+
   @doc false
   def fallback_save(session_state, dir, session_id, primary_error) do
+    session_state = sanitize_session_state(session_state)
     json_path = Path.join(dir, "#{session_id}.json")
 
     case Yoke.Json.encode(session_state, pretty: true) do

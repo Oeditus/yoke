@@ -281,17 +281,15 @@ defmodule Yoke.CLI.LineEditor do
 
   @doc "Builds a fresh editor state for a new input line."
   def new_state(prompt_text, history \\ [], context \\ %{}) do
-    # `gauge_content/1` and `compact_session_content/1` fall back to a live
-    # `length(Process.list())` count whenever `:serving_processes` is absent
-    # from `context`. That count naturally drifts from one BEAM scheduler
-    # tick to the next (timers, monitors, GC helper processes, etc.), so
-    # leaving it to be recomputed on every `render_bar/1` call would make
-    # `render_signature/1` compare unequal almost every keystroke -- quietly
-    # defeating the "skip redraw unless changed" optimization below and
-    # reintroducing the exact status-bar blinking it exists to prevent.
-    # Freezing it once here, for the lifetime of this single line-edit
-    # session, keeps the signature stable while the user is simply typing.
-    context = Map.put_new_lazy(context, :serving_processes, fn -> length(Process.list()) end)
+    config = Config.load_config()
+
+    context =
+      context
+      |> Map.put_new_lazy(:serving_processes, fn -> length(Process.list()) end)
+      |> Map.put_new_lazy(:frozen_packages, fn -> PackageTracker.list() end)
+      |> Map.put_new_lazy(:frozen_active_tasks, fn ->
+        Yoke.TaskEngine.Supervisor.list_active_tasks()
+      end)
 
     %{
       buffer: [],
@@ -300,6 +298,7 @@ defmodule Yoke.CLI.LineEditor do
       hist_idx: -1,
       saved_buffer: [],
       prompt: prompt_text,
+      config: config,
       search_mode: false,
       search_query: [],
       search_offset: 0,
@@ -311,20 +310,17 @@ defmodule Yoke.CLI.LineEditor do
       last_rows: 0,
       # Absolute row (0-indexed from the very top of the last-drawn
       # ruler+prompt block) where the terminal's REAL cursor was left after
-      # the last draw. `draw_only/1` moves the cursor from the bottom of
-      # the block up to wherever the logical cursor belongs (see
-      # `compute_cursor_positioning/4`), so on a multi-row buffer the
-      # physical cursor often does NOT sit on the last row. `erase_prefix/1`
-      # must move up by exactly this many rows -- not `last_rows - 1`,
-      # which silently assumes the cursor is always at the bottom -- or
-      # moving the cursor within a multi-line/wrapped entry (arrow keys,
-      # Home/End) desyncs the next erase and the status bar visibly drifts.
+      # the last draw.
       last_cursor_row: 0,
-      # Signature of the last-rendered ruler+prompt+text block plus the
-      # cursor's {row, col}. Used by `render_bar/1` to skip the erase+redraw
-      # entirely when nothing visible changed (see `render_signature/1`), so
-      # the status bar stops blinking on every keystroke.
+      last_content_rows: 1,
+      last_content_cursor_row: 0,
       last_render: nil,
+      last_ruler: nil,
+      last_ruler_rows: 1,
+      last_prompt: nil,
+      last_prompt_len: 0,
+      last_text: nil,
+      last_cols: 0,
       # Maps a collapsed paste placeholder chip (e.g. "📋 [42 lines]",
       # inserted by `handle_paste/2` for a large clipboard paste) back to
       # the full original pasted text, so `handle_enter/1` can expand it
@@ -1088,33 +1084,10 @@ defmodule Yoke.CLI.LineEditor do
   # ---------------------------------------------------------------------
 
   defp render_bar(state) do
-    # "Redraw if and only if changed": compute the full render signature
-    # (ruler + prompt + text + cursor position) and, if it matches the last
-    # render exactly, skip the erase+redraw cycle entirely. This stops the
-    # status bar from blinking on every keystroke -- the common fast-typing
-    # path produces an identical surface (same buffer, same ruler, same
-    # cursor) and would otherwise erase and redraw it pointlessly, which is
-    # what reads as flicker. Only re-register with TerminalOwner so an
-    # interjecting log line still redraws the current (unchanged) surface.
-    signature = render_signature(state)
-
-    if signature == Map.get(state, :last_render, :sentinel) do
-      TerminalOwner.set(&erase_only/1, &draw_only/1, state)
-      state
-    else
-      erase_only(state)
-      new_state = draw_only(state)
-      %{new_state | last_render: signature}
-    end
-  end
-
-  # A single tuple capturing everything that affects what is written to the
-  # terminal: the ruler string, the prompt+text string, and the cursor's
-  # {row, col}. `last_rows` is deliberately omitted -- it is a pure function
-  # of the ruler/text widths, so if those are unchanged it is unchanged too,
-  # and including it would only make the comparison noisier.
-  defp render_signature(state) do
     cols = terminal_cols()
+    config = Map.get(state, :config) || Config.load_config()
+    state = Map.put_new(state, :config, config)
+
     ruler = ruler_line(Map.get(state, :context, %{}))
     {prompt_str, text_str, cursor_offset} = compute_display(state)
     prompt_visible_len = strip_ansi_length(prompt_str)
@@ -1126,26 +1099,213 @@ defmodule Yoke.CLI.LineEditor do
 
     {cursor_row, cursor_col} =
       layout_cursor(prompt_visible_len, raw_cursor_text, cursor_index, cols)
-
-    {ruler, prompt_str <> text_str, cursor_row, cursor_col}
-  end
-
-  # Writes the ruler+prompt+text block fresh (no erase of any prior render
-  # -- callers erase separately via `erase_only/1` when needed) and
-  # re-registers the result with `TerminalOwner` so an interjecting log
-  # line always has an up-to-date snapshot to redraw. Split out from
-  # `render_bar/1` so `Yoke.CLI.LogFormatter` can redraw this
-  # surface on its own, after it has already erased it.
-  defp draw_only(state) do
-    cols = terminal_cols()
-    ruler = ruler_line(Map.get(state, :context, %{}))
-    {prompt_str, text_str, cursor_offset} = compute_display(state)
-    prompt_visible_len = strip_ansi_length(prompt_str)
 
     ruler_rows = rows_for(display_width(ruler), cols)
     content_rows = layout_rows(prompt_visible_len, text_str, cols)
 
-    IO.write(ruler <> "\r\n" <> to_crlf(prompt_str <> text_str))
+    {positioning_seq, content_target_row} =
+      compute_cursor_positioning(cursor_row, cursor_col, content_rows, cols)
+
+    signature = {ruler, prompt_str, text_str, cursor_row, cursor_col, cols}
+
+    cond do
+      # 1. Nothing visible changed: skip rendering entirely
+      signature == Map.get(state, :last_render, :sentinel) ->
+        TerminalOwner.set(&erase_full/1, &draw_full/1, state)
+        state
+
+      # 2. First render: write ruler + prompt prefix + text atomically
+      Map.get(state, :first_render, true) ->
+        draw_full_initial(
+          state,
+          ruler,
+          ruler_rows,
+          prompt_str,
+          prompt_visible_len,
+          text_str,
+          content_rows,
+          content_target_row,
+          positioning_seq,
+          signature,
+          cols
+        )
+
+      # 3. Structural change: terminal resized, ruler changed (e.g. Ctrl+P/G/B mode toggle),
+      # or prompt prefix changed (e.g. reverse-search mode toggled)
+      cols != Map.get(state, :last_cols) or
+        ruler != Map.get(state, :last_ruler) or
+          prompt_str != Map.get(state, :last_prompt) ->
+        draw_full_refresh(
+          state,
+          ruler,
+          ruler_rows,
+          prompt_str,
+          prompt_visible_len,
+          text_str,
+          content_rows,
+          content_target_row,
+          positioning_seq,
+          signature,
+          cols
+        )
+
+      # 4. User is typing / editing: ruler and prompt prefix are 100% UNTOUCHED!
+      # We update ONLY the text content in-place after the prompt prefix.
+      # No erasing of the ruler, no erasing of the prompt prefix, zero blinking.
+      true ->
+        draw_inplace_content(
+          state,
+          ruler,
+          ruler_rows,
+          prompt_str,
+          prompt_visible_len,
+          text_str,
+          content_rows,
+          content_target_row,
+          positioning_seq,
+          signature,
+          cols
+        )
+    end
+  end
+
+  # credo:disable-for-next-line
+  defp draw_full_initial(
+         state,
+         ruler,
+         ruler_rows,
+         prompt_str,
+         prompt_len,
+         text_str,
+         content_rows,
+         content_target_row,
+         positioning_seq,
+         signature,
+         cols
+       ) do
+    payload = ruler <> "\r\n" <> to_crlf_clean(prompt_str <> text_str) <> positioning_seq
+    IO.write(payload)
+
+    new_state = %{
+      state
+      | first_render: false,
+        last_render: signature,
+        last_ruler: ruler,
+        last_ruler_rows: ruler_rows,
+        last_prompt: prompt_str,
+        last_prompt_len: prompt_len,
+        last_text: text_str,
+        last_content_rows: content_rows,
+        last_content_cursor_row: content_target_row,
+        last_rows: ruler_rows + content_rows,
+        last_cursor_row: ruler_rows + content_target_row,
+        last_cols: cols
+    }
+
+    TerminalOwner.set(&erase_full/1, &draw_full/1, new_state)
+    new_state
+  end
+
+  # credo:disable-for-next-line
+  defp draw_full_refresh(
+         state,
+         ruler,
+         ruler_rows,
+         prompt_str,
+         prompt_len,
+         text_str,
+         content_rows,
+         content_target_row,
+         positioning_seq,
+         signature,
+         cols
+       ) do
+    erase_seq = erase_prefix(state)
+
+    payload =
+      erase_seq <> ruler <> "\r\n" <> to_crlf_clean(prompt_str <> text_str) <> positioning_seq
+
+    IO.write(payload)
+
+    new_state = %{
+      state
+      | first_render: false,
+        last_render: signature,
+        last_ruler: ruler,
+        last_ruler_rows: ruler_rows,
+        last_prompt: prompt_str,
+        last_prompt_len: prompt_len,
+        last_text: text_str,
+        last_content_rows: content_rows,
+        last_content_cursor_row: content_target_row,
+        last_rows: ruler_rows + content_rows,
+        last_cursor_row: ruler_rows + content_target_row,
+        last_cols: cols
+    }
+
+    TerminalOwner.set(&erase_full/1, &draw_full/1, new_state)
+    new_state
+  end
+
+  # credo:disable-for-next-line
+  defp draw_inplace_content(
+         state,
+         ruler,
+         ruler_rows,
+         prompt_str,
+         prompt_len,
+         text_str,
+         content_rows,
+         content_target_row,
+         positioning_seq,
+         signature,
+         cols
+       ) do
+    prev_row = Map.get(state, :last_content_cursor_row, 0)
+    prev_content_rows = Map.get(state, :last_content_rows, 1)
+
+    move_to_input_start =
+      if(prev_row > 0, do: "\e[#{prev_row}A", else: "") <>
+        "\r" <>
+        if prompt_len > 0, do: "\e[#{prompt_len}C", else: ""
+
+    cleanup =
+      if prev_content_rows > content_rows do
+        "\e[J"
+      else
+        "\e[K"
+      end
+
+    payload = move_to_input_start <> to_crlf_clean(text_str) <> cleanup <> positioning_seq
+    IO.write(payload)
+
+    new_state = %{
+      state
+      | last_render: signature,
+        last_ruler: ruler,
+        last_ruler_rows: ruler_rows,
+        last_prompt: prompt_str,
+        last_prompt_len: prompt_len,
+        last_text: text_str,
+        last_content_rows: content_rows,
+        last_content_cursor_row: content_target_row,
+        last_rows: ruler_rows + content_rows,
+        last_cursor_row: ruler_rows + content_target_row,
+        last_cols: cols
+    }
+
+    TerminalOwner.set(&erase_full/1, &draw_full/1, new_state)
+    new_state
+  end
+
+  defp draw_full(state) do
+    cols = terminal_cols()
+    config = Map.get(state, :config) || Config.load_config()
+    state = Map.put_new(state, :config, config)
+
+    ruler = ruler_line(Map.get(state, :context, %{}))
+    {prompt_str, text_str, cursor_offset} = compute_display(state)
+    prompt_visible_len = strip_ansi_length(prompt_str)
 
     raw_cursor_text =
       if Map.get(state, :search_mode, false), do: text_str, else: Enum.join(state.buffer)
@@ -1155,23 +1315,37 @@ defmodule Yoke.CLI.LineEditor do
     {cursor_row, cursor_col} =
       layout_cursor(prompt_visible_len, raw_cursor_text, cursor_index, cols)
 
+    ruler_rows = rows_for(display_width(ruler), cols)
+    content_rows = layout_rows(prompt_visible_len, text_str, cols)
+
     {positioning_seq, content_target_row} =
       compute_cursor_positioning(cursor_row, cursor_col, content_rows, cols)
 
-    IO.write(positioning_seq)
+    signature = {ruler, prompt_str, text_str, cursor_row, cursor_col, cols}
+
+    IO.write(ruler <> "\r\n" <> to_crlf_clean(prompt_str <> text_str) <> positioning_seq)
 
     new_state = %{
       state
       | first_render: false,
+        last_render: signature,
+        last_ruler: ruler,
+        last_ruler_rows: ruler_rows,
+        last_prompt: prompt_str,
+        last_prompt_len: prompt_visible_len,
+        last_text: text_str,
+        last_content_rows: content_rows,
+        last_content_cursor_row: content_target_row,
         last_rows: ruler_rows + content_rows,
-        last_cursor_row: ruler_rows + content_target_row
+        last_cursor_row: ruler_rows + content_target_row,
+        last_cols: cols
     }
 
-    TerminalOwner.set(&erase_only/1, &draw_only/1, new_state)
+    TerminalOwner.set(&erase_full/1, &draw_full/1, new_state)
     new_state
   end
 
-  defp erase_only(state) do
+  defp erase_full(state) do
     IO.write(erase_prefix(state))
   end
 
@@ -1206,6 +1380,10 @@ defmodule Yoke.CLI.LineEditor do
   # literal newline) would move the cursor down a row without returning it
   # to column 0, staircasing the output. Translate to `\r\n` before writing.
   defp to_crlf(text), do: String.replace(text, "\n", "\r\n")
+
+  # When refreshing a multi-line buffer in place, each line should clear
+  # to the right margin before dropping to the next row with `\r\n`.
+  defp to_crlf_clean(text), do: String.replace(text, "\n", "\e[K\r\n")
 
   @doc """
   Total terminal rows spanned by `text`, which starts at display column
@@ -1328,8 +1506,11 @@ defmodule Yoke.CLI.LineEditor do
   #   3. A plain dim divider, when the status bar is disabled entirely
   defp ruler_line(context) do
     cols = terminal_cols()
-    packages = PackageTracker.list()
-    active_tasks = Yoke.TaskEngine.Supervisor.list_active_tasks()
+    packages = (is_map(context) && Map.get(context, :frozen_packages)) || PackageTracker.list()
+
+    active_tasks =
+      (is_map(context) && Map.get(context, :frozen_active_tasks)) ||
+        Yoke.TaskEngine.Supervisor.list_active_tasks()
 
     ruler =
       cond do
@@ -1496,7 +1677,7 @@ defmodule Yoke.CLI.LineEditor do
   end
 
   defp compute_display(state) do
-    config = Config.load_config()
+    config = Map.get(state, :config) || Config.load_config()
     prompt_str = Formatter.format_user_prompt_str(state.prompt)
     raw_text = Enum.join(state.buffer)
     highlighted_text = highlight_input(raw_text, config)
@@ -1537,7 +1718,7 @@ defmodule Yoke.CLI.LineEditor do
 
     if clamped == length(buffer) do
       raw_text = Enum.join(buffer)
-      config = Config.load_config()
+      config = Map.get(state, :config) || Config.load_config()
       suggestion = get_ghost_suggestion(raw_text, history, config)
 
       if suggestion != "" do

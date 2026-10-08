@@ -27,9 +27,23 @@ defmodule Yoke.Json do
   Pass `pretty: true` to indent the output (2 spaces per level) for
   human-edited/diffed files; omitted (or `false`) produces the same
   compact output as `JSON.encode!/1`.
+
+  If `term` contains invalid UTF-8 bytes that cause `:json.encode` to fail
+  with `{:invalid_byte, _}`, automatically scrubs the invalid bytes using
+  `sanitize_utf8/1` and retries encoding.
   """
   @spec encode!(term(), keyword()) :: binary()
   def encode!(term, opts \\ []) do
+    do_encode!(term, opts)
+  rescue
+    e in ErlangError ->
+      case e.original do
+        {:invalid_byte, _} -> do_encode!(sanitize_utf8(term), opts)
+        _ -> reraise e, __STACKTRACE__
+      end
+  end
+
+  defp do_encode!(term, opts) do
     if Keyword.get(opts, :pretty, false) do
       pretty_encode!(term, 0)
     else
@@ -49,6 +63,53 @@ defmodule Yoke.Json do
     e -> {:error, e}
   end
 
+  @doc """
+  Recursively traverses maps, lists, and binaries within data structures,
+  replacing or scrubbing any invalid UTF-8 byte sequences with valid UTF-8.
+  Safe for structs, primitives, and deeply nested session payloads.
+  """
+  @spec sanitize_utf8(term()) :: term()
+  def sanitize_utf8(binary) when is_binary(binary) do
+    if String.valid?(binary) do
+      binary
+    else
+      scrub_utf8(binary, "")
+    end
+  end
+
+  def sanitize_utf8(list) when is_list(list), do: Enum.map(list, &sanitize_utf8/1)
+
+  def sanitize_utf8(map) when is_map(map) and not is_struct(map) do
+    Map.new(map, fn {k, v} -> {sanitize_utf8(k), sanitize_utf8(v)} end)
+  end
+
+  def sanitize_utf8(%struct{} = s) do
+    fields = Map.from_struct(s) |> sanitize_utf8()
+    struct(struct, fields)
+  rescue
+    _ -> s
+  end
+
+  def sanitize_utf8(other), do: other
+
+  defp scrub_utf8(<<>>, acc), do: acc
+
+  defp scrub_utf8(str, acc) when is_binary(str) do
+    case :unicode.characters_to_binary(str, :utf8, :utf8) do
+      cleaned when is_binary(cleaned) ->
+        acc <> cleaned
+
+      {:error, valid, <<_bad_byte, rest::binary>>} ->
+        scrub_utf8(rest, acc <> valid)
+
+      {:error, valid, <<>>} ->
+        acc <> valid
+
+      {:incomplete, valid, _bad} ->
+        acc <> valid
+    end
+  end
+
   # ---------------------------------------------------------------------
   # Pretty-printer -- walks the already-decoded Elixir term and builds the
   # indented structure itself, delegating every leaf (string/number/
@@ -65,7 +126,20 @@ defmodule Yoke.Json do
 
     entries =
       Enum.map_join(map, ",\n", fn {k, v} ->
-        "#{inner}#{JSON.encode!(to_string(k))}: #{pretty_encode!(v, indent + 1)}"
+        key_str = to_string(k)
+
+        encoded_key =
+          try do
+            JSON.encode!(key_str)
+          rescue
+            e in ErlangError ->
+              case e.original do
+                {:invalid_byte, _} -> JSON.encode!(sanitize_utf8(key_str))
+                _ -> reraise e, __STACKTRACE__
+              end
+          end
+
+        "#{inner}#{encoded_key}: #{pretty_encode!(v, indent + 1)}"
       end)
 
     "{\n#{entries}\n#{outer}}"
@@ -88,7 +162,18 @@ defmodule Yoke.Json do
   # but they must NOT go through the map-indenting clause above, since
   # `JSON.Encoder` already has correct, purpose-built implementations for
   # them (e.g. ISO 8601 strings for calendar types).
-  defp pretty_encode!(scalar, _indent), do: JSON.encode!(scalar)
+  defp pretty_encode!(scalar, _indent) do
+    JSON.encode!(scalar)
+  rescue
+    e in ErlangError ->
+      case e.original do
+        {:invalid_byte, _} when is_binary(scalar) ->
+          JSON.encode!(sanitize_utf8(scalar))
+
+        _ ->
+          reraise e, __STACKTRACE__
+      end
+  end
 
   defp indent_str(level), do: String.duplicate("  ", level)
 end
