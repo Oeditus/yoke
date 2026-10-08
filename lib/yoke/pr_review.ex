@@ -407,7 +407,7 @@ defmodule Yoke.PRReview do
       end
 
     """
-    ## 🤖 Yoke Code Review
+    ## 🪢 Yoke Code Review
 
     ### 📋 Findings Summary & Accepted Issues
 

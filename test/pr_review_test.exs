@@ -144,7 +144,7 @@ defmodule Yoke.PRReviewTest do
       fix_prompt = PRReview.build_fix_prompt(accepted)
       pr_body = PRReview.build_pr_comment_body(accepted, fix_prompt)
 
-      assert String.contains?(pr_body, "## 🤖 Yoke Code Review")
+      assert String.contains?(pr_body, "## 🪢 Yoke Code Review")
       assert String.contains?(pr_body, "### 📋 Findings Summary & Accepted Issues")
       assert String.contains?(pr_body, "- **1. [MEDIUM]** `lib/yoke/git.ex`:42")
       assert String.contains?(pr_body, "### 🛠️ Recommended Fix Prompt")
