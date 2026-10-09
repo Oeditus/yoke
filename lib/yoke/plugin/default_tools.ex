@@ -96,7 +96,7 @@ defmodule Yoke.Plugin.DefaultTools do
       %{
         name: "bash",
         description:
-          "Execute a shell bash command and return standard output / error. User toolchain paths (~/.asdf/shims, ~/.cargo/bin, ERL_HOME) are automatically loaded. Pass `async: true` for long-running build/test tasks (`mix compile`, `mix test`, `cargo build`) to run them in the background without blocking. Returns a job ID immediately when `async: true` and automatically sends a completion message to the session when finished. Do NOT poll `job_status` or run polling bash loops (`pgrep`, `sleep`). STRICT RESTRICTION: Do NOT use bash with grep, sed, find, cat, head, tail, or xargs for code searching, symbol finding, or reading file content -- use read_file (with start_line/end_line), read_files, or grep_search instead.",
+          "Execute a shell bash command and return standard output / error. User toolchain paths (~/.asdf/shims, ~/.cargo/bin, ERL_HOME) are automatically loaded. FALLBACK TOOL ONLY: You MUST call dedicated tools (Ragex RAG/MCP tools, file tools, git tools) instead of plain bash whenever possible. Plain bash is reserved strictly for build/test runners (`mix compile`, `mix test`, `cargo build`) or commands with no dedicated tool equivalent. Pass `async: true` for long-running build/test tasks to run them in the background without blocking. Returns a job ID immediately when `async: true` and automatically sends a completion message to the session when finished. Do NOT poll `job_status` or run polling bash loops (`pgrep`, `sleep`). STRICT RESTRICTION: Do NOT use bash with grep, sed, find, cat, head, tail, xargs, or git for code searching, symbol finding, reading, or editing file content -- use read_file (with start_line/end_line), read_files, grep_search, replace_file, or Ragex MCP tools instead.",
         parameters: %{
           type: "object",
           properties: %{
@@ -468,10 +468,13 @@ defmodule Yoke.Plugin.DefaultTools do
   end
 
   def execute_bash(%{"command" => cmd} = args) do
-    if Map.get(args, "async", false) do
-      cwd = Map.get(args, "_session_cwd", File.cwd!())
-      session_id = Map.get(args, "_session_id")
+    cwd = Map.get(args, "_session_cwd", File.cwd!())
+    session_id = Map.get(args, "_session_id")
+    is_async = Map.get(args, "async", false)
 
+    Yoke.BashTracker.record(cmd, cwd: cwd, session_id: session_id, async: is_async)
+
+    if is_async do
       # `start_job/2` either returns `{:ok, job_id, log_file}` or raises; any
       # failure to spawn the job is turned into an error tuple by the
       # function-level `rescue` below.

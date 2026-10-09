@@ -107,6 +107,7 @@ defmodule Yoke.CLI.Formatter do
     #{dim()}─────────────────────────────────────────────────────────────────────────────#{reset()}
       #{cyan()}!command#{reset()}                 Execute shell command directly (e.g. !ls -la or !git status)
       #{cyan()}!!#{reset()}                      Flip into/out of pure console mode (plain shell passthrough, no AI/tooling)
+      #{cyan()}/bash [stats|export|clear]#{reset()} View bash command calls, counts, frequencies & export Ragex tool analogs
       #{cyan()}/cb#{reset()} or #{cyan()}/clipboard#{reset()}       Copy latest assistant response to system clipboard (Markdown)
       #{cyan()}/checkpoint [label]#{reset()}     Create a temporal state snapshot
       #{cyan()}/clear#{reset()}                  Clear terminal output

@@ -33,14 +33,20 @@ defmodule Yoke.Brain.Session do
   - Always report how many BEAM processes are currently serving when summarizing system status or turn execution.
 
   Tool Selection Guidelines:
+  - MANDATORY: CALL TOOLS INSTEAD OF PLAIN BASH WHENEVER POSSIBLE:
+    - You MUST ALWAYS call structured tools (dedicated workspace tools, Ragex RAG/MCP tools, Git tools, file tools) instead of plain bash whenever possible.
+    - Plain `bash` is STRICTLY a fallback of last resort for running tasks where no dedicated tool or Ragex analog exists (such as executing compilers, build tools, test suites, or custom executables).
+    - NEVER invoke shell commands in bash for code exploration, symbol searching, file viewing, file editing, directory navigation, git inspection, or code analysis when dedicated tools or Ragex RAG/MCP tools are available.
+  - STRICT TOOL PREFERENCE (RAGEX CODE INTELLIGENCE & RAG FIRST):
+    - You MUST ALWAYS prefer and use Ragex MCP tools (`mcp_ragex_grep`, `mcp_ragex_search_code`, `mcp_ragex_symbol_definition`, `mcp_ragex_symbol_references`, `mcp_ragex_metaast_search`, `mcp_ragex_ast_search`, `mcp_ragex_structure`, `mcp_ragex_view`, `mcp_ragex_analyze_file`) for code searching, symbol lookup, reference tracking, AST pattern queries, directory structure analysis, and file viewing, rather than running shell commands (`grep`, `rg`, `ag`, `find`, `cat`, `head`, `tail`, `sed`, `awk`, `ls`) in bash.
+    - Use `read_file` (with `start_line`/`end_line` for line ranges), `read_files`, or `mcp_ragex_view` instead of `cat`, `head`, `tail`, or `sed`.
+    - Use `list_dir` or `mcp_ragex_structure` instead of `ls` or `find`.
+    - Use `replace_file`, `write_file`, or `mcp_ragex_edit_file` / `mcp_ragex_edit_files` instead of `sed`, `awk`, or bash redirection.
+    - Use dedicated git tools (`git_status`, `git_diff`, `git_commit`, `git_root`) instead of executing raw shell git commands.
+    - Use `bash` ONLY for executing build/test commands, running local binaries/scripts, or system operations where no suitable dedicated tool exists.
   - EFFICIENT COMMAND EXECUTION & DEDICATED TOOLS:
     - For long-running build or test commands (`mix compile`, `mix test`, `cargo build`), use `bash(command: "...", async: true)` to run the command asynchronously in the background. The job runs as an OTP background worker process and will automatically send a completion message to this session when finished. NEVER poll `job_status` or execute bash polling commands (`pgrep`, `sleep`, `tail` loops) to wait for completion -- continue with other work or end your turn.
     - User environment toolchains (`~/.asdf/shims`, `~/.cargo/bin`, `ERL_HOME`) are automatically loaded into `bash` -- NEVER issue exploratory bash loops (`which erl`, `env | grep ...`, `cat ~/.asdf/...`) to locate binaries.
-    - NEVER use raw `bash` commands (`cat`, `head`, `tail`, `sed`, `grep`) for file reading or code searching. Use `read_file` (with `start_line`/`end_line` for line ranges), `read_files`, `grep_search`, or Ragex tools instead.
-    - Use dedicated git tools (`git_status`, `git_diff`, `git_commit`, `git_root`) instead of executing raw shell git commands.
-  - STRICT TOOL PREFERENCE (RAGEX CODE INTELLIGENCE FIRST):
-    - You MUST ALWAYS prefer and use Ragex MCP tools (`mcp_ragex_grep`, `mcp_ragex_search_code`, `mcp_ragex_symbol_definition`, `mcp_ragex_symbol_references`, `mcp_ragex_metaast_search`, `mcp_ragex_ast_search`, `mcp_ragex_structure`, `mcp_ragex_view`, `mcp_ragex_analyze_file`) for code searching, symbol lookup, reference tracking, AST pattern queries, directory structure analysis, and file viewing.
-    - Use `bash` ONLY for executing build/test commands, running local binaries/scripts, or system operations where no suitable dedicated tool exists.
   - ALWAYS use Ragex image tools (`mcp_ragex_image_info`, `mcp_ragex_image_resize`, `mcp_ragex_image_crop`, `mcp_ragex_image_rotate`, `mcp_ragex_image_convert`, `mcp_ragex_image_apply_filter`, `mcp_ragex_image_composite`, `mcp_ragex_image_avatar`, `mcp_ragex_image_draw_text`, `mcp_ragex_image_compare`) whenever you need to inspect, resize, crop, convert, filter, composite, or compare images, instead of writing custom scripts or executing raw shell commands.
   - When calling Ragex's `mcp_ragex_edit_file` / `mcp_ragex_edit_files` tools, ALWAYS include `old_content` on every change entry, even though the schema marks it optional: the exact original text of the lines at `line_start`..`line_end` as you last observed them (from a prior `read_file`/view of that file). Ragex uses `old_content` to verify and, if line numbers drifted since your last read, auto-relocate the correct target lines before applying the edit. Omitting it means a stale or off-by-a-few-lines guess can silently clip or duplicate block keywords (e.g. `def`, `do`, `end`) and break the file's syntax. Never fabricate `old_content` from guessed line numbers -- only supply text you actually saw.
   - Break down tasks systematically, reason carefully, and invoke tools in parallel when needed.
@@ -737,6 +743,8 @@ defmodule Yoke.Brain.Session do
 
     mcp_servers = Yoke.MCP.ServerManager.list_servers()
 
+    bash_stats = Yoke.BashTracker.stats(cwd: state.cwd)
+
     stats = %{
       session_id: state.session_id,
       model: state.model,
@@ -753,7 +761,10 @@ defmodule Yoke.Brain.Session do
       tools_count: length(state.tools),
       mcp_servers_count: Enum.count(mcp_servers),
       turns_count: length(state.turn_history),
-      max_tool_depth: state.max_tool_depth
+      max_tool_depth: state.max_tool_depth,
+      bash_calls_count: bash_stats.total_calls,
+      ineffective_bash_calls_count: bash_stats.ineffective_calls,
+      ineffective_bash_percentage: bash_stats.ineffective_percentage
     }
 
     {:reply, stats, state}

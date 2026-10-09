@@ -22,7 +22,7 @@ defmodule Yoke.Rules do
       "id" => 3,
       "scope" => "all",
       "text" =>
-        "ALWAYS prefer Ragex MCP tools (mcp_ragex_grep, mcp_ragex_symbol_definition, mcp_ragex_symbol_references, mcp_ragex_metaast_search, mcp_ragex_structure, mcp_ragex_view) over raw bash shell commands (grep, sed, find, cat, head) for code exploration, symbol finding, and code analysis",
+        "ALWAYS call dedicated tools and Ragex MCP tools (mcp_ragex_grep, mcp_ragex_symbol_definition, mcp_ragex_symbol_references, mcp_ragex_metaast_search, mcp_ragex_structure, mcp_ragex_view) instead of plain bash whenever possible. Plain bash is strictly a fallback for build/test execution or commands without tool equivalents. Never use raw bash shell commands (grep, sed, find, cat, head) for code exploration, symbol finding, or code analysis",
       "enabled" => true
     },
     %{

@@ -27,6 +27,7 @@ defmodule Yoke.CLI.LineEditor do
   alias Yoke.TaskEngine.PackageTracker
 
   @slash_commands [
+    "/bash",
     "/cb",
     "/checkpoint",
     "/clear",
@@ -666,6 +667,7 @@ defmodule Yoke.CLI.LineEditor do
 
   def toggle_reverse_search(%{search_mode: true} = state), do: state
 
+  @bash_subcommands ["/bash stats", "/bash export", "/bash clear", "/bash help"]
   @ragex_subcommands [
     "/ragex audit",
     "/ragex export",
@@ -688,6 +690,9 @@ defmodule Yoke.CLI.LineEditor do
   """
   def tab_complete(input) when is_binary(input) do
     cond do
+      String.starts_with?(input, "/bash ") ->
+        complete_candidates(input, @bash_subcommands)
+
       String.starts_with?(input, "/ragex ") ->
         complete_candidates(input, @ragex_subcommands)
 

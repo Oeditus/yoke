@@ -75,6 +75,9 @@ defmodule Yoke.Hands.Executor do
     case tool_name do
       "bash" ->
         cmd = Map.get(args, "command", "")
+        cwd = Map.get(args, "_session_cwd", File.cwd!())
+        session_id = Map.get(args, "_session_id")
+        Yoke.BashTracker.record(cmd, cwd: cwd, session_id: session_id, mode: :docker)
         docker_cmd = "docker exec #{container} sh -c #{shell_quote(cmd)}"
 
         case System.cmd("sh", ["-c", docker_cmd], stderr_to_stdout: true) do

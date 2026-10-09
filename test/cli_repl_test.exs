@@ -244,6 +244,14 @@ defmodule Yoke.CLIReplTest do
     assert :continue = Repl.handle_input("/unknown_command", pid, id)
   end
 
+  test "handles /bash slash commands", %{session_pid: pid, session_id: id} do
+    assert :continue = Repl.handle_input("/bash stats", pid, id)
+    assert :continue = Repl.handle_input("/bash help", pid, id)
+    assert :continue = Repl.handle_input("/bash", pid, id)
+    assert :continue = Repl.handle_input("/bash clear", pid, id)
+    assert :continue = Repl.handle_input("/bash export", pid, id)
+  end
+
   test "handles the !! pure console mode flip-flop", %{session_pid: pid, session_id: id} do
     assert :toggle_console = Repl.handle_input("!!", pid, id)
     assert :toggle_console = Repl.handle_input("!!", pid, id)

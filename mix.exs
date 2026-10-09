@@ -68,6 +68,7 @@ defmodule Yoke.MixProject do
       {:makeup_erlang, ">= 0.0.0", optional: true},
       {:makeup_cure, ">= 0.0.0", optional: true},
       {:makeup_patch, ">= 0.0.0", optional: true},
+      {:makeup_lmml, ">= 0.0.0", optional: true},
       {:makeup_eex, ">= 0.0.0", optional: true},
       {:makeup_json, ">= 0.0.0", optional: true},
       {:makeup_rust, ">= 0.0.0", optional: true},

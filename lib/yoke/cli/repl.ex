@@ -246,8 +246,9 @@ defmodule Yoke.CLI.Repl do
   def handle_input("!!", _session_pid, _session_id), do: :toggle_console
 
   # Shell execution shortcut: !command
-  def handle_input("!" <> cmd, _session_pid, _session_id) do
+  def handle_input("!" <> cmd, _session_pid, session_id) do
     cmd = String.trim(cmd)
+    Yoke.BashTracker.record(cmd, session_id: session_id, source: :repl_shortcut)
     IO.puts(Formatter.format_info("Executing shell command: #{cmd}"))
 
     case System.cmd("sh", ["-c", cmd], stderr_to_stdout: true) do
@@ -1112,6 +1113,7 @@ defmodule Yoke.CLI.Repl do
     - **Registered Tools**: `#{stats.tools_count}`
     - **Connected MCP Servers**: `#{stats.mcp_servers_count}`
     - **Max Tool Iteration Depth**: `#{stats.max_tool_depth}`
+    - **Tracked Bash Calls**: `#{Map.get(stats, :bash_calls_count, 0)}` (#{Map.get(stats, :ineffective_bash_calls_count, 0)} ineffective / #{Map.get(stats, :ineffective_bash_percentage, 0.0)}% with tool analogs)
     """
 
     IO.puts("\n" <> Formatter.format_markdown(md) <> "\n")
@@ -2389,6 +2391,45 @@ defmodule Yoke.CLI.Repl do
 
   def handle_input("/ragex export", session_pid, session_id) do
     handle_input("/ragex export mermaid", session_pid, session_id)
+  end
+
+  def handle_input("/bash export", _session_pid, _session_id) do
+    case Yoke.BashTracker.export_analytics() do
+      {:ok, path} ->
+        IO.puts(Formatter.format_success("Exported bash command analytics to #{path}"))
+
+      {:error, err} ->
+        IO.puts(Formatter.format_error("Failed to export bash analytics: #{inspect(err)}"))
+    end
+
+    :continue
+  end
+
+  def handle_input("/bash clear", _session_pid, _session_id) do
+    Yoke.BashTracker.clear()
+    IO.puts(Formatter.format_success("Cleared bash command analytics."))
+    :continue
+  end
+
+  def handle_input("/bash stats", _session_pid, _session_id) do
+    IO.puts(Yoke.BashTracker.format_summary())
+    :continue
+  end
+
+  def handle_input("/bash help", _session_pid, _session_id) do
+    md = """
+    ### Bash Commands Tracker & Tool Analogs
+    - `/bash` or `/bash stats` — View invocation counts, frequencies, and Ragex tool analogs
+    - `/bash export` — Export full analytics JSON report to `.yoke/exports/bash_calls_<timestamp>.json`
+    - `/bash clear` — Reset bash analytics data
+    """
+
+    IO.puts("\n" <> Formatter.format_markdown(md) <> "\n")
+    :continue
+  end
+
+  def handle_input("/bash", session_pid, session_id) do
+    handle_input("/bash stats", session_pid, session_id)
   end
 
   def handle_input("/nodes", _session_pid, _session_id) do

@@ -19,6 +19,8 @@ defmodule Yoke.Application do
       Yoke.CLI.TerminalOwner,
       # Synchronizes all user interactions and questions (interruptions) across main agents & subagents
       Yoke.CLI.InteractionServer,
+      # Tracks and analyzes bash command calls, counts, frequencies, and Ragex analogs
+      Yoke.BashTracker,
       # Dynamic plugin hot-reloader & tool registry
       Yoke.Plugin.Loader,
       # MCP Server Manager
