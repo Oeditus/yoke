@@ -10,6 +10,7 @@ defmodule Yoke.CLI.ConfigExplorerTest do
     File.mkdir_p!(Path.join(tmp_dir, ".yoke/sessions"))
     File.mkdir_p!(Path.join(tmp_dir, ".yoke/practices"))
     File.mkdir_p!(Path.join(tmp_dir, ".yoke/jobs"))
+    File.mkdir_p!(Path.join(tmp_dir, ".yoke/skills/custom_skill"))
 
     # Seed test files
     File.write!(
@@ -24,6 +25,62 @@ defmodule Yoke.CLI.ConfigExplorerTest do
 
     File.write!(Path.join(tmp_dir, ".yoke/practices/elixir.lmml"), "# Elixir Practice Guidelines")
     File.write!(Path.join(tmp_dir, ".yoke/jobs/job_101.log"), "Starting job output log...")
+
+    File.write!(
+      Path.join(tmp_dir, ".yoke/skills/custom_skill/SKILL.md"),
+      """
+      ---
+      name: custom_skill
+      description: A custom project test skill
+      ---
+      # Custom Skill Instructions
+      """
+    )
+
+    File.write!(
+      Path.join(tmp_dir, ".yoke/review_patterns.md"),
+      """
+      # Living Review Patterns
+
+      ## code_search
+
+      ### No Raw Bash for Grep
+      - **What**: Used raw bash grep instead of mcp_ragex_grep
+      - **How to check**: Call mcp_ragex_grep tool
+      - **Seen**: 4
+      """
+    )
+
+    File.write!(
+      Path.join(tmp_dir, ".yoke/bash_analytics.json"),
+      """
+      {
+        "total_calls": 5,
+        "unique_commands": 2,
+        "ineffective_calls": 1,
+        "ineffective_percentage": 20.0,
+        "root_commands": {
+          "echo": {
+            "name": "echo",
+            "count": 4,
+            "ineffective": false,
+            "frequency": 0.8,
+            "percentage": 80.0
+          },
+          "grep": {
+            "name": "grep",
+            "count": 1,
+            "ineffective": true,
+            "suggested_analog": "mcp_ragex_grep",
+            "frequency": 0.2,
+            "percentage": 20.0
+          }
+        },
+        "command_details": {},
+        "recent_calls": []
+      }
+      """
+    )
 
     File.write!(
       Path.join(tmp_dir, ".yoke/ERRORS_TO_FIX.lmml"),
@@ -48,6 +105,16 @@ defmodule Yoke.CLI.ConfigExplorerTest do
 
       assert length(tree.jobs) == 1
       assert hd(tree.jobs).id == "job_101"
+
+      assert is_list(tree.skills)
+      assert Enum.any?(tree.skills, &(&1.name == "custom_skill"))
+
+      assert is_list(tree.patterns)
+      assert Enum.any?(tree.patterns, &(&1.name == "No Raw Bash for Grep"))
+
+      assert is_map(tree.analytics)
+      assert tree.analytics.total_calls == 5
+      assert tree.analytics.ineffective_calls == 1
 
       assert tree.errors.count == 1
       assert hd(tree.errors.entries).title == "Test Error Report"
@@ -81,6 +148,9 @@ defmodule Yoke.CLI.ConfigExplorerTest do
       assert String.contains?(summary, "Yoke Config Directory Explorer Summary")
       assert String.contains?(summary, "deepseek-chat")
       assert String.contains?(summary, "Saved Sessions/Conversations (1 files)")
+      assert String.contains?(summary, "Custom & Discovered Skills")
+      assert String.contains?(summary, "Living Review Patterns")
+      assert String.contains?(summary, "Bash Command Analytics (5 calls, 1 ineffective)")
     end
   end
 
@@ -122,14 +192,27 @@ defmodule Yoke.CLI.ConfigExplorerTest do
       assert back_state.view_mode == :list
     end
 
+    test "provides detail view for skills", %{tmp_dir: tmp_dir} do
+      state = ConfigExplorer.new_state(tmp_dir)
+      state = %{state | active_tab: :skills, tab_index: 5}
+
+      assert state.view_mode == :list
+      detailed_state = ConfigExplorer.handle_select(state)
+      assert detailed_state.view_mode == :detail
+    end
+
     test "provides distinct color themes per tab" do
       t_settings = ConfigExplorer.tab_theme(:settings)
       t_rules = ConfigExplorer.tab_theme(:rules)
       t_sessions = ConfigExplorer.tab_theme(:sessions)
+      t_skills = ConfigExplorer.tab_theme(:skills)
+      t_analytics = ConfigExplorer.tab_theme(:analytics)
 
       assert String.contains?(t_settings.border, "39m")
       assert String.contains?(t_rules.border, "220m")
       assert String.contains?(t_sessions.border, "177m")
+      assert String.contains?(t_skills.border, "51m")
+      assert String.contains?(t_analytics.border, "141m")
     end
   end
 
@@ -152,6 +235,37 @@ defmodule Yoke.CLI.ConfigExplorerTest do
       updated_state = ConfigExplorer.handle_delete(state)
       assert updated_state.tree.errors.count == 0
       assert File.read!(Path.join(tmp_dir, ".yoke/ERRORS_TO_FIX.lmml")) == ""
+    end
+
+    test "deletes job log in jobs tab", %{tmp_dir: tmp_dir} do
+      state = ConfigExplorer.new_state(tmp_dir)
+      state = %{state | active_tab: :jobs, tab_index: 4, cursor: 0}
+
+      assert [_] = state.tree.jobs
+      updated_state = ConfigExplorer.handle_delete(state)
+      assert updated_state.tree.jobs == []
+      refute File.exists?(Path.join(tmp_dir, ".yoke/jobs/job_101.log"))
+    end
+
+    test "deletes project skill in skills tab", %{tmp_dir: tmp_dir} do
+      state = ConfigExplorer.new_state(tmp_dir)
+      skill_idx = Enum.find_index(state.tree.skills, &(&1.name == "custom_skill")) || 0
+      state = %{state | active_tab: :skills, tab_index: 5, cursor: skill_idx}
+
+      skill_dir = Path.join(tmp_dir, ".yoke/skills/custom_skill")
+      assert File.exists?(skill_dir)
+
+      updated_state = ConfigExplorer.handle_delete(state)
+      refute File.exists?(skill_dir)
+      assert updated_state.status_notice =~ "Deleted project skill"
+    end
+
+    test "clears bash analytics in analytics tab", %{tmp_dir: tmp_dir} do
+      state = ConfigExplorer.new_state(tmp_dir)
+      state = %{state | active_tab: :analytics, tab_index: 7, cursor: 0}
+
+      updated_state = ConfigExplorer.handle_delete(state)
+      assert updated_state.status_notice =~ "Cleared bash command analytics"
     end
   end
 end

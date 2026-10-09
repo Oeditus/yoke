@@ -116,7 +116,7 @@ defmodule Yoke.CLI.Formatter do
       #{cyan()}/cost#{reset()}                   Display token usage and session cost statistics
       #{cyan()}/diff#{reset()}                   Show colorized git diff of workspace changes
       #{cyan()}/exit#{reset()} or #{cyan()}/quit#{reset()}            Exit Yoke
-      #{cyan()}/explorer#{reset()}               Launch interactive TUI for exploring & managing .yoke configs, rules, history & jobs
+      #{cyan()}/explorer#{reset()}               Launch interactive TUI for exploring & managing .yoke configs, rules, skills, jobs & analytics
       #{cyan()}/god [on|off|status]#{reset()}    Toggle God mode (auto-answer all model questions/confirmations)
       #{cyan()}/guide#{reset()} or #{cyan()}/docs#{reset()}        Display Getting Started & Customization Guide summary
       #{cyan()}/help#{reset()}                   Show this help menu

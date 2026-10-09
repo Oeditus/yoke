@@ -2,24 +2,29 @@ defmodule Yoke.CLI.ConfigExplorer do
   @moduledoc """
   Full-Screen Interactive TUI Explorer for navigating, inspecting, expanding,
   and editing the `.yoke` configuration ecosystem (.yoke/config.json, rules.json,
-  practices/, sessions/, jobs/, ERRORS_TO_FIX.lmml, and skills).
+  practices/, sessions/, jobs/, skills/, review_patterns.md, bash_analytics.json,
+  and ERRORS_TO_FIX.lmml).
 
   Features:
   - Full-screen alternate buffer rendering with dynamic column/row viewport resizing
-  - Color-themed tab bar per category (Settings, Rules, Conversations, Practices, Jobs, Diagnostics)
+  - Color-themed tab bar per category (Settings, Rules, Conversations, Practices, Jobs, Skills, Diagnostics, Analytics)
   - Rich conversation/session decoder displaying models, message counts, sizes, and previews
   - Expandable Detail View modal (Enter key) for deep inspection of full transcripts, logs, and tracebacks
   - Full line-tolerance and ANSI-aware string truncation and scrolling
-  - Editing, toggling, and deleting of rules, configs, and session files
+  - Editing, toggling, and deleting of rules, configs, skills, jobs, and session files
   """
+  alias Yoke.BashTracker
   alias Yoke.Brain.SessionLmml
   alias Yoke.CLI.Formatter
   alias Yoke.CLI.LineEditor
   alias Yoke.CLI.TerminalOwner
   alias Yoke.Config
+  alias Yoke.PRReview.Patterns, as: ReviewPatterns
   alias Yoke.Rules
+  alias Yoke.Skill.Manager, as: SkillManager
+  alias Yoke.TaskEngine.JobManager
 
-  @tabs [:settings, :rules, :sessions, :practices, :jobs, :diagnostics]
+  @tabs [:settings, :rules, :sessions, :practices, :jobs, :skills, :diagnostics, :analytics]
 
   @doc "Main entry point to launch the Config Explorer TUI."
   def run(opts \\ []) do
@@ -46,7 +51,10 @@ defmodule Yoke.CLI.ConfigExplorer do
     sessions = list_session_files(cwd)
     practices = list_practice_files(cwd)
     jobs = list_job_files(cwd)
+    skills = list_skill_files(cwd)
     errors = read_error_log(cwd)
+    patterns = list_review_patterns(cwd)
+    analytics = read_bash_analytics(cwd)
 
     %{
       local_dir: local_dir,
@@ -56,7 +64,10 @@ defmodule Yoke.CLI.ConfigExplorer do
       sessions: sessions,
       practices: practices,
       jobs: jobs,
-      errors: errors
+      skills: skills,
+      errors: errors,
+      patterns: patterns,
+      analytics: analytics
     }
   end
 
@@ -73,20 +84,28 @@ defmodule Yoke.CLI.ConfigExplorer do
           {:ok, files} ->
             files
             |> Enum.filter(&(String.ends_with?(&1, ".lmml") or String.ends_with?(&1, ".lmmlz")))
-            |> Enum.map(fn file ->
+            |> Enum.flat_map(fn file ->
               full_path = Path.join(dir, file)
-              stat = File.stat!(full_path)
-              id = String.replace(file, ~r/\.(lmml|lmmlz)$/, "")
-              meta = parse_session_metadata(full_path)
 
-              Map.merge(meta, %{
-                id: id,
-                file: file,
-                path: full_path,
-                size: stat.size,
-                mtime: stat.mtime,
-                timestamp: format_timestamp(stat.mtime)
-              })
+              case File.stat(full_path) do
+                {:ok, stat} ->
+                  id = String.replace(file, ~r/\.(lmml|lmmlz)$/, "")
+                  meta = parse_session_metadata(full_path)
+
+                  [
+                    Map.merge(meta, %{
+                      id: id,
+                      file: file,
+                      path: full_path,
+                      size: stat.size,
+                      mtime: stat.mtime,
+                      timestamp: format_timestamp(stat.mtime)
+                    })
+                  ]
+
+                _ ->
+                  []
+              end
             end)
 
           _ ->
@@ -184,33 +203,115 @@ defmodule Yoke.CLI.ConfigExplorer do
   def list_job_files(cwd \\ ".") do
     dir = Path.join(cwd, ".yoke/jobs")
 
-    if File.dir?(dir) do
-      case File.ls(dir) do
-        {:ok, files} ->
-          files
-          |> Enum.filter(&String.ends_with?(&1, ".log"))
-          |> Enum.map(fn file ->
-            full_path = Path.join(dir, file)
-            stat = File.stat!(full_path)
-            id = String.replace(file, ".log", "")
-
-            %{
-              id: id,
-              file: file,
-              path: full_path,
-              size: stat.size,
-              mtime: stat.mtime,
-              timestamp: format_timestamp(stat.mtime)
-            }
-          end)
-          |> Enum.sort_by(& &1.mtime, :desc)
-
-        _ ->
-          []
+    active_map =
+      try do
+        if Process.whereis(JobManager) do
+          JobManager.list_jobs()
+          |> Map.new(fn job -> {job.id, job} end)
+        else
+          %{}
+        end
+      rescue
+        _ -> %{}
       end
-    else
-      []
-    end
+
+    file_jobs =
+      if File.dir?(dir) do
+        case File.ls(dir) do
+          {:ok, files} ->
+            files
+            |> Enum.filter(&String.ends_with?(&1, ".log"))
+            |> Enum.flat_map(fn file ->
+              full_path = Path.join(dir, file)
+
+              case File.stat(full_path) do
+                {:ok, stat} ->
+                  id = String.replace(file, ".log", "")
+                  active_info = Map.get(active_map, id)
+                  status = if active_info, do: active_info.status, else: :completed
+                  cmd = if active_info, do: active_info.command, else: nil
+
+                  [
+                    %{
+                      id: id,
+                      file: file,
+                      path: full_path,
+                      size: stat.size,
+                      mtime: stat.mtime,
+                      timestamp: format_timestamp(stat.mtime),
+                      status: status,
+                      command: cmd
+                    }
+                  ]
+
+                _ ->
+                  []
+              end
+            end)
+
+          _ ->
+            []
+        end
+      else
+        []
+      end
+
+    existing_ids = MapSet.new(file_jobs, & &1.id)
+
+    in_memory_jobs =
+      active_map
+      |> Map.values()
+      |> Enum.reject(&MapSet.member?(existing_ids, &1.id))
+      |> Enum.map(fn job ->
+        log_path = Path.join(dir, "#{job.id}.log")
+
+        size =
+          case File.stat(log_path) do
+            {:ok, st} -> st.size
+            _ -> 0
+          end
+
+        %{
+          id: job.id,
+          file: "#{job.id}.log",
+          path: log_path,
+          size: size,
+          mtime: {{1970, 1, 1}, {0, 0, 0}},
+          timestamp: "active",
+          status: job.status,
+          command: job.command
+        }
+      end)
+
+    (file_jobs ++ in_memory_jobs)
+    |> Enum.sort_by(& &1.mtime, :desc)
+  end
+
+  def list_skill_files(cwd \\ ".") do
+    SkillManager.discover_skills(cwd: cwd)
+  rescue
+    _ -> []
+  end
+
+  def read_bash_analytics(cwd \\ ".") do
+    BashTracker.stats(cwd: cwd)
+  rescue
+    _ ->
+      %{
+        total_calls: 0,
+        unique_commands: 0,
+        ineffective_calls: 0,
+        ineffective_percentage: 0.0,
+        root_commands: [],
+        top_ineffective: [],
+        recent_calls: []
+      }
+  end
+
+  def list_review_patterns(cwd \\ ".") do
+    ReviewPatterns.load_patterns(cwd)
+  rescue
+    _ -> []
   end
 
   def read_error_log(cwd \\ ".") do
@@ -378,7 +479,10 @@ defmodule Yoke.CLI.ConfigExplorer do
   def item_count(%{active_tab: :sessions, tree: tree}), do: length(tree.sessions)
   def item_count(%{active_tab: :practices, tree: tree}), do: length(tree.practices)
   def item_count(%{active_tab: :jobs, tree: tree}), do: length(tree.jobs)
+  def item_count(%{active_tab: :skills, tree: tree}), do: length(tree.skills)
   def item_count(%{active_tab: :diagnostics, tree: tree}), do: length(tree.errors.entries)
+  def item_count(%{active_tab: :analytics} = state), do: length(fetch_tab_items(state))
+  def item_count(_), do: 0
 
   # ---------------------------------------------------------------------
   # Interactive Operations (Expand, Toggle, Edit, Delete, Add)
@@ -514,6 +618,22 @@ defmodule Yoke.CLI.ConfigExplorer do
           state
         end
 
+      :skills ->
+        if skill = Enum.at(state.tree.skills, state.cursor) do
+          if skill.path && File.exists?(skill.path) do
+            Yoke.CLI.Editor.edit_file(skill.path,
+              on_before: &restore_tty_mode/0,
+              on_after: &set_raw_mode/0
+            )
+
+            refresh_state(state, "Opened skill '#{skill.name}' in editor.")
+          else
+            state
+          end
+        else
+          state
+        end
+
       :diagnostics ->
         if File.exists?(state.tree.errors.file_path) do
           Yoke.CLI.Editor.edit_file(state.tree.errors.file_path,
@@ -522,6 +642,33 @@ defmodule Yoke.CLI.ConfigExplorer do
           )
 
           refresh_state(state, "Opened diagnostic log ERRORS_TO_FIX.lmml in editor.")
+        else
+          state
+        end
+
+      :analytics ->
+        items = fetch_tab_items(state)
+
+        if item = Enum.at(items, state.cursor) do
+          target_file =
+            case item.kind do
+              :pattern ->
+                ReviewPatterns.ensure_patterns_file(state.cwd)
+
+              _ ->
+                Path.join(state.cwd, ".yoke/bash_analytics.json")
+            end
+
+          if File.exists?(target_file) do
+            Yoke.CLI.Editor.edit_file(target_file,
+              on_before: &restore_tty_mode/0,
+              on_after: &set_raw_mode/0
+            )
+
+            refresh_state(state, "Opened #{Path.basename(target_file)} in editor.")
+          else
+            state
+          end
         else
           state
         end
@@ -550,10 +697,57 @@ defmodule Yoke.CLI.ConfigExplorer do
           state
         end
 
+      :jobs ->
+        if job = Enum.at(state.tree.jobs, state.cursor) do
+          if File.exists?(job.path) do
+            File.rm(job.path)
+            refresh_state(state, "Deleted job log '#{job.file}'")
+          else
+            state
+          end
+        else
+          state
+        end
+
+      :skills ->
+        if skill = Enum.at(state.tree.skills, state.cursor) do
+          if (skill.scope == :project and skill.path) && File.exists?(skill.path) do
+            dir = Path.dirname(skill.path)
+
+            if Path.basename(dir) == skill.name do
+              File.rm_rf(dir)
+            else
+              File.rm(skill.path)
+            end
+
+            refresh_state(state, "Deleted project skill '#{skill.name}'")
+          else
+            %{state | status_notice: "Cannot delete non-project skill '#{skill.name}'"}
+          end
+        else
+          state
+        end
+
       :diagnostics ->
         if File.exists?(state.tree.errors.file_path) do
           File.write!(state.tree.errors.file_path, "")
           refresh_state(state, "Cleared diagnostic log ERRORS_TO_FIX.lmml")
+        else
+          state
+        end
+
+      :analytics ->
+        items = fetch_tab_items(state)
+
+        if item = Enum.at(items, state.cursor) do
+          case item.kind do
+            k when k in [:bash_summary, :bash_ineffective, :bash_root] ->
+              BashTracker.clear(cwd: state.cwd)
+              refresh_state(state, "Cleared bash command analytics.")
+
+            _ ->
+              state
+          end
         else
           state
         end
@@ -726,7 +920,9 @@ defmodule Yoke.CLI.ConfigExplorer do
   def tab_label(:sessions), do: "Conversations"
   def tab_label(:practices), do: "Practices"
   def tab_label(:jobs), do: "Jobs"
+  def tab_label(:skills), do: "Skills"
   def tab_label(:diagnostics), do: "Diagnostics"
+  def tab_label(:analytics), do: "Analytics"
   def tab_label(_), do: "Unknown"
 
   # ---------------------------------------------------------------------
@@ -789,7 +985,7 @@ defmodule Yoke.CLI.ConfigExplorer do
     footer_text =
       case state.view_mode do
         :list ->
-          "[Tab/1-6: Tab | ↑/↓: Select | Enter: Expand/Detail | Space: Toggle | a: Add Rule | d: Delete | r: Refresh | q: Exit]"
+          "[Tab/1-8: Tab | ↑/↓: Select | Enter: Expand/Detail | Space: Toggle | a: Add Rule | d: Delete | r: Refresh | q: Exit]"
 
         :detail ->
           "[↑/↓/PgUp/PgDn: Scroll Detail | e: Edit | Space: Toggle | Esc/q: Back to List View]"
@@ -879,7 +1075,64 @@ defmodule Yoke.CLI.ConfigExplorer do
   defp fetch_tab_items(%{active_tab: :sessions, tree: tree}), do: tree.sessions
   defp fetch_tab_items(%{active_tab: :practices, tree: tree}), do: tree.practices
   defp fetch_tab_items(%{active_tab: :jobs, tree: tree}), do: tree.jobs
+  defp fetch_tab_items(%{active_tab: :skills, tree: tree}), do: tree.skills
   defp fetch_tab_items(%{active_tab: :diagnostics, tree: tree}), do: tree.errors.entries
+
+  defp fetch_tab_items(%{active_tab: :analytics, tree: tree}) do
+    stats = tree.analytics || %{}
+
+    summary_item = %{
+      kind: :bash_summary,
+      total_calls: Map.get(stats, :total_calls, 0),
+      ineffective_calls: Map.get(stats, :ineffective_calls, 0),
+      ineffective_percentage: Map.get(stats, :ineffective_percentage, 0.0),
+      unique_commands: Map.get(stats, :unique_commands, 0)
+    }
+
+    ineffective_items =
+      Map.get(stats, :top_ineffective, [])
+      |> Enum.map(fn entry ->
+        %{
+          kind: :bash_ineffective,
+          entry: entry
+        }
+      end)
+
+    root_items =
+      Map.get(stats, :root_commands, [])
+      |> Enum.map(fn
+        entry when is_map(entry) ->
+          %{
+            kind: :bash_root,
+            cmd: entry["name"] || entry[:name] || entry["command"] || "",
+            count: entry["count"] || entry[:count] || 0,
+            freq: entry["frequency"] || entry[:frequency] || 0.0
+          }
+
+        {cmd, count, freq} ->
+          %{
+            kind: :bash_root,
+            cmd: cmd,
+            count: count,
+            freq: freq
+          }
+
+        _ ->
+          nil
+      end)
+      |> Enum.reject(&is_nil/1)
+
+    pattern_items =
+      (tree.patterns || [])
+      |> Enum.map(fn pat ->
+        %{
+          kind: :pattern,
+          pattern: pat
+        }
+      end)
+
+    [summary_item] ++ ineffective_items ++ root_items ++ pattern_items
+  end
 
   defp format_item_row(:settings, {key, val}, is_selected, cols, theme) do
     type_tag =
@@ -954,11 +1207,48 @@ defmodule Yoke.CLI.ConfigExplorer do
   defp format_item_row(:jobs, job, is_selected, cols, theme) do
     ts = Map.get(job, :timestamp, "")
 
+    status_tag =
+      case Map.get(job, :status) do
+        :running -> "#{Formatter.green()}● running#{Formatter.reset()}"
+        {:exited, 0} -> "#{Formatter.dim()}✔ done#{Formatter.reset()}"
+        {:exited, code} -> "#{Formatter.red()}✘ code(#{code})#{Formatter.reset()}"
+        {:failed, _} -> "#{Formatter.red()}✘ failed#{Formatter.reset()}"
+        _ -> "#{Formatter.dim()}✔ log#{Formatter.reset()}"
+      end
+
+    cmd_part =
+      if job[:command] do
+        " - \"#{job[:command]}\""
+      else
+        ""
+      end
+
     content =
       if is_selected do
-        "#{theme.bold_cursor} ❯ Job #{job.id} #{Formatter.reset()}#{Formatter.yellow()}[#{ts}]#{Formatter.reset()} #{theme.bold_cursor}(#{job.size} bytes log) - #{job.file}#{Formatter.reset()}"
+        "#{theme.bold_cursor} ❯ Job #{job.id} [#{status_tag}#{theme.bold_cursor}] #{Formatter.yellow()}[#{ts}]#{Formatter.reset()} #{theme.bold_cursor}(#{job.size}B)#{Formatter.reset()}#{cmd_part}"
       else
-        "   Job #{job.id} #{Formatter.dim()}[#{ts}] (#{job.size} bytes log) - #{job.file}"
+        "   Job #{job.id} [#{status_tag}] #{Formatter.dim()}[#{ts}] (#{job.size}B)#{Formatter.reset()}#{cmd_part}"
+      end
+
+    format_box_row(content, cols, theme.border)
+  end
+
+  defp format_item_row(:skills, skill, is_selected, cols, theme) do
+    scope_tag =
+      case skill.scope do
+        :project -> "#{Formatter.cyan()}[project]#{Formatter.reset()}"
+        :global -> "#{Formatter.yellow()}[global]#{Formatter.reset()}"
+        :builtin -> "#{Formatter.magenta()}[builtin]#{Formatter.reset()}"
+        _ -> "[other]"
+      end
+
+    desc = skill.description || "(No description)"
+
+    content =
+      if is_selected do
+        "#{theme.bold_cursor} ❯ #{scope_tag} #{Formatter.bold()}#{skill.name}#{Formatter.reset()} - #{desc}"
+      else
+        "   #{scope_tag} #{skill.name} - #{Formatter.dim()}#{desc}#{Formatter.reset()}"
       end
 
     format_box_row(content, cols, theme.border)
@@ -977,6 +1267,75 @@ defmodule Yoke.CLI.ConfigExplorer do
         "#{theme.bold_cursor} ❯ #{Formatter.red()}●#{Formatter.reset()} #{Formatter.yellow()}[#{ts}]#{Formatter.reset()} #{theme.bold_cursor}#{title}#{Formatter.reset()}"
       else
         "   #{Formatter.red()}●#{Formatter.reset()} #{Formatter.dim()}[#{ts}]#{Formatter.reset()} #{title}"
+      end
+
+    format_box_row(content, cols, theme.border)
+  end
+
+  defp format_item_row(:analytics, %{kind: :bash_summary} = item, is_selected, cols, theme) do
+    content =
+      if is_selected do
+        "#{theme.bold_cursor} ❯ 󱐋 Bash Analytics: #{item.total_calls} calls, #{item.ineffective_calls} ineffective (#{item.ineffective_percentage}%) [#{item.unique_commands} unique]#{Formatter.reset()}"
+      else
+        "   󱐋 Bash Analytics: #{item.total_calls} calls, #{item.ineffective_calls} ineffective (#{item.ineffective_percentage}%) [#{item.unique_commands} unique]"
+      end
+
+    format_box_row(content, cols, theme.border)
+  end
+
+  defp format_item_row(
+         :analytics,
+         %{kind: :bash_ineffective, entry: entry},
+         is_selected,
+         cols,
+         theme
+       ) do
+    cmd = entry["command"] || entry[:command] || ""
+    count = entry["count"] || entry[:count] || 0
+    analog = entry["analog"] || entry[:analog] || ""
+
+    content =
+      if is_selected do
+        "#{theme.bold_cursor} ❯ #{Formatter.yellow()}⚠ Ineffective Shell:#{Formatter.reset()} #{cmd} (#{count}x) -> #{Formatter.green()}Use #{analog}#{Formatter.reset()}"
+      else
+        "   #{Formatter.yellow()}⚠ Ineffective Shell:#{Formatter.reset()} #{cmd} (#{count}x) -> Use #{analog}"
+      end
+
+    format_box_row(content, cols, theme.border)
+  end
+
+  defp format_item_row(
+         :analytics,
+         %{kind: :bash_root, cmd: cmd, count: count, freq: freq},
+         is_selected,
+         cols,
+         theme
+       ) do
+    pct = Float.round(freq * 100, 1)
+
+    content =
+      if is_selected do
+        "#{theme.bold_cursor} ❯ 󰄵 Command Frequency: #{cmd} - #{count} calls (#{pct}%)#{Formatter.reset()}"
+      else
+        "   󰄵 Command Frequency: #{cmd} - #{count} calls (#{pct}%)"
+      end
+
+    format_box_row(content, cols, theme.border)
+  end
+
+  defp format_item_row(:analytics, %{kind: :pattern, pattern: pat}, is_selected, cols, theme) do
+    seen_badge =
+      if pat.seen >= 3 do
+        "#{Formatter.red()}󰋗 [Tripwire: Seen #{pat.seen}x]#{Formatter.reset()}"
+      else
+        "#{Formatter.cyan()}󰋗 [Seen #{pat.seen}x]#{Formatter.reset()}"
+      end
+
+    content =
+      if is_selected do
+        "#{theme.bold_cursor} ❯ #{seen_badge} #{pat.name} (#{pat.category})#{Formatter.reset()}"
+      else
+        "   #{seen_badge} #{pat.name} (#{pat.category})"
       end
 
     format_box_row(content, cols, theme.border)
@@ -1114,12 +1473,16 @@ defmodule Yoke.CLI.ConfigExplorer do
   end
 
   defp format_item_detail(:jobs, job, _state) do
-    header = [
-      "Job ID:      #{job.id}",
-      "Log File:    #{job.path}",
-      "Size:        #{job.size} bytes",
-      "------------------------------------------------------------------"
-    ]
+    header =
+      [
+        "Job ID:      #{job.id}",
+        "Status:      #{inspect(Map.get(job, :status, :completed))}",
+        if(job[:command], do: "Command:     #{job[:command]}", else: nil),
+        "Log File:    #{job.path}",
+        "Size:        #{job.size} bytes",
+        "------------------------------------------------------------------"
+      ]
+      |> Enum.reject(&is_nil/1)
 
     body =
       if File.exists?(job.path) do
@@ -1128,7 +1491,50 @@ defmodule Yoke.CLI.ConfigExplorer do
         ["(Log file empty or not found)"]
       end
 
-    header ++ body
+    actions = [
+      "",
+      "Actions:",
+      "  - Press 'e' to open log file in editor.",
+      "  - Press 'd' to delete log file."
+    ]
+
+    header ++ body ++ actions
+  end
+
+  defp format_item_detail(:skills, skill, _state) do
+    header = [
+      "Skill Name:   #{skill.name}",
+      "Scope:        #{skill.scope}",
+      "Path:         #{skill.path || "(builtin)"}",
+      "Description:  #{skill.description || "none"}",
+      "------------------------------------------------------------------"
+    ]
+
+    body =
+      cond do
+        skill.error ->
+          ["Error parsing SKILL.md: #{skill.error}"]
+
+        skill.content && skill.content != "" ->
+          String.split(skill.content, "\n")
+
+        skill.path && File.exists?(skill.path) ->
+          File.read!(skill.path) |> String.split("\n")
+
+        true ->
+          ["(No content)"]
+      end
+
+    actions =
+      [
+        "",
+        "Actions:",
+        "  - Press 'e' to edit SKILL.md in editor.",
+        if(skill.scope == :project, do: "  - Press 'd' to delete project skill.", else: nil)
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    header ++ body ++ actions
   end
 
   defp format_item_detail(:diagnostics, %{raw_entry: raw}, _state) do
@@ -1137,6 +1543,84 @@ defmodule Yoke.CLI.ConfigExplorer do
 
   defp format_item_detail(:diagnostics, entry, _state) when is_binary(entry) do
     ["=== Diagnostic Report Entry ==="] ++ String.split(entry, "\n")
+  end
+
+  defp format_item_detail(:analytics, %{kind: :bash_summary} = item, state) do
+    path = Path.join(state.cwd, ".yoke/bash_analytics.json")
+
+    [
+      "=== Bash Invocations & Analytics Summary ===",
+      "Store Path:           #{path}",
+      "Total Calls:          #{item.total_calls}",
+      "Unique Commands:      #{item.unique_commands}",
+      "Ineffective Calls:    #{item.ineffective_calls}",
+      "Ineffective Rate:     #{item.ineffective_percentage}%",
+      "------------------------------------------------------------------",
+      "",
+      "Actions:",
+      "  - Press 'e' to open .yoke/bash_analytics.json in editor.",
+      "  - Press 'd' to clear bash analytics history."
+    ]
+  end
+
+  defp format_item_detail(:analytics, %{kind: :bash_ineffective, entry: entry}, _state) do
+    cmd = entry["command"] || entry[:command] || ""
+    count = entry["count"] || entry[:count] || 0
+    analog = entry["analog"] || entry[:analog] || ""
+    reason = entry["reason"] || entry[:reason] || ""
+
+    [
+      "=== Ineffective Shell Pattern Details ===",
+      "Shell Command:        #{cmd}",
+      "Invocation Count:     #{count}",
+      "Recommended Analog:   #{Formatter.green()}#{analog}#{Formatter.reset()}",
+      "",
+      "Rationale / Guidance:",
+      "  #{reason}",
+      "",
+      "Tip: Calling structured Ragex MCP and dedicated Yoke tools avoids shell subshell",
+      "spawning latency and returns parsed, structured output."
+    ]
+  end
+
+  defp format_item_detail(
+         :analytics,
+         %{kind: :bash_root, cmd: cmd, count: count, freq: freq},
+         _state
+       ) do
+    pct = Float.round(freq * 100, 1)
+
+    [
+      "=== Root Shell Command Breakdown ===",
+      "Root Command:   #{cmd}",
+      "Total Calls:    #{count}",
+      "Frequency:      #{pct}%",
+      "------------------------------------------------------------------"
+    ]
+  end
+
+  defp format_item_detail(:analytics, %{kind: :pattern, pattern: pat}, state) do
+    patterns_file = ReviewPatterns.patterns_path(state.cwd)
+
+    [
+      "=== Living Codebase Review Pattern ===",
+      "Pattern Name:   #{pat.name}",
+      "Category:       #{pat.category}",
+      "Seen Count:     #{pat.seen} #{if pat.seen >= 3, do: "(Tripwire: auto-enforced)", else: ""}",
+      "Store File:     #{patterns_file}",
+      "------------------------------------------------------------------",
+      "What it is:",
+      "  #{pat.what}",
+      "",
+      "How to fix / avoid:",
+      "  #{pat.how}",
+      "",
+      "Notes:",
+      "  #{pat.notes}",
+      "",
+      "Actions:",
+      "  - Press 'e' to edit review_patterns.md in editor."
+    ]
   end
 
   defp type_of(v) when is_boolean(v), do: :boolean
@@ -1196,12 +1680,30 @@ defmodule Yoke.CLI.ConfigExplorer do
     }
   end
 
+  def tab_theme(:skills) do
+    %{
+      border: "\e[38;5;51m",
+      header_title: "\e[1;38;5;51m",
+      pill_bg: "\e[48;5;51;30m",
+      bold_cursor: "\e[1;38;5;51m"
+    }
+  end
+
   def tab_theme(:diagnostics) do
     %{
       border: "\e[38;5;196m",
       header_title: "\e[1;38;5;196m",
       pill_bg: "\e[48;5;196;30m",
       bold_cursor: "\e[1;38;5;196m"
+    }
+  end
+
+  def tab_theme(:analytics) do
+    %{
+      border: "\e[38;5;141m",
+      header_title: "\e[1;38;5;141m",
+      pill_bg: "\e[48;5;141;30m",
+      bold_cursor: "\e[1;38;5;141m"
     }
   end
 
@@ -1294,7 +1796,7 @@ defmodule Yoke.CLI.ConfigExplorer do
       :ctrl_c ->
         :ok
 
-      {:char, c} when c >= ?1 and c <= ?6 ->
+      {:char, c} when c >= ?1 and c <= ?8 ->
         idx = c - ?1
         tab = Enum.at(@tabs, idx)
         tui_loop(%{state | tab_index: idx, active_tab: tab, cursor: 0, view_mode: :list})
@@ -1315,6 +1817,11 @@ defmodule Yoke.CLI.ConfigExplorer do
   end
 
   def format_non_tty_summary(tree) do
+    skills_count = if is_list(tree[:skills]), do: length(tree.skills), else: 0
+    patterns_count = if is_list(tree[:patterns]), do: length(tree.patterns), else: 0
+    bash_calls = get_in(tree, [:analytics, :total_calls]) || 0
+    bash_ineffective = get_in(tree, [:analytics, :ineffective_calls]) || 0
+
     """
     === Yoke Config Directory Explorer Summary ===
     Local path: #{tree.local_dir}
@@ -1330,6 +1837,9 @@ defmodule Yoke.CLI.ConfigExplorer do
     ● Saved Sessions/Conversations (#{length(tree.sessions)} files)
     ● Practice Manifests (#{length(tree.practices)} loaded)
     ● Job Logs (#{length(tree.jobs)} files in .yoke/jobs/)
+    ● Custom & Discovered Skills (#{skills_count} loaded)
+    ● Living Review Patterns (#{patterns_count} registered)
+    ● Bash Command Analytics (#{bash_calls} calls, #{bash_ineffective} ineffective)
     ● Logged Diagnostic Errors (#{tree.errors.count} entries in ERRORS_TO_FIX.lmml)
     =============================================
     """
