@@ -1457,18 +1457,45 @@ defmodule Yoke.CLI.ConfigExplorer do
             safe_content = Formatter.sanitize_utf8(content)
 
             case SessionLmml.decode(safe_content) do
-              {:ok, %{messages: msgs}} ->
-                Enum.flat_map(msgs, fn m ->
-                  role = m["role"] || m[:role] || "unknown"
-                  text = m["content"] || m[:content] || ""
-                  role_color = if role == "user", do: Formatter.cyan(), else: Formatter.green()
+              {:ok, map} when is_map(map) ->
+                msgs = Map.get(map, "messages") || Map.get(map, :messages) || []
 
-                  ["#{role_color}[#{String.upcase(to_string(role))}]#{Formatter.reset()}"] ++
-                    String.split(Formatter.sanitize_utf8(to_string(text)), "\n") ++ [""]
-                end)
+                if msgs == [] do
+                  safe_content
+                  |> String.replace(~r/@@@[^\r\n]+[\r\n]+[\s\S]*?[\r\n]+@@@/, "")
+                  |> String.trim()
+                  |> Formatter.format_markdown()
+                  |> String.trim_trailing()
+                  |> String.split(~r/\r?\n/)
+                else
+                  formatted_md =
+                    msgs
+                    |> Enum.with_index(1)
+                    |> Enum.map_join("\n\n---\n\n", fn {m, idx} ->
+                      role = m["role"] || m[:role] || "unknown"
+                      raw_content = m["content"] || m[:content] || ""
+                      tool_calls = m["tool_calls"] || m[:tool_calls]
+
+                      content_str = from_raw_content(raw_content)
+                      role_header = role_header(role, idx)
+                      tc_block = tc_block(tool_calls)
+
+                      "#{role_header}\n\n#{content_str}#{tc_block}"
+                    end)
+
+                  formatted_md
+                  |> Formatter.format_markdown()
+                  |> String.trim_trailing()
+                  |> String.split(~r/\r?\n/)
+                end
 
               _ ->
-                String.split(safe_content, "\n")
+                safe_content
+                |> String.replace(~r/@@@[^\r\n]+[\r\n]+[\s\S]*?[\r\n]+@@@/, "")
+                |> String.trim()
+                |> Formatter.format_markdown()
+                |> String.trim_trailing()
+                |> String.split(~r/\r?\n/)
             end
 
           _ ->
@@ -1478,7 +1505,14 @@ defmodule Yoke.CLI.ConfigExplorer do
         ["(Compressed container or unreadable binary session log)"]
       end
 
-    header ++ body
+    actions = [
+      "",
+      "Actions:",
+      "  - Press 'e' to open session log in editor.",
+      "  - Press 'd' to delete session file."
+    ]
+
+    header ++ body ++ actions
   end
 
   defp format_item_detail(:practices, prac, _state) do
@@ -1660,6 +1694,41 @@ defmodule Yoke.CLI.ConfigExplorer do
       "  - Press 'e' to edit review_patterns.md in editor."
     ]
   end
+
+  defp role_header(role, idx) when is_atom(role), do: role |> Atom.to_string() |> role_header(idx)
+  defp role_header("user", idx), do: "#### Turn ##{idx} — 󰍩 User"
+  defp role_header("assistant", idx), do: "#### Turn ##{idx} — 󰚩 Assistant"
+  defp role_header("tool", idx), do: "#### Turn ##{idx} — 🛠 Tool Result"
+  defp role_header("system", idx), do: "#### Turn ##{idx} — ⚙ System"
+  defp role_header(other, idx), do: "#### Turn ##{idx} — #{String.capitalize(other)}"
+
+  defp tc_block([_ | _] = tool_calls) do
+    tc_items =
+      Enum.map_join(tool_calls, "\n", fn tc ->
+        fn_map = Map.get(tc, "function", tc) || tc
+        name = Map.get(fn_map, "name") || Map.get(fn_map, :name) || "tool"
+        args = Map.get(fn_map, "arguments") || Map.get(fn_map, :arguments) || "{}"
+
+        "- `#{name}(#{args})`"
+      end)
+
+    "\n\n**Tool Calls Executed:**\n" <> tc_items
+  end
+
+  defp tc_block(_), do: ""
+
+  defp from_raw_content(raw_content) when is_binary(raw_content), do: raw_content
+  defp from_raw_content(raw_content) when is_atom(raw_content), do: Atom.to_string(raw_content)
+
+  defp from_raw_content(raw_content) when is_list(raw_content) do
+    Enum.map_join(raw_content, "\n", fn
+      %{"text" => t} -> t
+      %{text: t} -> t
+      other -> inspect(other)
+    end)
+  end
+
+  defp from_raw_content(raw_content), do: inspect(raw_content)
 
   defp type_of(v) when is_boolean(v), do: :boolean
   defp type_of(v) when is_integer(v), do: :integer

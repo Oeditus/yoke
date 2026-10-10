@@ -162,7 +162,14 @@ defmodule Yoke.Brain.SessionLmml do
   def decode(%Bundle{} = bundle) do
     with {:ok, messages} <- decode_messages(bundle),
          {:ok, manifest} <- decode_manifest(bundle) do
-      {:ok, Map.merge(manifest, %{"messages" => messages})}
+      all_messages =
+        if messages != [] do
+          messages
+        else
+          Map.get(manifest, "messages", [])
+        end
+
+      {:ok, Map.merge(manifest, %{"messages" => all_messages})}
     end
   end
 
@@ -229,7 +236,14 @@ defmodule Yoke.Brain.SessionLmml do
       json_str ->
         case Yoke.Json.decode(json_str) do
           {:ok, manifest} ->
-            {:ok, Map.merge(manifest, %{"messages" => messages})}
+            all_messages =
+              if messages != [] do
+                messages
+              else
+                Map.get(manifest, "messages", [])
+              end
+
+            {:ok, Map.merge(manifest, %{"messages" => all_messages})}
 
           {:error, err} ->
             {:error, "Failed to decode manifest.json embed: #{inspect(err)}"}
@@ -335,7 +349,7 @@ defmodule Yoke.Brain.SessionLmml do
   end
 
   defp normalize_manifest(data) do
-    %{
+    base = %{
       "session_id" => Map.get(data, "session_id"),
       "model" => Map.get(data, "model", "deepseek-chat"),
       "permission_mode" => Map.get(data, "permission_mode", "ask_confirm"),
@@ -345,6 +359,11 @@ defmodule Yoke.Brain.SessionLmml do
       "updated_at" => Map.get(data, "updated_at"),
       "snapshots" => Map.get(data, "snapshots", [])
     }
+
+    case Map.get(data, "messages") do
+      msgs when is_list(msgs) -> Map.put(base, "messages", msgs)
+      _ -> base
+    end
   end
 
   defp decode_messages(%Bundle{} = bundle) do

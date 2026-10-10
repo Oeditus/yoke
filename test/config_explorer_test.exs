@@ -312,4 +312,78 @@ defmodule Yoke.CLI.ConfigExplorerTest do
       assert String.valid?(detail_output)
     end
   end
+
+  describe "Conversations rendering with Marcli" do
+    test "formats conversation detail view using Marcli", %{tmp_dir: tmp_dir} do
+      rich_session = """
+      @@@manifest.json
+      {
+        "session_id": "marcli_sess",
+        "model": "deepseek-chat",
+        "step_count": 2,
+        "messages": [
+          {
+            "role": "user",
+            "content": "Please analyze the following task:\\n- Task A\\n- Task B"
+          },
+          {
+            "role": "assistant",
+            "content": "Here is the plan in **markdown**:\\n```elixir\\ndef hello, do: :world\\n```",
+            "tool_calls": [
+              {
+                "function": {
+                  "name": "read_file",
+                  "arguments": "{\\"path\\": \\"lib/foo.ex\\"}"
+                }
+              }
+            ]
+          }
+        ]
+      }
+      @@@
+
+      # User
+      Please analyze the following task:
+      - Task A
+      - Task B
+      """
+
+      File.write!(Path.join(tmp_dir, ".yoke/sessions/marcli_sess.lmml"), rich_session)
+
+      state = ConfigExplorer.new_state(tmp_dir)
+      sess_idx = Enum.find_index(state.tree.sessions, &(&1.id == "marcli_sess"))
+      assert sess_idx != nil
+
+      sess_state = %{
+        state
+        | active_tab: :sessions,
+          tab_index: 2,
+          cursor: sess_idx,
+          view_mode: :detail
+      }
+
+      output =
+        ExUnit.CaptureIO.capture_io(:user, fn ->
+          ConfigExplorer.render_full_screen(sess_state)
+        end)
+
+      assert is_binary(output)
+      assert output =~ "Detailed Item Inspection"
+      assert output =~ "Conversations"
+      assert output =~ "User"
+      assert output =~ "Assistant"
+      assert output =~ "Task A"
+
+      # Scroll down to view the remaining lines (tool calls and markdown code blocks)
+      scrolled_state = %{sess_state | detail_scroll: 14}
+
+      scrolled_output =
+        ExUnit.CaptureIO.capture_io(:user, fn ->
+          ConfigExplorer.render_full_screen(scrolled_state)
+        end)
+
+      assert scrolled_output =~ "read_file"
+      assert scrolled_output =~ "Tool Call"
+    end
+  end
 end

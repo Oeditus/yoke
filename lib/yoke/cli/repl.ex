@@ -3352,7 +3352,7 @@ defmodule Yoke.CLI.Repl do
 
         role_header =
           case role do
-            "user" -> "#### Turn ##{idx} — 👤 User"
+            "user" -> "#### Turn ##{idx} — 󰍩 User"
             "assistant" -> "#### Turn ##{idx} — 󰚩 Assistant"
             "tool" -> "#### Turn ##{idx} — 🛠 Tool Result"
             other -> "#### Turn ##{idx} — #{other}"
