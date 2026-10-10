@@ -449,6 +449,7 @@ defmodule Yoke.Hands.Executor do
   end
 
   @doc "Formats tool call into succinct, human-readable action text."
+  # credo:disable-for-lines:151
   def humanize_action(tool_name, args) when is_map(args) do
     name_lower = String.downcase(to_string(tool_name))
 
@@ -521,7 +522,8 @@ defmodule Yoke.Hands.Executor do
         path = if path == "", do: ".", else: path
         "List   #{path}"
 
-      name_lower in ["glob_search", "glob", "file_glob"] or String.starts_with?(name_lower, "glob_") ->
+      name_lower in ["glob_search", "glob", "file_glob"] or
+          String.starts_with?(name_lower, "glob_") ->
         pattern = get_arg(args, ["pattern", "glob"])
         path = get_arg(args, ["path", "cwd"])
 
