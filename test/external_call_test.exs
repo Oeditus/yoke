@@ -15,8 +15,8 @@ defmodule Yoke.ExternalCallTest do
           assert result == {:ok, "success"}
         end)
 
-      assert log =~ "☏  [✓ deepseek_api"
-      assert log =~ "%{model: \"deepseek-chat\"}"
+      assert log =~ "⟡"
+      assert log =~ "API    deepseek-chat"
     end
 
     test "captures error response and classifies failure" do
@@ -26,7 +26,8 @@ defmodule Yoke.ExternalCallTest do
           assert result == {:error, :timeout}
         end)
 
-      assert log =~ "☏  [✗ test_service timeout"
+      assert log =~ "⟡"
+      assert log =~ "API    test_service failed (timeout"
     end
   end
 

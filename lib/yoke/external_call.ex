@@ -95,12 +95,18 @@ defmodule Yoke.ExternalCall do
   end
 
   defp log_success(service, meta, duration_ms) do
-    Logger.debug("☏  [✓ #{service} #{duration_ms}ms] #{inspect(meta)}")
+    model = get_meta_field(meta, :model)
+    target = if model, do: "#{model}", else: "#{service}"
+    badge = Yoke.CLI.Formatter.magenta() <> "⟡" <> Yoke.CLI.Formatter.reset()
+    Logger.debug("#{badge} API    #{target} (#{duration_ms}ms)")
   end
 
   defp log_failure(service, meta, classification, reason, duration_ms) do
-    msg =
-      "☏  [✗ #{service} #{classification} #{duration_ms}ms] #{inspect(reason)} | #{inspect(meta)}"
+    model = get_meta_field(meta, :model)
+    target = if model, do: "#{model}", else: "#{service}"
+    badge = Yoke.CLI.Formatter.magenta() <> "⟡" <> Yoke.CLI.Formatter.reset()
+    clean_reason = if is_binary(reason), do: reason, else: inspect(reason)
+    msg = "#{badge} API    #{target} failed (#{classification}, #{duration_ms}ms): #{clean_reason}"
 
     case classification do
       :timeout -> Logger.warning(msg)
@@ -108,6 +114,16 @@ defmodule Yoke.ExternalCall do
       :error -> Logger.error(msg)
     end
   end
+
+  defp get_meta_field(meta, key) when is_list(meta) do
+    Keyword.get(meta, key) || Keyword.get(meta, to_string(key))
+  end
+
+  defp get_meta_field(meta, key) when is_map(meta) do
+    Map.get(meta, key) || Map.get(meta, to_string(key))
+  end
+
+  defp get_meta_field(_, _), do: nil
 
   defp emit_telemetry(service, status, duration_ms, meta) do
     if Code.ensure_loaded?(:telemetry) and function_exported?(:telemetry, :execute, 3) do

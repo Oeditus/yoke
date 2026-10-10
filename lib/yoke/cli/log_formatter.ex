@@ -36,7 +36,9 @@ defmodule Yoke.CLI.LogFormatter do
 
       base_line =
         if String.starts_with?(formatted_msg, "\e") or String.starts_with?(formatted_msg, "●") or
-             String.starts_with?(formatted_msg, "⚡") or String.starts_with?(formatted_msg, "󱐋") do
+             String.starts_with?(formatted_msg, "⚡") or String.starts_with?(formatted_msg, "󱐋") or
+             String.starts_with?(formatted_msg, "◈") or String.starts_with?(formatted_msg, "❯") or
+             String.starts_with?(formatted_msg, "⟡") do
           "#{formatted_msg}\r\n"
         else
           "#{circle} #{formatted_msg}\r\n"

@@ -138,4 +138,72 @@ defmodule Yoke.HandsExecutorTest do
     assert String.contains?(formatted, "…")
     assert Yoke.CLI.Formatter.display_width(formatted) <= 60
   end
+
+  describe "tool categories and Unicode bullets" do
+    test "classifies tools into ToolCall, ShellOut, and Other" do
+      assert Executor.tool_category("read_file") == :tool_call
+      assert Executor.tool_category("grep_search") == :tool_call
+      assert Executor.tool_category("replace_file") == :tool_call
+      assert Executor.tool_category("list_dir") == :tool_call
+
+      assert Executor.tool_category("bash") == :shell_out
+      assert Executor.tool_category("cmd") == :shell_out
+      assert Executor.tool_category("run_command") == :shell_out
+
+      assert Executor.tool_category("job_status") == :other
+      assert Executor.tool_category("spawn_subagent") == :other
+      assert Executor.tool_category("ask_question") == :other
+      assert Executor.tool_category("run_workflow") == :other
+    end
+
+    test "returns distinct Unicode bullets for each category" do
+      # ToolCall: ◈ (cyan)
+      assert Executor.category_badge(:tool_call) =~ "◈"
+      # ShellOut: ❯ (yellow)
+      assert Executor.category_badge(:shell_out) =~ "❯"
+      # Other: ⟡ (magenta)
+      assert Executor.category_badge(:other) =~ "⟡"
+    end
+
+    test "humanize_action produces succinct, professional summaries" do
+      assert Executor.humanize_action("read_file", %{
+               "path" => "lib/cure/core/kernel.ex",
+               "start_line" => 120,
+               "end_line" => 180
+             }) == "Read   lib/cure/core/kernel.ex:120-180"
+
+      assert Executor.humanize_action("read_file", %{"path" => "lib/cure/core/meta_check.ex"}) ==
+               "Read   lib/cure/core/meta_check.ex"
+
+      assert Executor.humanize_action("grep_search", %{
+               "path" => "lib/cure/core/kernel.ex",
+               "query" => "def check\\(|def infer\\("
+             }) == "Grep   /def check(|def infer(/ in lib/cure/core/kernel.ex"
+
+      assert Executor.humanize_action("bash", %{"command" => "mix test"}) ==
+               "Bash   $ mix test"
+
+      assert Executor.humanize_action("job_status", %{"job_id" => "job_3138", "tail" => 40}) ==
+               "Job    #job_3138 (tail 40)"
+
+      assert Executor.humanize_action("list_dir", %{"path" => "lib/cure"}) ==
+               "List   lib/cure"
+    end
+
+    test "format_execution_log bundles bullet and semantic text" do
+      Application.put_env(:yoke, :expand_tool_calls, false)
+
+      line_tool = Executor.format_execution_log("read_file", %{"path" => "lib/app.ex"})
+      assert line_tool =~ "◈"
+      assert line_tool =~ "Read   lib/app.ex"
+
+      line_shell = Executor.format_execution_log("bash", %{"command" => "git status"})
+      assert line_shell =~ "❯"
+      assert line_shell =~ "Bash   $ git status"
+
+      line_other = Executor.format_execution_log("job_status", %{"job_id" => "job_123"})
+      assert line_other =~ "⟡"
+      assert line_other =~ "Job    #job_123"
+    end
+  end
 end

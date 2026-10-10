@@ -24,10 +24,7 @@ defmodule Yoke.Hands.Executor do
     if verdict.action == :blocked do
       {:error, "[AI Guard Enforce] Tool execution blocked: #{verdict.reason}"}
     else
-      badge =
-        Yoke.CLI.Formatter.cyan() <> "⚡" <> Yoke.CLI.Formatter.reset()
-
-      Logger.info("#{badge} #{tool_icon(tool_name)} #{format_tool_call(tool_name, args)}")
+      Logger.info(format_execution_log(tool_name, args))
 
       case Yoke.Plugin.Loader.execute_tool(tool_name, args, :infinity) do
         {:ok, result} -> {:ok, format_output(result)}
@@ -38,12 +35,7 @@ defmodule Yoke.Hands.Executor do
 
   def execute(%__MODULE__{mode: :remote, remote_node: node}, tool_name, args)
       when not is_nil(node) do
-    badge =
-      Yoke.CLI.Formatter.cyan() <> "⚡" <> Yoke.CLI.Formatter.reset()
-
-    Logger.info(
-      "#{badge} [remote:#{node}] #{tool_icon(tool_name)} #{format_tool_call(tool_name, args)}"
-    )
+    Logger.info(format_execution_log(tool_name, args, "[remote:#{node}]"))
 
     case :rpc.call(
            node,
@@ -65,12 +57,7 @@ defmodule Yoke.Hands.Executor do
 
   def execute(%__MODULE__{mode: :docker, docker_container: container}, tool_name, args)
       when not is_nil(container) do
-    badge =
-      Yoke.CLI.Formatter.cyan() <> "⚡" <> Yoke.CLI.Formatter.reset()
-
-    Logger.info(
-      "#{badge} [docker:#{container}] #{tool_icon(tool_name)} #{format_tool_call(tool_name, args)}"
-    )
+    Logger.info(format_execution_log(tool_name, args, "[docker:#{container}]"))
 
     case tool_name do
       "bash" ->
@@ -385,5 +372,244 @@ defmodule Yoke.Hands.Executor do
 
   defp shell_quote(str) do
     "'" <> String.replace(str, "'", "'\\''") <> "'"
+  end
+
+  @doc "Categorizes a tool call into :shell_out, :other, or :tool_call."
+  def tool_category(tool_name) when is_binary(tool_name) do
+    case String.downcase(tool_name) do
+      name when name in ["bash", "cmd", "run_command", "shell", "exec", "execute_command"] ->
+        :shell_out
+
+      name
+      when name in [
+             "subagent",
+             "spawn_subagent",
+             "agent",
+             "run_workflow",
+             "ask_question",
+             "ask",
+             "question",
+             "user_input",
+             "job_status",
+             "job_list",
+             "job_kill"
+           ] ->
+        :other
+
+      _ ->
+        :tool_call
+    end
+  end
+
+  def tool_category(_), do: :other
+
+  @doc "Returns colored Unicode bullet for tool category: ToolCall (◈), ShellOut (❯), Other (⟡)."
+  def category_badge(:tool_call),
+    do: Yoke.CLI.Formatter.cyan() <> "◈" <> Yoke.CLI.Formatter.reset()
+
+  def category_badge(:shell_out),
+    do: Yoke.CLI.Formatter.yellow() <> "❯" <> Yoke.CLI.Formatter.reset()
+
+  def category_badge(:other),
+    do: Yoke.CLI.Formatter.magenta() <> "⟡" <> Yoke.CLI.Formatter.reset()
+
+  @doc "Formats full tool execution line with bullet, target prefix, and semantic summary."
+  def format_execution_log(tool_name, args, prefix \\ nil) do
+    cat = tool_category(tool_name)
+    badge = category_badge(cat)
+    prefix_str = if prefix, do: " #{prefix}", else: ""
+
+    action_text =
+      if Yoke.CLI.LineEditor.expand_tool_calls?() do
+        format_tool_call(tool_name, args)
+      else
+        humanize_action(tool_name, args)
+      end
+
+    "#{badge}#{prefix_str} #{action_text}"
+  end
+
+  @doc "Formats tool call into succinct, human-readable action text."
+  def humanize_action(tool_name, args) when is_map(args) do
+    name_lower = String.downcase(to_string(tool_name))
+
+    cond do
+      name_lower in ["bash", "cmd", "run_command", "shell", "exec", "execute_command"] ->
+        cmd = Map.get(args, "command") || Map.get(args, "cmd") || ""
+        clean_cmd = clean_single_line(cmd)
+        "Bash   $ #{truncate_str(clean_cmd, 90)}"
+
+      name_lower in ["read_file", "file_read", "read_contents", "get_file", "view_file"] ->
+        path = get_arg(args, ["path", "target_file", "TargetFile"])
+        start_line = get_arg(args, ["start_line", "StartLine"])
+        end_line = get_arg(args, ["end_line", "EndLine"])
+
+        line_suffix =
+          cond do
+            start_line != "" and end_line != "" -> ":#{start_line}-#{end_line}"
+            start_line != "" -> ":#{start_line}+"
+            true -> ""
+          end
+
+        "Read   #{path}#{line_suffix}"
+
+      name_lower == "read_files" ->
+        paths = Map.get(args, "paths") || []
+
+        case paths do
+          [] -> "Read   files"
+          [p] -> "Read   #{p}"
+          [p1, p2] -> "Read   #{p1}, #{p2}"
+          [p1, p2 | rest] -> "Read   #{p1}, #{p2} (+#{length(rest)})"
+        end
+
+      name_lower in ["grep_search", "grep", "search_files", "file_search", "ripgrep", "search"] ->
+        path = get_arg(args, ["path", "target"])
+        query = get_arg(args, ["query", "pattern"])
+
+        clean_query =
+          query
+          |> to_string()
+          |> clean_single_line()
+          |> String.replace("\\(", "(")
+          |> String.replace("\\)", ")")
+          |> truncate_str(40)
+
+        cond do
+          clean_query != "" and path != "" ->
+            "Grep   /#{clean_query}/ in #{path}"
+
+          clean_query != "" ->
+            "Grep   /#{clean_query}/"
+
+          path != "" ->
+            "Grep   in #{path}"
+
+          true ->
+            "Grep"
+        end
+
+      name_lower in ["write_file", "write_to_file", "create_file", "save_file"] ->
+        path = get_arg(args, ["path", "target_file", "TargetFile"])
+        "Write  #{path}"
+
+      name_lower in ["replace_file_content", "replace_file", "edit_file"] ->
+        path = get_arg(args, ["path", "target_file", "TargetFile"])
+        "Edit   #{path}"
+
+      name_lower in ["list_dir", "ls", "dir_list", "list_directory"] ->
+        path = get_arg(args, ["path", "target"])
+        path = if path == "", do: ".", else: path
+        "List   #{path}"
+
+      name_lower == "find_by_name" ->
+        name = get_arg(args, ["name", "pattern"])
+        path = get_arg(args, ["path"])
+        path = if path == "", do: ".", else: path
+        "Find   \"#{name}\" in #{path}"
+
+      name_lower == "git_status" ->
+        "Git    status"
+
+      name_lower == "git_diff" ->
+        path = get_arg(args, ["path", "file"])
+        if path != "", do: "Git    diff #{path}", else: "Git    diff"
+
+      name_lower == "git_commit" ->
+        msg = clean_single_line(get_arg(args, ["message", "msg"]))
+        "Git    commit \"#{truncate_str(msg, 40)}\""
+
+      name_lower == "git_log" ->
+        "Git    log"
+
+      name_lower in ["job_status", "job_info"] ->
+        job_id = get_arg(args, ["job_id", "id"])
+        tail = get_arg(args, ["tail"])
+        tail_str = if tail != "", do: " (tail #{tail})", else: ""
+        "Job    ##{job_id}#{tail_str}"
+
+      name_lower == "job_list" ->
+        "Job    list"
+
+      name_lower in ["spawn_subagent", "subagent", "agent"] ->
+        prompt = get_arg(args, ["prompt", "task", "instruction"])
+        clean_prompt = prompt |> clean_single_line() |> truncate_str(50)
+        "Agent  \"#{clean_prompt}\""
+
+      name_lower in ["ask_question", "ask", "question", "user_input"] ->
+        q = get_arg(args, ["question", "prompt"])
+        clean_q = q |> clean_single_line() |> truncate_str(50)
+        "Ask    \"#{clean_q}\""
+
+      name_lower == "run_workflow" ->
+        wf = get_arg(args, ["workflow", "name"])
+        "Flow   #{wf}"
+
+      name_lower in ["http", "req", "fetch_url", "web_search", "read_url"] ->
+        target = get_arg(args, ["url", "query"])
+        "Web    #{truncate_str(clean_single_line(target), 60)}"
+
+      true ->
+        label =
+          tool_name
+          |> String.replace("mcp_", "")
+          |> String.capitalize()
+          |> String.slice(0, 6)
+          |> String.pad_trailing(6)
+
+        summary = format_short_args(args)
+        "#{label} #{summary}"
+    end
+  end
+
+  def humanize_action(tool_name, args), do: format_tool_call(tool_name, args)
+
+  defp get_arg(map, keys) when is_map(map) and is_list(keys) do
+    Enum.find_value(keys, "", fn k ->
+      case Map.get(map, k) do
+        nil -> nil
+        "" -> nil
+        val -> to_string(val)
+      end
+    end)
+  end
+
+  defp clean_single_line(nil), do: ""
+
+  defp clean_single_line(str) do
+    str
+    |> to_string()
+    |> String.replace(~r/[\r\n\t]+/, " ")
+    |> String.trim()
+  end
+
+  defp truncate_str(str, max_len) when is_binary(str) do
+    if String.length(str) > max_len do
+      String.slice(str, 0, max_len - 1) <> "…"
+    else
+      str
+    end
+  end
+
+  defp truncate_str(other, max_len), do: truncate_str(to_string(other), max_len)
+
+  defp format_short_args(args) when is_map(args) do
+    visible = Map.reject(args, fn {k, _} -> is_binary(k) and String.starts_with?(k, "_") end)
+
+    case map_size(visible) do
+      0 ->
+        "()"
+
+      _ ->
+        first_val =
+          visible
+          |> Map.values()
+          |> List.first()
+          |> to_string()
+          |> clean_single_line()
+          |> truncate_str(40)
+
+        first_val
+    end
   end
 end
