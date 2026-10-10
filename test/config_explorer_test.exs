@@ -268,4 +268,48 @@ defmodule Yoke.CLI.ConfigExplorerTest do
       assert updated_state.status_notice =~ "Cleared bash command analytics"
     end
   end
+
+  describe "UTF-8 tolerance in diagnostics" do
+    test "safely handles and renders ERRORS_TO_FIX.lmml containing invalid UTF-8 bytes", %{
+      tmp_dir: tmp_dir
+    } do
+      # Write an invalid UTF-8 byte sequence like <<152>> (0x98) into ERRORS_TO_FIX.lmml
+      invalid_entry =
+        "<!-- error_entry -->\n## [2026-10-10 07:00:00] Level: error\nReason: invalid encoding starting at " <>
+          <<152>> <> "\n```\n** (UnicodeConversionError) " <> <<152>> <> "\n```\n"
+
+      File.write!(Path.join(tmp_dir, ".yoke/ERRORS_TO_FIX.lmml"), invalid_entry)
+
+      # Rescan tree and load state
+      state = ConfigExplorer.new_state(tmp_dir)
+      assert state.tree.errors.count == 1
+      entry = hd(state.tree.errors.entries)
+      assert String.valid?(entry.title)
+      assert String.valid?(entry.raw_entry)
+
+      # Switch to Diagnostics tab (tab index 6)
+      diag_state = %{state | active_tab: :diagnostics, tab_index: 6, cursor: 0}
+
+      # Rendering full screen must not raise UnicodeConversionError
+      output =
+        ExUnit.CaptureIO.capture_io(:user, fn ->
+          ConfigExplorer.render_full_screen(diag_state)
+        end)
+
+      assert is_binary(output)
+      assert String.valid?(output)
+      assert output =~ "Diagnostics"
+
+      # Also test detail view rendering
+      detail_state = %{diag_state | view_mode: :detail}
+
+      detail_output =
+        ExUnit.CaptureIO.capture_io(:user, fn ->
+          ConfigExplorer.render_full_screen(detail_state)
+        end)
+
+      assert is_binary(detail_output)
+      assert String.valid?(detail_output)
+    end
+  end
 end

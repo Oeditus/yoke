@@ -120,4 +120,82 @@ defmodule Yoke.FormatterTest do
              Formatter.safe_puts(bad_chardata)
            end) =~ "hello world"
   end
+
+  describe "sanitize_utf8/1" do
+    test "preserves valid UTF-8 binaries" do
+      assert Formatter.sanitize_utf8("Hello, world! 🚀") == "Hello, world! 🚀"
+      assert Formatter.sanitize_utf8("") == ""
+    end
+
+    test "replaces invalid byte sequences with replacement character U+FFFD" do
+      invalid = "prefix" <> <<152>> <> "suffix"
+      sanitized = Formatter.sanitize_utf8(invalid)
+      assert String.valid?(sanitized)
+      assert sanitized == "prefix\uFFFDsuffix"
+
+      multi_invalid = <<0xFF, 0xFE, 0x98>>
+      assert String.valid?(Formatter.sanitize_utf8(multi_invalid))
+    end
+
+    test "handles lists and chardata with invalid bytes" do
+      chardata = ["valid", <<152>>, "end"]
+      sanitized = Formatter.sanitize_utf8(chardata)
+      assert String.valid?(sanitized)
+      assert sanitized == "valid\uFFFDend"
+    end
+
+    test "handles nil and non-binary terms" do
+      assert Formatter.sanitize_utf8(nil) == ""
+      assert Formatter.sanitize_utf8(:an_atom) == "an_atom"
+      assert Formatter.sanitize_utf8(12_345) == "12345"
+    end
+  end
+
+  describe "display_width/1" do
+    test "calculates correct width for ASCII, ANSI escapes, and wide characters" do
+      assert Formatter.display_width("hello") == 5
+      assert Formatter.display_width("\e[31mhello\e[0m") == 5
+      assert Formatter.display_width("🚀") == 2
+      assert Formatter.display_width("漢字") == 4
+      assert Formatter.display_width("") == 0
+    end
+
+    test "does not crash on invalid UTF-8 byte sequences" do
+      invalid = "error <<152>>" <> <<152>>
+      width = Formatter.display_width(invalid)
+      assert is_integer(width)
+      assert width > 0
+
+      # Raw single invalid byte
+      assert Formatter.display_width(<<152>>) == 1
+      assert Formatter.display_width(<<0xFF, 0xFE>>) == 2
+    end
+
+    test "safely handles nil and non-binary inputs" do
+      assert Formatter.display_width(nil) == 0
+      assert Formatter.display_width(123) == 0
+      assert Formatter.display_width(%{}) == 0
+    end
+  end
+
+  describe "format status messages with invalid UTF-8" do
+    test "safely formats messages containing invalid UTF-8 bytes" do
+      invalid = "crash at <<152>>: " <> <<152>>
+      err = Formatter.format_error(invalid)
+      assert String.valid?(err)
+      assert String.contains?(err, "crash at <<152>>:")
+
+      warn = Formatter.format_warning(invalid)
+      assert String.valid?(warn)
+
+      info = Formatter.format_info(invalid)
+      assert String.valid?(info)
+
+      succ = Formatter.format_success(invalid)
+      assert String.valid?(succ)
+
+      prompt = Formatter.format_user_prompt_str(invalid)
+      assert String.valid?(prompt)
+    end
+  end
 end

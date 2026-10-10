@@ -319,7 +319,12 @@ defmodule Yoke.CLI.ConfigExplorer do
 
     if File.exists?(file_path) do
       stat = File.stat!(file_path)
-      content = File.read!(file_path)
+
+      content =
+        case File.read(file_path) do
+          {:ok, binary} -> Formatter.sanitize_utf8(binary)
+          _ -> ""
+        end
 
       raw_entries =
         content
@@ -1006,8 +1011,9 @@ defmodule Yoke.CLI.ConfigExplorer do
   end
 
   defp format_box_row(content_str, total_cols, border_ansi) do
+    safe_content = Formatter.sanitize_utf8(content_str)
     content_width = max(1, total_cols - 4)
-    truncated = truncate_ansi_line(content_str, content_width)
+    truncated = truncate_ansi_line(safe_content, content_width)
     vis_len = display_width(truncated)
     padding = String.duplicate(" ", max(0, content_width - vis_len))
 
@@ -1015,10 +1021,12 @@ defmodule Yoke.CLI.ConfigExplorer do
   end
 
   defp truncate_ansi_line(str, max_width) do
-    if display_width(str) <= max_width do
-      str
+    safe_str = Formatter.sanitize_utf8(str)
+
+    if display_width(safe_str) <= max_width do
+      safe_str
     else
-      LineEditor.truncate_to_width(str, max_width)
+      LineEditor.truncate_to_width(safe_str, max_width)
     end
   end
 
@@ -1255,12 +1263,25 @@ defmodule Yoke.CLI.ConfigExplorer do
   end
 
   defp format_item_row(:diagnostics, entry, is_selected, cols, theme) do
-    ts = if is_map(entry), do: Map.get(entry, :timestamp, ""), else: ""
+    ts =
+      if is_map(entry),
+        do: Formatter.sanitize_utf8(Map.get(entry, :timestamp, "")),
+        else: ""
 
     title =
-      if is_map(entry),
-        do: Map.get(entry, :title, ""),
-        else: entry |> String.split("\n") |> List.first() || entry
+      cond do
+        is_map(entry) ->
+          Formatter.sanitize_utf8(Map.get(entry, :title, ""))
+
+        is_binary(entry) ->
+          entry
+          |> Formatter.sanitize_utf8()
+          |> String.split("\n")
+          |> List.first() || ""
+
+        true ->
+          ""
+      end
 
     content =
       if is_selected do
@@ -1431,21 +1452,27 @@ defmodule Yoke.CLI.ConfigExplorer do
 
     body =
       if File.exists?(sess.path) and String.ends_with?(sess.path, ".lmml") do
-        content = File.read!(sess.path)
+        case File.read(sess.path) do
+          {:ok, content} ->
+            safe_content = Formatter.sanitize_utf8(content)
 
-        case SessionLmml.decode(content) do
-          {:ok, %{messages: msgs}} ->
-            Enum.flat_map(msgs, fn m ->
-              role = m["role"] || m[:role] || "unknown"
-              text = m["content"] || m[:content] || ""
-              role_color = if role == "user", do: Formatter.cyan(), else: Formatter.green()
+            case SessionLmml.decode(safe_content) do
+              {:ok, %{messages: msgs}} ->
+                Enum.flat_map(msgs, fn m ->
+                  role = m["role"] || m[:role] || "unknown"
+                  text = m["content"] || m[:content] || ""
+                  role_color = if role == "user", do: Formatter.cyan(), else: Formatter.green()
 
-              ["#{role_color}[#{String.upcase(to_string(role))}]#{Formatter.reset()}"] ++
-                String.split(to_string(text), "\n") ++ [""]
-            end)
+                  ["#{role_color}[#{String.upcase(to_string(role))}]#{Formatter.reset()}"] ++
+                    String.split(Formatter.sanitize_utf8(to_string(text)), "\n") ++ [""]
+                end)
+
+              _ ->
+                String.split(safe_content, "\n")
+            end
 
           _ ->
-            String.split(content, "\n")
+            ["(Unreadable session log)"]
         end
       else
         ["(Compressed container or unreadable binary session log)"]
@@ -1464,7 +1491,10 @@ defmodule Yoke.CLI.ConfigExplorer do
 
     body =
       if File.exists?(prac.path) do
-        File.read!(prac.path) |> String.split("\n")
+        case File.read(prac.path) do
+          {:ok, content} -> content |> Formatter.sanitize_utf8() |> String.split("\n")
+          _ -> ["(File unreadable)"]
+        end
       else
         ["(File not found)"]
       end
@@ -1486,7 +1516,10 @@ defmodule Yoke.CLI.ConfigExplorer do
 
     body =
       if File.exists?(job.path) do
-        File.read!(job.path) |> String.split("\n")
+        case File.read(job.path) do
+          {:ok, content} -> content |> Formatter.sanitize_utf8() |> String.split("\n")
+          _ -> ["(Log file empty or unreadable)"]
+        end
       else
         ["(Log file empty or not found)"]
       end
@@ -1516,10 +1549,13 @@ defmodule Yoke.CLI.ConfigExplorer do
           ["Error parsing SKILL.md: #{skill.error}"]
 
         skill.content && skill.content != "" ->
-          String.split(skill.content, "\n")
+          skill.content |> Formatter.sanitize_utf8() |> String.split("\n")
 
         skill.path && File.exists?(skill.path) ->
-          File.read!(skill.path) |> String.split("\n")
+          case File.read(skill.path) do
+            {:ok, content} -> content |> Formatter.sanitize_utf8() |> String.split("\n")
+            _ -> ["(File unreadable)"]
+          end
 
         true ->
           ["(No content)"]
@@ -1538,11 +1574,13 @@ defmodule Yoke.CLI.ConfigExplorer do
   end
 
   defp format_item_detail(:diagnostics, %{raw_entry: raw}, _state) do
-    ["=== Diagnostic Report Entry ==="] ++ String.split(raw, "\n")
+    safe_raw = Formatter.sanitize_utf8(raw)
+    ["=== Diagnostic Report Entry ==="] ++ String.split(safe_raw, "\n")
   end
 
   defp format_item_detail(:diagnostics, entry, _state) when is_binary(entry) do
-    ["=== Diagnostic Report Entry ==="] ++ String.split(entry, "\n")
+    safe_raw = Formatter.sanitize_utf8(entry)
+    ["=== Diagnostic Report Entry ==="] ++ String.split(safe_raw, "\n")
   end
 
   defp format_item_detail(:analytics, %{kind: :bash_summary} = item, state) do
@@ -1961,8 +1999,8 @@ defmodule Yoke.CLI.ConfigExplorer do
         :left
 
       true ->
-        case String.to_charlist(other) do
-          [c | _] -> {:char, c}
+        case other do
+          <<c::utf8, _rest::binary>> -> {:char, c}
           _ -> :other
         end
     end

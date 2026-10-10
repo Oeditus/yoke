@@ -574,6 +574,7 @@ defmodule Yoke.CLI.QuestionPrompt do
 
   @doc "Calculates terminal display width in columns, handling wide symbols and stripping ANSI escapes."
   def display_width(str) when is_binary(str), do: Formatter.display_width(str)
+  def display_width(_), do: 0
 
   defp header_title({idx, total}, subagent)
        when is_integer(idx) and is_integer(total) and total > 1 do
@@ -1039,8 +1040,8 @@ defmodule Yoke.CLI.QuestionPrompt do
         :left
 
       true ->
-        case String.to_charlist(other) do
-          [c | _] -> {:char, c}
+        case other do
+          <<c::utf8, _rest::binary>> -> {:char, c}
           _ -> :other
         end
     end

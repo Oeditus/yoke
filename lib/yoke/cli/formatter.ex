@@ -197,18 +197,45 @@ defmodule Yoke.CLI.Formatter do
     "#{green()}#{bold()}user@#{session_id} [#{model}]> #{reset()}"
   end
 
+  @doc """
+  Sanitizes binary, chardata, or arbitrary terms into valid UTF-8, replacing
+  any invalid byte sequences with the Unicode replacement character (U+FFFD).
+  Safe against non-binary and malformed inputs.
+  """
+  def sanitize_utf8(data) when is_binary(data) do
+    String.replace_invalid(data)
+  end
+
+  def sanitize_utf8(data) when is_list(data) do
+    data |> IO.chardata_to_string() |> String.replace_invalid()
+  rescue
+    _ ->
+      Enum.map_join(data, "", fn
+        bin when is_binary(bin) -> String.replace_invalid(bin)
+        other -> inspect(other)
+      end)
+  end
+
+  def sanitize_utf8(nil), do: ""
+
+  def sanitize_utf8(data) do
+    data |> to_string() |> String.replace_invalid()
+  rescue
+    _ -> inspect(data)
+  end
+
   def format_user_prompt_str(prompt_str) do
-    "#{green()}#{bold()}#{prompt_str}#{reset()}"
+    "#{green()}#{bold()}#{sanitize_utf8(prompt_str)}#{reset()}"
   end
 
   @doc "Renders markdown text using Marcli library into styled ANSI terminal text."
   def format_markdown(text) when is_binary(text) do
-    safe_text = String.replace_invalid(text)
+    safe_text = sanitize_utf8(text)
     Marcli.render(safe_text)
   rescue
-    _ -> text
+    _ -> sanitize_utf8(text)
   catch
-    _kind, _reason -> text
+    _kind, _reason -> sanitize_utf8(text)
   end
 
   def format_markdown(text), do: inspect(text)
@@ -219,23 +246,11 @@ defmodule Yoke.CLI.Formatter do
   an `ArgumentError` and crash the caller.
   """
   def safe_puts(device \\ :stdio, item) do
-    IO.puts(device, item)
+    IO.puts(device, sanitize_utf8(item))
   rescue
     _ in ArgumentError ->
       try do
-        str =
-          cond do
-            is_binary(item) ->
-              String.replace_invalid(item)
-
-            is_list(item) ->
-              item |> IO.chardata_to_string() |> String.replace_invalid()
-
-            true ->
-              inspect(item)
-          end
-
-        IO.puts(device, str)
+        IO.puts(device, sanitize_utf8(item))
       rescue
         _ -> IO.binwrite(device, inspect(item) <> "\n")
       end
@@ -320,19 +335,19 @@ defmodule Yoke.CLI.Formatter do
   end
 
   def format_error(msg) do
-    "#{red()}#{bold()}●#{reset()} #{msg}"
+    "#{red()}#{bold()}●#{reset()} #{sanitize_utf8(msg)}"
   end
 
   def format_success(msg) do
-    "#{green()}#{bold()}●#{reset()} #{msg}"
+    "#{green()}#{bold()}●#{reset()} #{sanitize_utf8(msg)}"
   end
 
   def format_info(msg) do
-    "#{cyan()}#{bold()}●#{reset()} #{msg}"
+    "#{cyan()}#{bold()}●#{reset()} #{sanitize_utf8(msg)}"
   end
 
   def format_warning(msg) do
-    "#{yellow()}#{bold()}●#{reset()} #{msg}"
+    "#{yellow()}#{bold()}●#{reset()} #{sanitize_utf8(msg)}"
   end
 
   @doc """
@@ -344,32 +359,29 @@ defmodule Yoke.CLI.Formatter do
   blocks, matching how virtually every terminal emulator actually renders
   them.
 
-  This matters because callers such as `LineEditor`'s status bar ruler pad
-  dashes to fill the *entire* terminal width (see `center_in_ruler/3`), so
-  the rendered line always sits exactly at the width boundary. Previously
-  this delegated to `Owl.Data.length/1`, which only counts Unicode
-  graphemes -- it treats every character, including wide CJK ideographs
-  and emoji (e.g. the `🔌` MCP icon), as width 1. That silent 1-column
-  undercount was enough to push the real rendered line past the terminal
-  width on every redraw, which then desynced the cursor math used to
-  erase and redraw the status bar in place, leaving stale fragments
-  behind on every keystroke.
+  Safely sanitizes invalid UTF-8 byte sequences upfront and falls back to
+  0 on non-binary/nil inputs or unexpected errors.
   """
   def display_width(str) when is_binary(str) do
     str
+    |> sanitize_utf8()
     |> String.replace(~r/\e\][^\e\a]*(?:\e\\|\a)|\e\[[0-9;?]*[a-zA-Z~]/, "")
     |> String.graphemes()
     |> Enum.reduce(0, fn grapheme, acc -> acc + grapheme_width(grapheme) end)
+  rescue
+    _ -> 0
   end
+
+  def display_width(_), do: 0
 
   # A grapheme cluster's rendered width is the width of its base (first)
   # code point -- combining marks, variation selectors, and any other code
   # points that follow within the same cluster render as zero-width
   # modifiers of that base character.
-  defp grapheme_width(grapheme) do
-    [first | _rest] = String.to_charlist(grapheme)
-    codepoint_width(first)
-  end
+  defp grapheme_width(<<first::utf8, _rest::binary>>), do: codepoint_width(first)
+  defp grapheme_width(<<_byte, _rest::binary>>), do: 1
+  defp grapheme_width(""), do: 0
+  defp grapheme_width(_), do: 0
 
   # Approximates POSIX `wcwidth(3)` for the ranges that matter to a
   # terminal UI: East Asian Wide/Fullwidth blocks (CJK ideographs, Hangul
@@ -407,6 +419,8 @@ defmodule Yoke.CLI.Formatter do
 
   @doc "Copies a markdown text payload to the OS clipboard."
   def copy_to_clipboard(text) when is_binary(text) do
+    safe_text = sanitize_utf8(text)
+
     cmd_info =
       cond do
         wl = System.find_executable("wl-copy") -> {wl, []}
@@ -421,7 +435,7 @@ defmodule Yoke.CLI.Formatter do
       {exec_path, args} ->
         try do
           port = Port.open({:spawn_executable, exec_path}, [:binary, args: args])
-          Port.command(port, text)
+          Port.command(port, safe_text)
           Port.close(port)
           :ok
         rescue
@@ -432,6 +446,8 @@ defmodule Yoke.CLI.Formatter do
         {:error, "No system clipboard utility found (install xclip, wl-copy, xsel, or pbcopy)."}
     end
   end
+
+  def copy_to_clipboard(text), do: copy_to_clipboard(sanitize_utf8(text))
 
   @doc """
   Renders comprehensive help menu for Pull Request and Code Review commands.

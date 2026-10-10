@@ -345,6 +345,7 @@ defmodule Yoke.Hands.Executor do
 
   defp slice_to_display_width(str, target_width) do
     str
+    |> Yoke.CLI.Formatter.sanitize_utf8()
     |> String.graphemes()
     |> Enum.reduce_while({"", 0}, fn grapheme, {acc, w} ->
       gw = Yoke.CLI.Formatter.display_width(grapheme)

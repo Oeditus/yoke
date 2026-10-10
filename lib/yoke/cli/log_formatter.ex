@@ -5,6 +5,7 @@ defmodule Yoke.CLI.LogFormatter do
   Suppresses noisy low-level socket transport chatter and handles raw mode CRLF formatting.
   """
 
+  alias Yoke.CLI.Formatter
   alias Yoke.CLI.LineEditor
   alias Yoke.CLI.Spinner
   alias Yoke.CLI.TerminalOwner
@@ -72,13 +73,14 @@ defmodule Yoke.CLI.LogFormatter do
     File.mkdir_p!(dir)
     file_path = Path.join(dir, "ERRORS_TO_FIX.lmml")
     timestamp = DateTime.utc_now() |> DateTime.to_iso8601()
+    safe_msg = Formatter.sanitize_utf8(formatted_msg)
 
     entry = """
 
     <!-- error_entry -->
     ## [#{timestamp}] Level: #{level}
     ```
-    #{String.trim(formatted_msg)}
+    #{String.trim(safe_msg)}
     ```
     """
 

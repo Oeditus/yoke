@@ -1931,6 +1931,7 @@ defmodule Yoke.CLI.LineEditor do
   end
 
   def display_width(str) when is_binary(str), do: Formatter.display_width(str)
+  def display_width(_), do: 0
 
   defp strip_ansi_length(str), do: display_width(str)
 
@@ -1951,13 +1952,15 @@ defmodule Yoke.CLI.LineEditor do
   def truncate_to_width(str, max_width) when is_binary(str) and max_width <= 0, do: ""
 
   def truncate_to_width(str, max_width) when is_binary(str) do
-    if display_width(str) <= max_width do
-      str
+    safe_str = Formatter.sanitize_utf8(str)
+
+    if display_width(safe_str) <= max_width do
+      safe_str
     else
       budget = max(max_width - 1, 0)
 
       {truncated, _width} =
-        str
+        safe_str
         |> tokenize_ansi()
         |> Enum.reduce_while({"", 0}, fn
           {:escape, code}, {acc, width} ->
@@ -1977,13 +1980,19 @@ defmodule Yoke.CLI.LineEditor do
     end
   end
 
+  def truncate_to_width(other, max_width) do
+    truncate_to_width(Formatter.sanitize_utf8(other), max_width)
+  end
+
   # Splits a string into an ordered list of `{:escape, code}` (a zero-width
   # ANSI CSI sequence) and `{:char, grapheme}` tokens, so truncation can
   # walk the string counting only visible characters towards the width
   # budget while always copying escape codes through untouched.
   defp tokenize_ansi(str) do
+    safe_str = Formatter.sanitize_utf8(str)
+
     @ansi_escape_pattern
-    |> Regex.split(str, include_captures: true)
+    |> Regex.split(safe_str, include_captures: true)
     |> Enum.flat_map(fn chunk ->
       if String.match?(chunk, ~r/^(\e\][^\e\a]*(?:\e\\|\a)|\e\[[0-9;?]*[a-zA-Z~])$/) do
         [{:escape, chunk}]
@@ -2069,8 +2078,8 @@ defmodule Yoke.CLI.LineEditor do
         :other
 
       true ->
-        case String.to_charlist(other) do
-          [c | _] -> {:char, c}
+        case other do
+          <<c::utf8, _rest::binary>> -> {:char, c}
           _ -> :other
         end
     end
