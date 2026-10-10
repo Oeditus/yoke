@@ -188,22 +188,32 @@ defmodule Yoke.HandsExecutorTest do
 
       assert Executor.humanize_action("list_dir", %{"path" => "lib/cure"}) ==
                "List   lib/cure"
+
+      assert Executor.humanize_action("glob_search", %{"pattern" => "lib/**/*.ex"}) ==
+               "Glob   lib/**/*.ex"
+
+      assert Executor.humanize_action("glob_search", %{"pattern" => "*.ex", "path" => "lib"}) ==
+               "Glob   *.ex in lib"
     end
 
-    test "format_execution_log bundles bullet and semantic text" do
+    test "format_execution_log colors verb alongside bullet" do
       Application.put_env(:yoke, :expand_tool_calls, false)
 
       line_tool = Executor.format_execution_log("read_file", %{"path" => "lib/app.ex"})
-      assert line_tool =~ "◈"
-      assert line_tool =~ "Read   lib/app.ex"
+      # Both bullet ◈ and verb Read are in cyan
+      assert line_tool =~ "\e[36m◈ Read  \e[0m lib/app.ex"
 
       line_shell = Executor.format_execution_log("bash", %{"command" => "git status"})
-      assert line_shell =~ "❯"
-      assert line_shell =~ "Bash   $ git status"
+      # Both bullet ❯ and verb Bash are in yellow
+      assert line_shell =~ "\e[33m❯ Bash  \e[0m $ git status"
 
       line_other = Executor.format_execution_log("job_status", %{"job_id" => "job_123"})
-      assert line_other =~ "⟡"
-      assert line_other =~ "Job    #job_123"
+      # Both bullet ⟡ and verb Job are in magenta
+      assert line_other =~ "\e[35m⟡ Job   \e[0m #job_123"
+
+      line_glob = Executor.format_execution_log("glob_search", %{"pattern" => "lib/**/*.ex"})
+      assert line_glob =~ "\e[36m◈ Glob  \e[0m lib/**/*.ex"
+      refute line_glob =~ "Glob_s"
     end
   end
 end

@@ -97,18 +97,18 @@ defmodule Yoke.ExternalCall do
   defp log_success(service, meta, duration_ms) do
     model = get_meta_field(meta, :model)
     target = if model, do: "#{model}", else: "#{service}"
-    badge = Yoke.CLI.Formatter.magenta() <> "⟡" <> Yoke.CLI.Formatter.reset()
-    Logger.debug("#{badge} API    #{target} (#{duration_ms}ms)")
+    badge = Yoke.CLI.Formatter.magenta() <> "⟡ API   " <> Yoke.CLI.Formatter.reset()
+    Logger.debug("#{badge} #{target} (#{duration_ms}ms)")
   end
 
   defp log_failure(service, meta, classification, reason, duration_ms) do
     model = get_meta_field(meta, :model)
     target = if model, do: "#{model}", else: "#{service}"
-    badge = Yoke.CLI.Formatter.magenta() <> "⟡" <> Yoke.CLI.Formatter.reset()
+    badge = Yoke.CLI.Formatter.magenta() <> "⟡ API   " <> Yoke.CLI.Formatter.reset()
     clean_reason = if is_binary(reason), do: reason, else: inspect(reason)
 
     msg =
-      "#{badge} API    #{target} failed (#{classification}, #{duration_ms}ms): #{clean_reason}"
+      "#{badge} #{target} failed (#{classification}, #{duration_ms}ms): #{clean_reason}"
 
     case classification do
       :timeout -> Logger.warning(msg)

@@ -403,30 +403,49 @@ defmodule Yoke.Hands.Executor do
 
   def tool_category(_), do: :other
 
+  @doc "Returns color code for tool category."
+  def category_color(:tool_call), do: Yoke.CLI.Formatter.cyan()
+  def category_color(:shell_out), do: Yoke.CLI.Formatter.yellow()
+  def category_color(:other), do: Yoke.CLI.Formatter.magenta()
+
+  @doc "Returns Unicode symbol for tool category."
+  def category_symbol(:tool_call), do: "◈"
+  def category_symbol(:shell_out), do: "❯"
+  def category_symbol(:other), do: "⟡"
+
   @doc "Returns colored Unicode bullet for tool category: ToolCall (◈), ShellOut (❯), Other (⟡)."
-  def category_badge(:tool_call),
-    do: Yoke.CLI.Formatter.cyan() <> "◈" <> Yoke.CLI.Formatter.reset()
+  def category_badge(cat) do
+    category_color(cat) <> category_symbol(cat) <> Yoke.CLI.Formatter.reset()
+  end
 
-  def category_badge(:shell_out),
-    do: Yoke.CLI.Formatter.yellow() <> "❯" <> Yoke.CLI.Formatter.reset()
-
-  def category_badge(:other),
-    do: Yoke.CLI.Formatter.magenta() <> "⟡" <> Yoke.CLI.Formatter.reset()
-
-  @doc "Formats full tool execution line with bullet, target prefix, and semantic summary."
+  @doc "Formats full tool execution line with colored bullet and verb, target prefix, and semantic summary."
   def format_execution_log(tool_name, args, prefix \\ nil) do
     cat = tool_category(tool_name)
-    badge = category_badge(cat)
+    color = category_color(cat)
+    symbol = category_symbol(cat)
+    reset = Yoke.CLI.Formatter.reset()
     prefix_str = if prefix, do: " #{prefix}", else: ""
 
-    action_text =
-      if Yoke.CLI.LineEditor.expand_tool_calls?() do
-        format_tool_call(tool_name, args)
-      else
-        humanize_action(tool_name, args)
-      end
+    if Yoke.CLI.LineEditor.expand_tool_calls?() do
+      badge = category_badge(cat)
+      "#{badge}#{prefix_str} #{format_tool_call(tool_name, args)}"
+    else
+      action_text = humanize_action(tool_name, args)
+      {verb_padded, details} = split_verb_and_details(action_text)
+      details_str = if details != "", do: " #{details}", else: ""
+      "#{color}#{symbol} #{verb_padded}#{reset}#{prefix_str}#{details_str}"
+    end
+  end
 
-    "#{badge}#{prefix_str} #{action_text}"
+  defp split_verb_and_details(action_text) do
+    case Regex.run(~r/^(\S+)\s*(.*)$/, action_text) do
+      [_, verb, details] ->
+        verb_padded = String.pad_trailing(verb, 6)
+        {verb_padded, details}
+
+      _ ->
+        {String.pad_trailing(action_text, 6), ""}
+    end
   end
 
   @doc "Formats tool call into succinct, human-readable action text."
@@ -502,6 +521,24 @@ defmodule Yoke.Hands.Executor do
         path = if path == "", do: ".", else: path
         "List   #{path}"
 
+      name_lower in ["glob_search", "glob", "file_glob"] or String.starts_with?(name_lower, "glob_") ->
+        pattern = get_arg(args, ["pattern", "glob"])
+        path = get_arg(args, ["path", "cwd"])
+
+        cond do
+          pattern != "" and path != "" and path != "." ->
+            "Glob   #{pattern} in #{path}"
+
+          pattern != "" ->
+            "Glob   #{pattern}"
+
+          path != "" and path != "." ->
+            "Glob   in #{path}"
+
+          true ->
+            "Glob"
+        end
+
       name_lower == "find_by_name" ->
         name = get_arg(args, ["name", "pattern"])
         path = get_arg(args, ["path"])
@@ -553,6 +590,8 @@ defmodule Yoke.Hands.Executor do
         label =
           tool_name
           |> String.replace("mcp_", "")
+          |> String.split("_")
+          |> List.first()
           |> String.capitalize()
           |> String.slice(0, 6)
           |> String.pad_trailing(6)
