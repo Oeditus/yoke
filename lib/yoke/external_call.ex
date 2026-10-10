@@ -106,7 +106,9 @@ defmodule Yoke.ExternalCall do
     target = if model, do: "#{model}", else: "#{service}"
     badge = Yoke.CLI.Formatter.magenta() <> "⟡" <> Yoke.CLI.Formatter.reset()
     clean_reason = if is_binary(reason), do: reason, else: inspect(reason)
-    msg = "#{badge} API    #{target} failed (#{classification}, #{duration_ms}ms): #{clean_reason}"
+
+    msg =
+      "#{badge} API    #{target} failed (#{classification}, #{duration_ms}ms): #{clean_reason}"
 
     case classification do
       :timeout -> Logger.warning(msg)
@@ -115,15 +117,9 @@ defmodule Yoke.ExternalCall do
     end
   end
 
-  defp get_meta_field(meta, key) when is_list(meta) do
-    Keyword.get(meta, key) || Keyword.get(meta, to_string(key))
-  end
-
-  defp get_meta_field(meta, key) when is_map(meta) do
+  defp get_meta_field(%{} = meta, key) do
     Map.get(meta, key) || Map.get(meta, to_string(key))
   end
-
-  defp get_meta_field(_, _), do: nil
 
   defp emit_telemetry(service, status, duration_ms, meta) do
     if Code.ensure_loaded?(:telemetry) and function_exported?(:telemetry, :execute, 3) do

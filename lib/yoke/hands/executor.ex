@@ -591,8 +591,6 @@ defmodule Yoke.Hands.Executor do
     end
   end
 
-  defp truncate_str(other, max_len), do: truncate_str(to_string(other), max_len)
-
   defp format_short_args(args) when is_map(args) do
     visible = Map.reject(args, fn {k, _} -> is_binary(k) and String.starts_with?(k, "_") end)
 
