@@ -367,7 +367,7 @@ defmodule Yoke.Plugin.DefaultTools do
 
           sliced =
             lines
-            |> Enum.slice((s - 1)..(e - 1))
+            |> Enum.slice((s - 1)..(e - 1)//1)
             |> Enum.with_index(s)
             |> Enum.map_join("\n", fn {line, num} -> "#{num}: #{line}" end)
 
