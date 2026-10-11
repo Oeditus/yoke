@@ -7,31 +7,39 @@ defmodule Yoke.Brain.AgentLoop do
 
   @standard_tools ~w(read_file read_files write_file replace_file list_dir bash elixir_eval ask_question)
 
+  @repeatable_tools ~w(bash cmd run_command shell exec job_status ask_question user_input)
+
   @doc "Detects whether the exact same tool calls with identical arguments were executed in the previous turn."
   def duplicate_tool_calls?(messages, new_tool_calls)
       when is_list(messages) and is_list(new_tool_calls) do
-    last_assistant_msg =
-      messages
-      |> Enum.reverse()
-      |> Enum.find(fn m -> m["role"] == "assistant" and is_list(m["tool_calls"]) end)
+    # Repeatable tools (such as bash probes, process checks, interactive questions)
+    # observe external, mutable system state and must never be deduplicated.
+    if Enum.any?(new_tool_calls, fn tc -> tc.name in @repeatable_tools end) do
+      false
+    else
+      last_assistant_msg =
+        messages
+        |> Enum.reverse()
+        |> Enum.find(fn m -> m["role"] == "assistant" and is_list(m["tool_calls"]) end)
 
-    case last_assistant_msg do
-      %{"tool_calls" => prev_calls} when is_list(prev_calls) ->
-        prev_names_and_args =
-          Enum.map(prev_calls, fn tc ->
-            fn_data = Map.get(tc, "function", %{})
-            {Map.get(fn_data, "name"), Map.get(fn_data, "arguments")}
-          end)
+      case last_assistant_msg do
+        %{"tool_calls" => prev_calls} when is_list(prev_calls) ->
+          prev_names_and_args =
+            Enum.map(prev_calls, fn tc ->
+              fn_data = Map.get(tc, "function", %{})
+              {Map.get(fn_data, "name"), Map.get(fn_data, "arguments")}
+            end)
 
-        new_names_and_args =
-          Enum.map(new_tool_calls, fn tc ->
-            {tc.name, Yoke.Json.encode!(tc.arguments)}
-          end)
+          new_names_and_args =
+            Enum.map(new_tool_calls, fn tc ->
+              {tc.name, Yoke.Json.encode!(tc.arguments)}
+            end)
 
-        prev_names_and_args == new_names_and_args and prev_names_and_args != []
+          prev_names_and_args == new_names_and_args and prev_names_and_args != []
 
-      _ ->
-        false
+        _ ->
+          false
+      end
     end
   end
 

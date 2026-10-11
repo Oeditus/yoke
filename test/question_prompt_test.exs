@@ -82,15 +82,15 @@ defmodule Yoke.CLI.QuestionPromptTest do
       state = QuestionPrompt.new_state("Confirm?", ["Yes", "No"], false, 2)
       output = capture_io(:user, fn -> QuestionPrompt.render_modal(state) end)
 
-      assert output =~ "Question from AI"
-      refute output =~ "Question 1/1 from AI"
+      assert output =~ "Question from Robby Ott"
+      refute output =~ "Question 1/1 from Robby Ott"
     end
 
     test "shows a Question i/N header when progress is given for a multi-question batch" do
       state = QuestionPrompt.new_state("Confirm?", ["Yes", "No"], false, 2, true, {2, 3})
       output = capture_io(:user, fn -> QuestionPrompt.render_modal(state) end)
 
-      assert output =~ "Question 2/3 from AI"
+      assert output =~ "Question 2/3 from Robby Ott"
     end
 
     test "omits the progress count when there is only a single question" do
@@ -98,7 +98,7 @@ defmodule Yoke.CLI.QuestionPromptTest do
       output = capture_io(:user, fn -> QuestionPrompt.render_modal(state) end)
 
       refute output =~ "1/1"
-      assert output =~ "Question from AI"
+      assert output =~ "Question from Robby Ott"
     end
 
     test "erase?: false skips the modal's own erase of its prior render" do
@@ -360,7 +360,7 @@ defmodule Yoke.CLI.QuestionPromptTest do
       state = QuestionPrompt.new_state(question, ["Approve & execute", "Deny"], false, 2)
       output = capture_io(:user, fn -> QuestionPrompt.render_modal(state) end)
 
-      assert output =~ "Question from AI"
+      assert output =~ "Question from Robby Ott"
       assert output =~ "Summary"
       assert output =~ "Steps"
       assert output =~ "Files"
@@ -368,6 +368,25 @@ defmodule Yoke.CLI.QuestionPromptTest do
       refute output =~ "## Steps"
       assert output =~ "▸ Format markdown with Marcli"
       assert output =~ "lib/yoke/cli/question_prompt.ex"
+    end
+
+    test "respects custom :assistant_name global setting" do
+      prior = Application.get_env(:yoke, :assistant_name)
+
+      try do
+        Application.put_env(:yoke, :assistant_name, "CustomAssistant")
+        state = QuestionPrompt.new_state("Confirm?", ["Yes", "No"], false, 2)
+        output = capture_io(:user, fn -> QuestionPrompt.render_modal(state) end)
+
+        assert output =~ "Question from CustomAssistant"
+        refute output =~ "Question from Robby Ott"
+      after
+        if prior != nil do
+          Application.put_env(:yoke, :assistant_name, prior)
+        else
+          Application.delete_env(:yoke, :assistant_name)
+        end
+      end
     end
   end
 end

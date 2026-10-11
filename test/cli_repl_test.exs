@@ -23,7 +23,7 @@ defmodule Yoke.CLIReplTest do
           {:ok, content} ->
             case Jason.decode(content) do
               {:ok, map} ->
-                cleaned = Map.drop(map, ["god_mode"])
+                cleaned = Map.drop(map, ["god_mode", "assistant_name"])
                 File.write!(cfg_path, Jason.encode!(cleaned, pretty: true))
 
               _ ->
@@ -226,6 +226,60 @@ defmodule Yoke.CLIReplTest do
     assert :continue = Repl.handle_input("/model chat", pid, id)
     assert :continue = Repl.handle_input("/model vision", pid, id)
     assert :continue = Repl.handle_input("/model v4", pid, id)
+  end
+
+  test "handles /config assistant_name commands", %{session_pid: pid, session_id: id} do
+    prior = Application.get_env(:yoke, :assistant_name)
+
+    try do
+      out_usage =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/config assistant_name", pid, id)
+        end)
+
+      assert out_usage =~ "Usage: /config assistant_name <name>"
+
+      out_set =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/config assistant_name Jarvis", pid, id)
+        end)
+
+      assert out_set =~ "Assistant name set to 'Jarvis'"
+      assert Yoke.Config.assistant_name() == "Jarvis"
+
+      out_alias =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/config assistant HAL", pid, id)
+        end)
+
+      assert out_alias =~ "Assistant name set to 'HAL'"
+      assert Yoke.Config.assistant_name() == "HAL"
+    after
+      if prior != nil do
+        Application.put_env(:yoke, :assistant_name, prior)
+      else
+        Application.delete_env(:yoke, :assistant_name)
+      end
+
+      cfg_path = ".yoke/config.json"
+
+      if File.exists?(cfg_path) do
+        case File.read(cfg_path) do
+          {:ok, content} ->
+            case Jason.decode(content) do
+              {:ok, map} ->
+                cleaned = Map.drop(map, ["assistant_name"])
+                File.write!(cfg_path, Jason.encode!(cleaned, pretty: true))
+
+              _ ->
+                :ok
+            end
+
+          _ ->
+            :ok
+        end
+      end
+    end
   end
 
   test "handles hands execution mode settings", %{session_pid: pid, session_id: id} do

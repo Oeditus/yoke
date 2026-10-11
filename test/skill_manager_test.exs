@@ -1,5 +1,5 @@
 defmodule Yoke.SkillManagerTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Yoke.Skill.Manager, as: SkillManager
 

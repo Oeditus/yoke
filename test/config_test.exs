@@ -142,4 +142,56 @@ defmodule Yoke.ConfigTest do
 
     File.rm_rf!(tmp_dir)
   end
+
+  describe "assistant_name setting" do
+    test "defaults to 'Robby Ott' in config and helper" do
+      config = Config.load_config()
+      assert config["assistant_name"] == "Robby Ott"
+      assert Config.assistant_name() == "Robby Ott"
+    end
+
+    test "allows Application environment override" do
+      prior = Application.get_env(:yoke, :assistant_name)
+
+      try do
+        Config.set_assistant_name("Jarvis")
+        assert Config.assistant_name() == "Jarvis"
+      after
+        if prior != nil do
+          Application.put_env(:yoke, :assistant_name, prior)
+        else
+          Application.delete_env(:yoke, :assistant_name)
+        end
+      end
+    end
+
+    test "allows workspace config file override" do
+      prior = Application.get_env(:yoke, :assistant_name)
+      # Temporarily ensure application env matches default
+      Application.put_env(:yoke, :assistant_name, "Robby Ott")
+
+      tmp_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "config_assistant_name_test_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp_dir)
+
+      try do
+        assert :ok = Config.save_config(%{"assistant_name" => "CustomRobot"}, tmp_dir)
+        loaded = Config.load_config(tmp_dir)
+        assert loaded["assistant_name"] == "CustomRobot"
+        assert Config.assistant_name(tmp_dir) == "CustomRobot"
+      after
+        File.rm_rf!(tmp_dir)
+
+        if prior != nil do
+          Application.put_env(:yoke, :assistant_name, prior)
+        else
+          Application.delete_env(:yoke, :assistant_name)
+        end
+      end
+    end
+  end
 end

@@ -44,6 +44,37 @@ defmodule Yoke.Brain.AgentLoopTest do
 
       assert AgentLoop.duplicate_tool_calls?(messages, new_tool_calls) == false
     end
+
+    test "does not deduplicate repeatable tools like bash probes across turns" do
+      messages = [
+        %{"role" => "user", "content" => "Check status"},
+        %{
+          "role" => "assistant",
+          "content" => "",
+          "tool_calls" => [
+            %{
+              "id" => "call_1",
+              "function" => %{
+                "name" => "bash",
+                "arguments" => "{\"command\":\"curl -s http://localhost:4000/health\"}"
+              }
+            }
+          ]
+        },
+        %{"role" => "tool", "content" => "status: starting"}
+      ]
+
+      new_tool_calls = [
+        %{
+          id: "call_2",
+          name: "bash",
+          arguments: %{"command" => "curl -s http://localhost:4000/health"}
+        }
+      ]
+
+      # Probes must be permitted to repeat to observe changing external state
+      assert AgentLoop.duplicate_tool_calls?(messages, new_tool_calls) == false
+    end
   end
 
   describe "AgentLoop circuit breaker for non-standard tool failures" do

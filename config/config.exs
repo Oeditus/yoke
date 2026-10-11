@@ -8,6 +8,10 @@ config :dllb,
   pool_size: String.to_integer(System.get_env("DLLB_POOL_SIZE", "30")),
   timeout: :infinity
 
+# Configure yoke global defaults
+config :yoke,
+  assistant_name: "Robby Ott"
+
 # Configure ragex knowledge graph store backend to use per-project dllb server daemon
 # Disable stdio server when embedded in yoke to prevent raw JSON-RPC dumps
 config :ragex,

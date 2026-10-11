@@ -4,6 +4,7 @@ defmodule Yoke.Config do
   """
 
   @default_config %{
+    "assistant_name" => "Robby Ott",
     "model" => "deepseek-chat",
     "endpoint" => "https://api.deepseek.com/chat/completions",
     # "auto_approve" | "ask_confirm"
@@ -60,6 +61,30 @@ defmodule Yoke.Config do
     # automatically answered without user interaction. Default: false.
     "god_mode" => false
   }
+
+  @doc "Returns the configured assistant name, defaulting to 'Robby Ott'."
+  def assistant_name(cwd \\ ".") do
+    case Application.get_env(:yoke, :assistant_name) do
+      name when is_binary(name) and name != "" and name != "Robby Ott" ->
+        name
+
+      app_name ->
+        cfg = load_config(cwd)
+
+        case Map.get(cfg, "assistant_name") do
+          name when is_binary(name) and name != "" and name != "Robby Ott" ->
+            name
+
+          _ ->
+            if is_binary(app_name) and app_name != "", do: app_name, else: "Robby Ott"
+        end
+    end
+  end
+
+  @doc "Sets the global assistant name."
+  def set_assistant_name(name) when is_binary(name) do
+    Application.put_env(:yoke, :assistant_name, name)
+  end
 
   @doc "Returns true if God mode is enabled (auto-answering all model questions and confirmations)."
   def god_mode?(cwd \\ ".") do

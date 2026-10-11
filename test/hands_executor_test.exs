@@ -215,5 +215,98 @@ defmodule Yoke.HandsExecutorTest do
       assert line_glob =~ "\e[36m◈ Glob  \e[0m lib/**/*.ex"
       refute line_glob =~ "Glob_s"
     end
+
+    test "humanize_action reports line ranges and detailed summaries for edits and writes" do
+      # Edit with explicit StartLine and EndLine and Description
+      assert Executor.humanize_action("replace_file_content", %{
+               "TargetFile" => "proof/Core/Syntax.agda",
+               "StartLine" => 252,
+               "EndLine" => 262,
+               "Description" => "fix universe level inference"
+             }) ==
+               "Edit   proof/Core/Syntax.agda:252-262 (11 lines) — fix universe level inference"
+
+      # Edit with explicit lines but no description
+      assert Executor.humanize_action("replace_file_content", %{
+               "TargetFile" => "proof/Core/Syntax.agda",
+               "StartLine" => 252,
+               "EndLine" => 262
+             }) == "Edit   proof/Core/Syntax.agda:252-262 (11 lines)"
+
+      # Edit with single line
+      assert Executor.humanize_action("edit_file", %{
+               "path" => "proof/Core/Syntax.agda",
+               "start_line" => 42,
+               "end_line" => 42
+             }) == "Edit   proof/Core/Syntax.agda:42 (1 line)"
+
+      # Edit locating target content in an existing file on disk
+      tmp_dir = System.tmp_dir!()
+
+      tmp_file =
+        Path.join(tmp_dir, "yoke_edit_target_test_#{System.unique_integer([:positive])}.txt")
+
+      File.write!(tmp_file, "line 1\nline 2\ntarget to replace\nline 4\nline 5\n")
+
+      assert Executor.humanize_action("replace_file", %{
+               "path" => tmp_file,
+               "target" => "target to replace",
+               "replacement" => "new content"
+             }) == "Edit   #{tmp_file}:3 (1 line)"
+
+      File.rm(tmp_file)
+
+      # Write reporting line count
+      assert Executor.humanize_action("write_file", %{
+               "path" => "lib/cure/generated.ex",
+               "content" => "defmodule Cure.Generated do\n  def hello, do: :world\nend\n",
+               "Description" => "generate stub module"
+             }) == "Write  lib/cure/generated.ex:1-4 (4 lines) — generate stub module"
+
+      # Subagent invocation formatting
+      assert Executor.humanize_action("invoke_subagent", %{
+               "Subagents" => [
+                 %{"Role" => "Codebase Researcher", "Prompt" => "Explore syntax trees"}
+               ]
+             }) == "Agent  Codebase Researcher: \"Explore syntax trees\""
+
+      # MCP Ragex symbol lookup
+      assert Executor.humanize_action("mcp_ragex_find_symbol", %{
+               "symbol" => "parse_expr",
+               "path" => "lib/parser.ex"
+             }) == "Symbol parse_expr in lib/parser.ex"
+
+      # MCP Ragex edit_file with multi-change list (does not crash and calculates range)
+      assert Executor.humanize_action("mcp_ragex_edit_file", %{
+               "path" => "proof/Core/Syntax.agda",
+               "changes" => [
+                 %{"line_start" => 10, "line_end" => 15, "new_text" => "foo"},
+                 %{"line_start" => 25, "line_end" => 30, "new_text" => "bar"}
+               ],
+               "Description" => "refactor types"
+             }) == "Edit   proof/Core/Syntax.agda:10-30 (21 lines) (2 changes) — refactor types"
+
+      # MCP Ragex edit_files with multi-file list
+      assert Executor.humanize_action("mcp_ragex_edit_files", %{
+               "files" => [
+                 %{"path" => "lib/foo.ex", "changes" => [%{"line_start" => 1, "line_end" => 2}]},
+                 %{"path" => "lib/bar.ex", "changes" => [%{"line_start" => 5, "line_end" => 6}]}
+               ]
+             }) == "Edit   lib/foo.ex, lib/bar.ex"
+
+      # format_execution_log does not crash when tool has complex list of maps
+      log_multi =
+        Executor.format_execution_log("mcp_ragex_edit_file", %{
+          "path" => "lib/app.ex",
+          "changes" => [%{"line_start" => 1, "line_end" => 3, "new_text" => "test"}]
+        })
+
+      assert log_multi =~ "lib/app.ex"
+
+      # Never exceeds terminal width
+      very_long_cmd = String.duplicate("mix test --very-long-flag ", 30)
+      log_line = Executor.format_execution_log("bash", %{"command" => very_long_cmd})
+      assert Yoke.CLI.LineEditor.display_width(log_line) <= Executor.terminal_cols()
+    end
   end
 end

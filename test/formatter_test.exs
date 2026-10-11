@@ -22,6 +22,9 @@ defmodule Yoke.FormatterTest do
     assert length(tips) > 10
     assert Enum.any?(tips, &String.contains?(&1, "/help"))
     assert Enum.any?(tips, &String.contains?(&1, "/compact"))
+    assert Enum.any?(tips, &String.contains?(&1, "Robby Ott"))
+    refute Enum.any?(tips, &String.contains?(&1, "no AI/tooling"))
+    refute Enum.any?(tips, &String.contains?(&1, "latest assistant response"))
 
     random_tip = Formatter.random_tip()
     assert is_binary(random_tip)
@@ -43,6 +46,10 @@ defmodule Yoke.FormatterTest do
     assert String.contains?(menu, "/review")
     assert String.contains?(menu, "/skills")
     assert String.contains?(menu, "/compact")
+    assert String.contains?(menu, "Robby Ott")
+    refute String.contains?(menu, "no AI/tooling")
+    refute String.contains?(menu, "Interrupt the AI")
+    refute String.contains?(menu, "latest assistant response")
 
     lines =
       menu

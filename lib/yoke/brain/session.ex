@@ -20,8 +20,7 @@ defmodule Yoke.Brain.Session do
   alias Yoke.TaskEngine.TaskSupervisor
   alias Yoke.Workflow.Plan, as: WorkflowPlan
 
-  @default_system_prompt """
-  You are an expert agentic AI coding assistant powered by DeepSeek.
+  @default_system_prompt_body """
   You have access to tools for file operations, bash execution, skills, MCP servers (including Ragex code intelligence), Elixir evaluation, and interactive user questions (ask_question tool).
 
   PARALLEL EXECUTION IS OUR VIRTUE & CORE STRENGTH:
@@ -52,6 +51,14 @@ defmodule Yoke.Brain.Session do
   - Break down tasks systematically, reason carefully, and invoke tools in parallel when needed.
   - If requirements are underspecified, design choices need feedback, or confirmation is helpful, use the `ask_question` tool to present structured choices to the user.
   """
+
+  @doc "Returns the default system prompt incorporating the configured assistant name."
+  def default_system_prompt(cwd \\ ".") do
+    name = Config.assistant_name(cwd)
+
+    "You are #{name}, an expert agentic coding assistant powered by DeepSeek.\n" <>
+      @default_system_prompt_body
+  end
 
   # Client API
 
@@ -208,7 +215,7 @@ defmodule Yoke.Brain.Session do
   @impl true
   def init(opts) do
     session_id = opts[:session_id] || "default"
-    base_sys_prompt = opts[:system_prompt] || @default_system_prompt
+    base_sys_prompt = opts[:system_prompt] || default_system_prompt(opts[:cwd] || ".")
 
     # Inject workspace project rules if available (.yokerules, .yoke/rules.md)
     rules = Config.discover_project_rules(opts[:cwd] || ".")
@@ -480,7 +487,7 @@ defmodule Yoke.Brain.Session do
   def handle_call(:reset, _from, state) do
     system_msg =
       Enum.find(state.messages, fn m -> m["role"] == "system" end) ||
-        %{"role" => "system", "content" => @default_system_prompt}
+        %{"role" => "system", "content" => default_system_prompt(state.cwd)}
 
     new_messages = [system_msg]
 
@@ -718,7 +725,10 @@ defmodule Yoke.Brain.Session do
         {:reply, {:ok, content}, state}
 
       _ ->
-        {:reply, {:error, "No assistant response found in active session history."}, state}
+        {:reply,
+         {:error,
+          "No #{Config.assistant_name(state.cwd)} response found in active session history."},
+         state}
     end
   end
 

@@ -1697,7 +1697,7 @@ defmodule Yoke.CLI.ConfigExplorer do
 
   defp role_header(role, idx) when is_atom(role), do: role |> Atom.to_string() |> role_header(idx)
   defp role_header("user", idx), do: "#### Turn ##{idx} — 󰍩 User"
-  defp role_header("assistant", idx), do: "#### Turn ##{idx} — 󰚩 Assistant"
+  defp role_header("assistant", idx), do: "#### Turn ##{idx} — 󰚩 #{Yoke.Config.assistant_name()}"
   defp role_header("tool", idx), do: "#### Turn ##{idx} — 🛠 Tool Result"
   defp role_header("system", idx), do: "#### Turn ##{idx} — ⚙ System"
   defp role_header(other, idx), do: "#### Turn ##{idx} — #{String.capitalize(other)}"

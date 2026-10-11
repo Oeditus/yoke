@@ -160,22 +160,31 @@ defmodule Yoke.TaskEngine.Orchestrator do
         Map.get(args, "command") ||
         ""
 
-    # `read_files` takes a list of paths; summarize the first few so the
-    # status badge doesn't balloon to the full list.
+    # `read_files` or `edit_files` take lists of paths/files; summarize gracefully.
     target =
-      if target == "" and is_list(args["paths"]) do
-        case args["paths"] do
-          [] -> ""
-          [single] -> single
-          [first | rest] -> "#{first} (+#{length(rest)})"
-        end
-      else
-        target
+      cond do
+        target == "" and is_list(args["paths"]) ->
+          case args["paths"] do
+            [] -> ""
+            [single] -> single
+            [first | rest] -> "#{first} (+#{length(rest)})"
+          end
+
+        target == "" and is_list(args["files"]) ->
+          case args["files"] do
+            [] -> ""
+            [%{"path" => p}] -> p
+            [%{"path" => p} | rest] -> "#{p} (+#{length(rest)})"
+            _ -> "#{length(args["files"])} files"
+          end
+
+        true ->
+          target
       end
 
     cleaned_target =
       target
-      |> to_string()
+      |> safe_to_string()
       |> String.replace(~r/[\r\n\t]+/, " ")
       |> String.trim()
 
@@ -241,4 +250,15 @@ defmodule Yoke.TaskEngine.Orchestrator do
   rescue
     _ -> :ok
   end
+
+  defp safe_to_string(nil), do: ""
+  defp safe_to_string(val) when is_binary(val), do: val
+  defp safe_to_string(val) when is_atom(val), do: Atom.to_string(val)
+  defp safe_to_string(val) when is_number(val), do: to_string(val)
+
+  defp safe_to_string(val) when is_list(val) do
+    if List.ascii_printable?(val), do: to_string(val), else: inspect(val)
+  end
+
+  defp safe_to_string(val), do: inspect(val)
 end

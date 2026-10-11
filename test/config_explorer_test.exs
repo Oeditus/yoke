@@ -371,7 +371,7 @@ defmodule Yoke.CLI.ConfigExplorerTest do
       assert output =~ "Detailed Item Inspection"
       assert output =~ "Conversations"
       assert output =~ "User"
-      assert output =~ "Assistant"
+      assert output =~ "Robby Ott"
       assert output =~ "Task A"
 
       # Scroll down to view the remaining lines (tool calls and markdown code blocks)

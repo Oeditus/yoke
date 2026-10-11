@@ -127,7 +127,7 @@ defmodule Yoke.CLI.Repl do
             :toggle_console ->
               Formatter.safe_puts(
                 Formatter.format_success(
-                  "Flipped into pure console mode -- plain shell passthrough, no AI/tooling in between. Type !! again to return to Yoke."
+                  "Flipped into pure console mode -- plain shell passthrough, no #{Yoke.Config.assistant_name()}/tooling in between. Type !! again to return to Yoke."
                 )
               )
 
@@ -1591,6 +1591,29 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
+  def handle_input("/config assistant_name " <> name, _session_pid, _session_id) do
+    n = String.trim(name)
+    cfg = Yoke.Config.load_config()
+    updated = Map.put(cfg, "assistant_name", n)
+    Yoke.Config.save_config(updated)
+    Application.put_env(:yoke, :assistant_name, n)
+    IO.puts(Formatter.format_success("Assistant name set to '#{n}'"))
+    :continue
+  end
+
+  def handle_input("/config assistant_name", _session_pid, _session_id) do
+    IO.puts(Formatter.format_error("Usage: /config assistant_name <name>"))
+    :continue
+  end
+
+  def handle_input("/config assistant " <> name, session_pid, session_id) do
+    handle_input("/config assistant_name " <> name, session_pid, session_id)
+  end
+
+  def handle_input("/config assistant", session_pid, session_id) do
+    handle_input("/config assistant_name", session_pid, session_id)
+  end
+
   def handle_input("/config toggle", _session_pid, _session_id) do
     IO.puts(
       Formatter.format_error(
@@ -1614,6 +1637,7 @@ defmodule Yoke.CLI.Repl do
     #{rows}
 
     **Usage:**
+    - `/config assistant_name <name>` — Set assistant name (default: "Robby Ott")
     - `/config style <starship|extended|compact|minimal>` — Switch prompt visual layout style
     - `/config prompt <template>` — Set custom prompt template (placeholders: `{session}`, `{model}`, `{mode}`, `{tasks}`)
     - `/config toggle <setting_key>` — Toggle feature on/off (e.g. `enable_autosuggestions`, `enable_syntax_highlighting`, `enable_context_gauge`, `compact_status_bar`)
@@ -2932,7 +2956,7 @@ defmodule Yoke.CLI.Repl do
           :ok ->
             IO.puts(
               Formatter.format_success(
-                "Copied latest assistant response to clipboard (#{String.length(content)} characters)!"
+                "Copied latest #{Yoke.Config.assistant_name()} response to clipboard (#{String.length(content)} characters)!"
               )
             )
 
@@ -3353,7 +3377,7 @@ defmodule Yoke.CLI.Repl do
         role_header =
           case role do
             "user" -> "#### Turn ##{idx} — 󰍩 User"
-            "assistant" -> "#### Turn ##{idx} — 󰚩 Assistant"
+            "assistant" -> "#### Turn ##{idx} — 󰚩 #{Yoke.Config.assistant_name()}"
             "tool" -> "#### Turn ##{idx} — 🛠 Tool Result"
             other -> "#### Turn ##{idx} — #{other}"
           end

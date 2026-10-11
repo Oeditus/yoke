@@ -34,39 +34,41 @@ defmodule Yoke.CLI.Formatter do
     _ -> :ok
   end
 
-  @tips [
-    "Use !command to execute shell commands directly (e.g. !git status)",
-    "Use !! to flip into pure console mode -- a plain shell passthrough with no AI/tooling in between -- and !! again to flip back",
-    "Use /help to view available slash commands and shortcuts",
-    "Use /model or /models to list available models dynamically from DeepSeek API, or /model <name> to switch",
-    "Use /mode [local|remote|docker] to set Hands execution target",
-    "Use /plugins [reload] to list tools or hot-reload plugins live without dropping state",
-    "Use /mcp [list|add|load] to manage Model Context Protocol (MCP) servers and tools",
-    "Use /ragex to mount first-class Ragex code analysis & refactoring MCP tools",
-    "Use /skills [list|show|path|edit|new|<name>] to list, inspect, scaffold, or execute skills",
-    "Use /compact to compress conversation context to save tokens",
-    "Use /diff to show colorized git diff of workspace changes",
-    "Use /linter <tool> [cr|diff|project] to run native Elixir linters (oeditus_credo, propwise, credo)",
-    "Use /review [queue|next|skip|patterns|<base> [head]|<pr>] or /prboard for PR reviews & queue triage",
-    "Use /commit <message> to auto-commit staged workspace changes to git",
-    "Use /permissions [auto|ask] to set tool execution safety mode",
-    "Use /subagent <prompt> to spawn a background subagent worker for sub-tasks",
-    "Use /workflow [list|run|status|resume|abort|init] to run customizable multi-step workflows (branch, describe, split & parallelize, test/docs, lint, commit)",
-    "Use /checkpoint [label] to create a temporal state snapshot",
-    "Use /undo to roll back state to previous checkpoint",
-    "Use /session to display active session metadata & statistics",
-    "Use /nodes to view distributed Erlang node cluster status",
-    "Use /cb or /clipboard to copy latest assistant response to system clipboard",
-    "Use /clear to clear terminal output",
-    "Use /exit or /quit to exit Yoke",
-    "Press Ctrl+P to toggle permission mode, Ctrl+G to toggle sandbox, Ctrl+B to toggle the status bar"
-  ]
-
   @doc "Returns the full list of tips derived from /help commands."
-  def tips, do: @tips
+  def tips do
+    name = Yoke.Config.assistant_name()
+
+    [
+      "Use !command to execute shell commands directly (e.g. !git status)",
+      "Use !! to flip into pure console mode -- a plain shell passthrough with no #{name}/tooling in between -- and !! again to flip back",
+      "Use /help to view available slash commands and shortcuts",
+      "Use /model or /models to list available models dynamically from DeepSeek API, or /model <name> to switch",
+      "Use /mode [local|remote|docker] to set Hands execution target",
+      "Use /plugins [reload] to list tools or hot-reload plugins live without dropping state",
+      "Use /mcp [list|add|load] to manage Model Context Protocol (MCP) servers and tools",
+      "Use /ragex to mount first-class Ragex code analysis & refactoring MCP tools",
+      "Use /skills [list|show|path|edit|new|<name>] to list, inspect, scaffold, or execute skills",
+      "Use /compact to compress conversation context to save tokens",
+      "Use /diff to show colorized git diff of workspace changes",
+      "Use /linter <tool> [cr|diff|project] to run native Elixir linters (oeditus_credo, propwise, credo)",
+      "Use /review [queue|next|skip|patterns|<base> [head]|<pr>] or /prboard for PR reviews & queue triage",
+      "Use /commit <message> to auto-commit staged workspace changes to git",
+      "Use /permissions [auto|ask] to set tool execution safety mode",
+      "Use /subagent <prompt> to spawn a background subagent worker for sub-tasks",
+      "Use /workflow [list|run|status|resume|abort|init] to run customizable multi-step workflows (branch, describe, split & parallelize, test/docs, lint, commit)",
+      "Use /checkpoint [label] to create a temporal state snapshot",
+      "Use /undo to roll back state to previous checkpoint",
+      "Use /session to display active session metadata & statistics",
+      "Use /nodes to view distributed Erlang node cluster status",
+      "Use /cb or /clipboard to copy latest #{name} response to system clipboard",
+      "Use /clear to clear terminal output",
+      "Use /exit or /quit to exit Yoke",
+      "Press Ctrl+P to toggle permission mode, Ctrl+G to toggle sandbox, Ctrl+B to toggle the status bar"
+    ]
+  end
 
   @doc "Returns a random tip string from the /help tips list."
-  def random_tip, do: Enum.random(@tips)
+  def random_tip, do: Enum.random(tips())
 
   def banner do
     color = banner_color()
@@ -101,14 +103,16 @@ defmodule Yoke.CLI.Formatter do
   end
 
   def help_menu do
+    name = Yoke.Config.assistant_name()
+
     """
 
     #{bold()}#{cyan()}AVAILABLE SLASH COMMANDS & SHORTCUTS:#{reset()}
     #{dim()}─────────────────────────────────────────────────────────────────────────────#{reset()}
       #{cyan()}!command#{reset()}                 Execute shell command directly (e.g. !ls -la or !git status)
-      #{cyan()}!!#{reset()}                      Flip into/out of pure console mode (plain shell passthrough, no AI/tooling)
+      #{cyan()}!!#{reset()}                      Flip into/out of pure console mode (plain shell passthrough, no #{name}/tooling)
       #{cyan()}/bash [stats|export|clear]#{reset()} View bash command calls, counts, frequencies & export Ragex tool analogs
-      #{cyan()}/cb#{reset()} or #{cyan()}/clipboard#{reset()}       Copy latest assistant response to system clipboard (Markdown)
+      #{cyan()}/cb#{reset()} or #{cyan()}/clipboard#{reset()}       Copy latest #{name} response to system clipboard (Markdown)
       #{cyan()}/checkpoint [label]#{reset()}     Create a temporal state snapshot
       #{cyan()}/clear#{reset()}                  Clear terminal output
       #{cyan()}/commit <message>#{reset()}       Auto-commit staged workspace changes to git
@@ -149,7 +153,7 @@ defmodule Yoke.CLI.Formatter do
       #{cyan()}Ctrl+G#{reset()}                  Toggle workspace sandbox bounds on/off
       #{cyan()}Ctrl+B#{reset()}                  Toggle idle status bar mode (gauge ⇄ compact session line)
       #{cyan()}Ctrl+O#{reset()}                  Toggle tool call expansion mode (collapsed ⇄ expanded)
-      #{cyan()}Ctrl+Q#{reset()}                  Interrupt the AI's current turn while it's responding (Ctrl+C kills the whole app instead)
+      #{cyan()}Ctrl+Q#{reset()}                  Interrupt #{name}'s current turn while it's responding (Ctrl+C kills the whole app instead)
     """
   end
 

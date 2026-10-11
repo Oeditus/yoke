@@ -12,9 +12,9 @@ defmodule Yoke.CLI.QuestionPrompt do
   Main entry point to ask a list of questions to the user and return formatted answers.
 
   When more than one question is provided, each question's modal header
-  shows its position (e.g. "Question 2/3 from AI") so the user always
+  shows its position (e.g. "Question 2/3 from Robby Ott") so the user always
   knows how many are left to answer -- otherwise it's easy to lose track
-  of how many separate questions the AI is waiting on.
+  of how many separate questions the assistant is waiting on.
   """
   def ask(questions, opts \\ [])
 
@@ -579,12 +579,12 @@ defmodule Yoke.CLI.QuestionPrompt do
   defp header_title({idx, total}, subagent)
        when is_integer(idx) and is_integer(total) and total > 1 do
     sub_prefix = if is_binary(subagent) and subagent != "", do: "[#{subagent}] ", else: ""
-    " 󰋗 #{sub_prefix}Question #{idx}/#{total} from AI "
+    " 󰋗 #{sub_prefix}Question #{idx}/#{total} from #{Yoke.Config.assistant_name()} "
   end
 
   defp header_title(_, subagent) do
     sub_prefix = if is_binary(subagent) and subagent != "", do: "[#{subagent}] ", else: ""
-    " 󰋗 #{sub_prefix}Question from AI "
+    " 󰋗 #{sub_prefix}Question from #{Yoke.Config.assistant_name()} "
   end
 
   @doc "Calculates terminal column count for modal width calculation."
@@ -904,14 +904,15 @@ defmodule Yoke.CLI.QuestionPrompt do
 
   defp prompt_non_tty(question, options, is_multi, custom_idx, progress, subagent \\ nil) do
     sub_prefix = if is_binary(subagent) and subagent != "", do: "[#{subagent}] ", else: ""
+    name = Yoke.Config.assistant_name()
 
     label =
       case progress do
         {idx, total} when is_integer(idx) and is_integer(total) and total > 1 ->
-          "#{sub_prefix}Question #{idx}/#{total} from AI"
+          "#{sub_prefix}Question #{idx}/#{total} from #{name}"
 
         _ ->
-          "#{sub_prefix}Question from AI"
+          "#{sub_prefix}Question from #{name}"
       end
 
     if markdown?(question) do
