@@ -377,7 +377,7 @@ defmodule Yoke.PRReview do
   @doc """
   Builds the Markdown body for the GitHub PR comment/review.
   """
-  def build_pr_comment_body(accepted_findings, fix_prompt \\ "") do
+  def build_pr_comment_body(accepted_findings, fix_prompt \\ "", opts \\ []) do
     summary_section =
       if accepted_findings == [] do
         "No issues/findings accepted."
@@ -406,8 +406,12 @@ defmodule Yoke.PRReview do
         ""
       end
 
+    assistant_name =
+      Keyword.get(opts, :assistant_name) ||
+        Yoke.Config.assistant_name(Keyword.get(opts, :cwd, "."))
+
     """
-    ## 🪢 Yoke Code Review
+    ## 🪢 Review from #{assistant_name}
 
     ### 📋 Findings Summary & Accepted Issues
 

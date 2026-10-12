@@ -127,8 +127,8 @@ defmodule Yoke.PRReviewTest do
     end
   end
 
-  describe "build_pr_comment_body/2" do
-    test "constructs markdown PR review comment" do
+  describe "build_pr_comment_body/3" do
+    test "constructs markdown PR review comment with assistant name" do
       accepted = [
         %{
           id: 1,
@@ -144,10 +144,13 @@ defmodule Yoke.PRReviewTest do
       fix_prompt = PRReview.build_fix_prompt(accepted)
       pr_body = PRReview.build_pr_comment_body(accepted, fix_prompt)
 
-      assert String.contains?(pr_body, "## 🪢 Yoke Code Review")
+      assert String.contains?(pr_body, "## 🪢 Review from Robby Ott")
       assert String.contains?(pr_body, "### 📋 Findings Summary & Accepted Issues")
       assert String.contains?(pr_body, "- **1. [MEDIUM]** `lib/yoke/git.ex`:42")
       assert String.contains?(pr_body, "### 🛠️ Recommended Fix Prompt")
+
+      custom_body = PRReview.build_pr_comment_body(accepted, fix_prompt, assistant_name: "Alice")
+      assert String.contains?(custom_body, "## 🪢 Review from Alice")
     end
   end
 
