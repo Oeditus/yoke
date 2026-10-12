@@ -88,7 +88,7 @@ defmodule Yoke.CLI.Repl do
     # to the session actor per input line.
     stats = Session.get_stats(session_pid)
 
-    prompt_str =
+    prompt_builder = fn ->
       LineEditor.build_prompt(
         session_id,
         stats.model,
@@ -96,6 +96,9 @@ defmodule Yoke.CLI.Repl do
         ".",
         stats.sandbox_workspace
       )
+    end
+
+    prompt_str = prompt_builder.()
 
     compact_status_bar? =
       Map.get(Yoke.Config.load_config(), "compact_status_bar", false)
@@ -106,6 +109,7 @@ defmodule Yoke.CLI.Repl do
       |> Map.put(:last_turn_tokens, latest_turn_delta(session_pid))
       |> Map.put(:git_dirty?, Git.dirty?())
       |> Map.put(:compact_status_bar?, compact_status_bar?)
+      |> Map.put(:prompt_builder, prompt_builder)
 
     case LineEditor.get_line(prompt_str, history, render_context) do
       :eof ->

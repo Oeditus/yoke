@@ -230,6 +230,10 @@ defmodule Yoke.TaskEngine.JobManager do
           Map.put(state, job_id, %{info | status: :killed, finished_at: now})
         end)
 
+        if Yoke.CLI.TerminalOwner.active?() do
+          Yoke.CLI.TerminalOwner.redraw()
+        end
+
         {:ok, "Killed background job '#{job_id}'."}
 
       _ ->
@@ -337,14 +341,22 @@ defmodule Yoke.TaskEngine.JobManager do
   end
 
   defp notify_session(command, id, res, opts) do
-    target =
+    target_pid =
       cond do
-        pid = Keyword.get(opts, :notify_pid) -> pid
-        sid = Keyword.get(opts, :session_id) -> Yoke.Brain.Session.via_tuple(sid)
-        true -> nil
+        pid = Keyword.get(opts, :notify_pid) ->
+          if is_pid(pid) and Process.alive?(pid), do: pid, else: nil
+
+        sid = Keyword.get(opts, :session_id) ->
+          case Registry.lookup(Yoke.Registry, "session_" <> sid) do
+            [{pid, _}] when is_pid(pid) -> pid
+            _ -> nil
+          end
+
+        true ->
+          nil
       end
 
-    if target do
+    if target_pid do
       log_tail =
         case get_job_status(id, tail: 15) do
           {:ok, output} -> output
@@ -354,16 +366,28 @@ defmodule Yoke.TaskEngine.JobManager do
       msg = {:job_completed, id, command, res, log_tail}
 
       try do
-        send(target, msg)
+        send(target_pid, msg)
       rescue
         _ -> :ok
       catch
         :exit, _ -> :ok
       end
-    else
-      if Yoke.CLI.TerminalOwner.active?() do
-        Yoke.CLI.TerminalOwner.redraw()
-      end
+    end
+
+    if Yoke.CLI.TerminalOwner.active?() do
+      status_msg =
+        case res do
+          {:exited, 0} -> "Finished background job '#{id}' successfully."
+          {:exited, code} -> "Background job '#{id}' failed with exit code #{code}."
+          {:failed, msg} -> "Background job '#{id}' failed: #{msg}."
+          _ -> "Background job '#{id}' ended."
+        end
+
+      Yoke.CLI.TerminalOwner.interject(
+        Yoke.CLI.Formatter.format_info(status_msg) <> "\r\n"
+      )
+
+      Yoke.CLI.TerminalOwner.redraw()
     end
   end
 end

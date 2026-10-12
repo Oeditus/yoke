@@ -35,6 +35,20 @@ defmodule Yoke.TaskEngine.JobManagerTest do
     assert log_tail =~ "notified completion"
   end
 
+  test "sends completion notification to session_id via Yoke.Registry when job finishes" do
+    fake_sid = "test_sess_#{System.unique_integer([:positive])}"
+    Registry.register(Yoke.Registry, "session_" <> fake_sid, nil)
+
+    assert {:ok, job_id, _log_file} =
+             JobManager.start_job("echo 'session notified'", session_id: fake_sid)
+
+    assert_receive {:job_completed, ^job_id, "echo 'session notified'", {:exited, 0},
+                    log_tail},
+                   2000
+
+    assert log_tail =~ "session notified"
+  end
+
   test "bash tool executes asynchronously when async: true is passed" do
     assert {:ok, msg} =
              DefaultTools.execute_bash(%{"command" => "echo 'async job test'", "async" => true})

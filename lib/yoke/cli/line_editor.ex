@@ -1695,7 +1695,21 @@ defmodule Yoke.CLI.LineEditor do
 
   defp compute_display(state) do
     config = Map.get(state, :config) || Config.load_config()
-    prompt_str = Formatter.format_user_prompt_str(state.prompt)
+
+    raw_prompt =
+      case get_in(state, [:context, :prompt_builder]) do
+        builder when is_function(builder, 0) ->
+          try do
+            builder.()
+          rescue
+            _ -> state.prompt
+          end
+
+        _ ->
+          state.prompt
+      end
+
+    prompt_str = Formatter.format_user_prompt_str(raw_prompt)
     raw_text = Enum.join(state.buffer)
     highlighted_text = highlight_input(raw_text, config)
 

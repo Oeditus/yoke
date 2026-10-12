@@ -999,7 +999,9 @@ defmodule Yoke.Brain.Session do
     """
 
     notice = %{"role" => "user", "content" => notice_content}
-    {:noreply, %{state | messages: state.messages ++ [notice]}}
+    new_state = %{state | messages: state.messages ++ [notice]}
+    SessionStore.save_session(new_state, state.cwd)
+    {:noreply, new_state}
   end
 
   @impl true
