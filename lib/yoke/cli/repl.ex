@@ -240,7 +240,13 @@ defmodule Yoke.CLI.Repl do
     _, _ -> :ok
   end
 
-  def handle_input("", _session_pid, _session_id), do: :continue
+  def handle_input("", session_pid, session_id) do
+    if pending_background_notice?(session_pid) do
+      handle_input("Continue with the completed background task results.", session_pid, session_id)
+    else
+      :continue
+    end
+  end
   def handle_input("/exit", _pid, _id), do: :exit
   def handle_input("/quit", _pid, _id), do: :exit
 
@@ -2615,6 +2621,25 @@ defmodule Yoke.CLI.Repl do
   catch
     :exit, reason ->
       {:error, "Session process crashed or stopped: #{inspect(reason)}"}
+  end
+
+  defp pending_background_notice?(session_pid) do
+    case Session.get_messages(session_pid) do
+      {:ok, messages} when is_list(messages) and messages != [] ->
+        last = List.last(messages)
+        content = Map.get(last, "content", "") || ""
+
+        Map.get(last, "role") == "user" and
+          (String.starts_with?(content, "=== Async Background Job Finished") or
+             String.starts_with?(content, "=== Async Subagent Result"))
+
+      _ ->
+        false
+    end
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
   end
 
   defp handle_pr_queue(_session_pid, _session_id) do
