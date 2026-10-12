@@ -42,8 +42,7 @@ defmodule Yoke.TaskEngine.JobManagerTest do
     assert {:ok, job_id, _log_file} =
              JobManager.start_job("echo 'session notified'", session_id: fake_sid)
 
-    assert_receive {:job_completed, ^job_id, "echo 'session notified'", {:exited, 0},
-                    log_tail},
+    assert_receive {:job_completed, ^job_id, "echo 'session notified'", {:exited, 0}, log_tail},
                    2000
 
     assert log_tail =~ "session notified"

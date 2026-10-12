@@ -380,12 +380,9 @@ defmodule Yoke.TaskEngine.JobManager do
           {:exited, 0} -> "Finished background job '#{id}' successfully."
           {:exited, code} -> "Background job '#{id}' failed with exit code #{code}."
           {:failed, msg} -> "Background job '#{id}' failed: #{msg}."
-          _ -> "Background job '#{id}' ended."
         end
 
-      Yoke.CLI.TerminalOwner.interject(
-        Yoke.CLI.Formatter.format_info(status_msg) <> "\r\n"
-      )
+      Yoke.CLI.TerminalOwner.interject(Yoke.CLI.Formatter.format_info(status_msg) <> "\r\n")
 
       Yoke.CLI.TerminalOwner.redraw()
     end

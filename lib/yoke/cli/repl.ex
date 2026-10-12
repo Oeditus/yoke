@@ -242,11 +242,16 @@ defmodule Yoke.CLI.Repl do
 
   def handle_input("", session_pid, session_id) do
     if pending_background_notice?(session_pid) do
-      handle_input("Continue with the completed background task results.", session_pid, session_id)
+      handle_input(
+        "Continue with the completed background task results.",
+        session_pid,
+        session_id
+      )
     else
       :continue
     end
   end
+
   def handle_input("/exit", _pid, _id), do: :exit
   def handle_input("/quit", _pid, _id), do: :exit
 
