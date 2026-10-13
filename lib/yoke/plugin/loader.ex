@@ -190,10 +190,57 @@ defmodule Yoke.Plugin.Loader do
   @impl true
   def handle_call({:get_tool, tool_name}, _from, state) do
     case Map.fetch(state.tools_map, tool_name) do
-      {:ok, tool_info} -> {:reply, {:ok, tool_info}, state}
-      :error -> {:reply, {:error, "Unknown tool: #{tool_name}"}, state}
+      {:ok, tool_info} ->
+        {:reply, {:ok, tool_info}, state}
+
+      :error ->
+        case resolve_tool_alias(tool_name) do
+          {:ok, resolved} ->
+            case Map.fetch(state.tools_map, resolved) do
+              {:ok, tool_info} -> {:reply, {:ok, tool_info}, state}
+              :error -> {:reply, {:error, "Unknown tool: #{tool_name}"}, state}
+            end
+
+          :error ->
+            {:reply, {:error, "Unknown tool: #{tool_name}"}, state}
+        end
     end
   end
+
+  defp resolve_tool_alias(tool_name) when is_binary(tool_name) do
+    lower = String.downcase(tool_name)
+
+    cond do
+      lower in [
+        "mcp_ragex_grep",
+        "ragex_grep",
+        "mcp_ragex_search_code",
+        "ragex_search_code",
+        "mcp_ragex_find_symbol",
+        "ragex_find_symbol",
+        "mcp_ragex_symbol_definition",
+        "ragex_symbol_definition",
+        "mcp_ragex_symbol_references",
+        "ragex_symbol_references",
+        "mcp_ragex_references",
+        "ragex_references",
+        "mcp_ragex_outline",
+        "ragex_outline"
+      ] ->
+        {:ok, "grep_search"}
+
+      lower in ["mcp_ragex_view", "ragex_view"] ->
+        {:ok, "read_file"}
+
+      lower in ["mcp_ragex_structure", "ragex_structure"] ->
+        {:ok, "list_dir"}
+
+      true ->
+        :error
+    end
+  end
+
+  defp resolve_tool_alias(_), do: :error
 
   # Helper Functions
 

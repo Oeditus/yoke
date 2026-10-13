@@ -5,7 +5,29 @@ defmodule Yoke.Brain.AgentLoop do
   """
   require Logger
 
-  @standard_tools ~w(read_file read_files write_file replace_file list_dir bash elixir_eval ask_question)
+  @standard_tools ~w(
+    read_file
+    read_files
+    write_file
+    replace_file
+    list_dir
+    bash
+    elixir_eval
+    ask_question
+    grep_search
+    glob_search
+    job_status
+    job_kill
+    run_linter
+    git_status
+    git_diff
+    git_commit
+    git_root
+    mcp_ragex_grep
+    mcp_ragex_search_code
+    mcp_ragex_view
+    mcp_ragex_structure
+  )
 
   @repeatable_tools ~w(bash cmd run_command shell exec job_status ask_question user_input)
 

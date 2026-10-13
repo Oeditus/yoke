@@ -17,18 +17,18 @@ defmodule Yoke.BashTracker do
   # Mappings from ineffective shell commands/patterns to better Ragex / Yoke tool analogs
   @analogs %{
     "grep" => %{
-      analog: "mcp_ragex_grep / mcp_ragex_search_code",
+      analog: "grep_search / mcp_ragex_grep / mcp_ragex_search_code",
       category: :code_search,
       reason:
         "Use Ragex code intelligence or grep_search for indexed, AST-aware, and semantic search"
     },
     "rg" => %{
-      analog: "mcp_ragex_grep / mcp_ragex_search_code",
+      analog: "grep_search / mcp_ragex_grep / mcp_ragex_search_code",
       category: :code_search,
       reason: "Use Ragex code intelligence or grep_search for indexed code search"
     },
     "ag" => %{
-      analog: "mcp_ragex_grep / mcp_ragex_search_code",
+      analog: "grep_search / mcp_ragex_grep / mcp_ragex_search_code",
       category: :code_search,
       reason: "Use Ragex code intelligence or grep_search for indexed code search"
     },

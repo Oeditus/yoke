@@ -38,6 +38,7 @@ defmodule Yoke.Brain.Session do
     - NEVER invoke shell commands in bash for code exploration, symbol searching, file viewing, file editing, directory navigation, git inspection, or code analysis when dedicated tools or Ragex RAG/MCP tools are available.
   - STRICT TOOL PREFERENCE (RAGEX CODE INTELLIGENCE & RAG FIRST):
     - You MUST ALWAYS prefer and use Ragex MCP tools (`mcp_ragex_grep`, `mcp_ragex_search_code`, `mcp_ragex_symbol_definition`, `mcp_ragex_symbol_references`, `mcp_ragex_metaast_search`, `mcp_ragex_ast_search`, `mcp_ragex_structure`, `mcp_ragex_view`, `mcp_ragex_analyze_file`) for code searching, symbol lookup, reference tracking, AST pattern queries, directory structure analysis, and file viewing, rather than running shell commands (`grep`, `rg`, `ag`, `find`, `cat`, `head`, `tail`, `sed`, `awk`, `ls`) in bash.
+    - Use `grep_search` or `mcp_ragex_grep` for code and symbol searches instead of running shell commands (`grep`, `rg`, `ag`) in bash.
     - Use `read_file` (with `start_line`/`end_line` for line ranges), `read_files`, or `mcp_ragex_view` instead of `cat`, `head`, `tail`, or `sed`.
     - Use `list_dir` or `mcp_ragex_structure` instead of `ls` or `find`.
     - Use `replace_file`, `write_file`, or `mcp_ragex_edit_file` / `mcp_ragex_edit_files` instead of `sed`, `awk`, or bash redirection.

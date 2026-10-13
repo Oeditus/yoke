@@ -104,13 +104,21 @@ defmodule Yoke.Brain.AgentLoopTest do
 
     test "does not count standard tools for failure circuit breaker" do
       state = %{
-        tools: [%{name: "read_file"}],
+        tools: [%{name: "read_file"}, %{name: "grep_search"}, %{name: "mcp_ragex_grep"}],
         tool_failure_counts: %{},
         messages: []
       }
 
       {state1, nil} = AgentLoop.handle_tool_failure("read_file", {:error, "failed"}, state)
       assert state1.tool_failure_counts == %{}
+
+      {state2, nil} = AgentLoop.handle_tool_failure("grep_search", {:error, "failed"}, state1)
+      assert state2.tool_failure_counts == %{}
+
+      {state3, nil} =
+        AgentLoop.handle_tool_failure("mcp_ragex_grep", {:error, "failed"}, state2)
+
+      assert state3.tool_failure_counts == %{}
     end
   end
 end

@@ -118,4 +118,64 @@ defmodule Yoke.PluginLoaderTest do
     tools = PluginLoader.list_tools()
     refute Enum.any?(tools, fn t -> t.name == "non_existent_tool_xyz" end)
   end
+
+  test "grep_search and its ragex aliases work with query, pattern, and flexible arguments" do
+    tmp_dir =
+      Path.join(System.tmp_dir!(), "yoke_grep_test_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(tmp_dir)
+    on_exit(fn -> File.rm_rf(tmp_dir) end)
+
+    sub_dir = Path.join(tmp_dir, "lib/cure")
+    File.mkdir_p!(sub_dir)
+    target_file = Path.join(sub_dir, "repl.ex")
+    File.write!(target_file, "def cmd_check(state) do\n  :ok\nend\ndef hole_goals(state), do: []\n")
+
+    # Primary query argument
+    {:ok, res1} =
+      PluginLoader.execute_tool("grep_search", %{"path" => sub_dir, "query" => "def cmd_check"})
+
+    assert res1 =~ "repl.ex:1: def cmd_check(state) do"
+
+    # Pattern alias argument (the one DeepSeek sent)
+    {:ok, res2} =
+      PluginLoader.execute_tool("grep_search", %{"path" => sub_dir, "pattern" => "def hole_goals"})
+
+    assert res2 =~ "repl.ex:4: def hole_goals(state), do: []"
+
+    # mcp_ragex_grep alias
+    {:ok, res3} =
+      PluginLoader.execute_tool("mcp_ragex_grep", %{
+        "path" => sub_dir,
+        "query" => "def cmd_check"
+      })
+
+    assert res3 =~ "repl.ex:1: def cmd_check"
+
+    # mcp_ragex_search_code alias
+    {:ok, res4} =
+      PluginLoader.execute_tool("mcp_ragex_search_code", %{
+        "path" => sub_dir,
+        "query" => "def hole_goals"
+      })
+
+    assert res4 =~ "repl.ex:4: def hole_goals"
+
+    # mcp_ragex_view alias to read_file
+    {:ok, res5} = PluginLoader.execute_tool("mcp_ragex_view", %{"path" => target_file})
+    assert res5 =~ "def cmd_check(state) do"
+
+    # mcp_ragex_structure alias to list_dir
+    {:ok, res6} = PluginLoader.execute_tool("mcp_ragex_structure", %{"path" => sub_dir})
+    assert res6 =~ "repl.ex"
+
+    # Bare ragex_grep fallback resolution
+    {:ok, res7} =
+      PluginLoader.execute_tool("ragex_grep", %{
+        "path" => sub_dir,
+        "pattern" => "cmd_check"
+      })
+
+    assert res7 =~ "repl.ex:1"
+  end
 end

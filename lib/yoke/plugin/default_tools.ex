@@ -152,14 +152,83 @@ defmodule Yoke.Plugin.DefaultTools do
               description: "Target directory or file path to search (default: '.')."
             },
             query: %{type: "string", description: "String or regex pattern to search for."},
+            pattern: %{type: "string", description: "Alias for query string or regex pattern to search for."},
             path_pattern: %{
               type: "string",
               description: "Optional file glob pattern to filter search (e.g. '*.ex')."
             }
           },
-          required: ["query"]
+          required: []
         },
         execute: &grep_search_tool/1
+      },
+      %{
+        name: "mcp_ragex_grep",
+        description:
+          "[MCP:ragex] Fast workspace regex/text search across project files (alias for grep_search).",
+        parameters: %{
+          type: "object",
+          properties: %{
+            path: %{
+              type: "string",
+              description: "Target directory or file path to search (default: '.')."
+            },
+            query: %{type: "string", description: "String or regex pattern to search for."},
+            pattern: %{type: "string", description: "Alias for query string or regex pattern."},
+            path_pattern: %{
+              type: "string",
+              description: "Optional file glob pattern to filter search (e.g. '*.ex')."
+            }
+          },
+          required: []
+        },
+        execute: &grep_search_tool/1
+      },
+      %{
+        name: "mcp_ragex_search_code",
+        description:
+          "[MCP:ragex] Code search across workspace files (alias for grep_search).",
+        parameters: %{
+          type: "object",
+          properties: %{
+            path: %{
+              type: "string",
+              description: "Target directory or file path to search (default: '.')."
+            },
+            query: %{type: "string", description: "String or regex pattern to search for."},
+            pattern: %{type: "string", description: "Alias for query."}
+          },
+          required: []
+        },
+        execute: &grep_search_tool/1
+      },
+      %{
+        name: "mcp_ragex_view",
+        description:
+          "[MCP:ragex] Read structured text content of a file (alias for read_file). Optionally pass start_line and end_line.",
+        parameters: %{
+          type: "object",
+          properties: %{
+            path: %{type: "string", description: "Relative or absolute path to the file."},
+            start_line: %{type: "integer", description: "Optional 1-indexed starting line number."},
+            end_line: %{type: "integer", description: "Optional 1-indexed ending line number."}
+          },
+          required: ["path"]
+        },
+        execute: &read_file/1
+      },
+      %{
+        name: "mcp_ragex_structure",
+        description:
+          "[MCP:ragex] List directory structure and workspace hierarchy (alias for list_dir).",
+        parameters: %{
+          type: "object",
+          properties: %{
+            path: %{type: "string", description: "Directory path (defaults to current directory '.')."}
+          },
+          required: []
+        },
+        execute: &list_dir/1
       },
       %{
         name: "elixir_eval",
@@ -522,58 +591,93 @@ defmodule Yoke.Plugin.DefaultTools do
     {:error, "Invalid arguments for job_kill. Expected 'job_id' string."}
   end
 
-  def grep_search_tool(%{"query" => query} = args) when is_binary(query) do
-    dir = Map.get(args, "path", ".")
-    path_pattern = Map.get(args, "path_pattern", "**/*")
+  def grep_search_tool(args) when is_map(args) do
+    query =
+      Map.get(args, "query") ||
+        Map.get(args, :query) ||
+        Map.get(args, "pattern") ||
+        Map.get(args, :pattern) ||
+        Map.get(args, "symbol") ||
+        Map.get(args, :symbol) ||
+        Map.get(args, "name") ||
+        Map.get(args, :name)
 
-    target_pattern =
-      if File.dir?(dir) do
-        Path.join(dir, path_pattern)
-      else
-        dir
-      end
+    if is_binary(query) and query != "" do
+      dir =
+        Map.get(args, "path") ||
+          Map.get(args, :path) ||
+          Map.get(args, "dir") ||
+          Map.get(args, :dir) ||
+          Map.get(args, "file") ||
+          Map.get(args, :file) ||
+          "."
 
-    files =
-      if File.regular?(dir) do
-        [dir]
-      else
-        Path.wildcard(target_pattern)
-        |> Enum.filter(&File.regular?/1)
-      end
+      raw_pattern =
+        Map.get(args, "path_pattern") ||
+          Map.get(args, :path_pattern) ||
+          Map.get(args, "glob") ||
+          Map.get(args, :glob) ||
+          "**/*"
 
-    case Regex.compile(query, [:caseless]) do
-      {:ok, regex} ->
-        matches =
-          files
-          |> Enum.take(200)
-          |> Enum.flat_map(fn file ->
-            case File.read(file) do
-              {:ok, content} ->
-                content
-                |> String.split(~r/\r?\n/)
-                |> Enum.with_index(1)
-                |> Enum.filter(fn {line, _num} -> Regex.match?(regex, line) end)
-                |> Enum.map(fn {line, num} -> "#{file}:#{num}: #{String.trim(line)}" end)
-
-              _ ->
-                []
-            end
-          end)
-          |> Enum.take(100)
-
-        if matches == [] do
-          {:ok, "No matches found for '#{query}'."}
+      path_pattern =
+        if raw_pattern != "**/*" and not String.contains?(raw_pattern, "/") and
+             not String.starts_with?(raw_pattern, "**") do
+          "**/" <> raw_pattern
         else
-          {:ok, "Found #{length(matches)} matches:\n" <> Enum.join(matches, "\n")}
+          raw_pattern
         end
 
-      {:error, reason} ->
-        {:error, "Invalid regex pattern '#{query}': #{inspect(reason)}"}
+      target_pattern =
+        if File.dir?(dir) do
+          Path.join(dir, path_pattern)
+        else
+          dir
+        end
+
+      files =
+        if File.regular?(dir) do
+          [dir]
+        else
+          Path.wildcard(target_pattern)
+          |> Enum.filter(&File.regular?/1)
+        end
+
+      case Regex.compile(query, [:caseless]) do
+        {:ok, regex} ->
+          matches =
+            files
+            |> Enum.take(200)
+            |> Enum.flat_map(fn file ->
+              case File.read(file) do
+                {:ok, content} ->
+                  content
+                  |> String.split(~r/\r?\n/)
+                  |> Enum.with_index(1)
+                  |> Enum.filter(fn {line, _num} -> Regex.match?(regex, line) end)
+                  |> Enum.map(fn {line, num} -> "#{file}:#{num}: #{String.trim(line)}" end)
+
+                _ ->
+                  []
+              end
+            end)
+            |> Enum.take(100)
+
+          if matches == [] do
+            {:ok, "No matches found for '#{query}'."}
+          else
+            {:ok, "Found #{length(matches)} matches:\n" <> Enum.join(matches, "\n")}
+          end
+
+        {:error, reason} ->
+          {:error, "Invalid regex pattern '#{query}': #{inspect(reason)}"}
+      end
+    else
+      {:error, "Invalid arguments for grep_search. Expected 'query' or 'pattern' string."}
     end
   end
 
   def grep_search_tool(_args) do
-    {:error, "Invalid arguments for grep_search. Expected 'query' string."}
+    {:error, "Invalid arguments for grep_search. Expected a map with 'query' or 'pattern' string."}
   end
 
   def evaluate_elixir(%{"code" => code}) do
