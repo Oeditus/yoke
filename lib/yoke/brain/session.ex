@@ -201,6 +201,32 @@ defmodule Yoke.Brain.Session do
     GenServer.call(pid, :get_messages, :infinity)
   end
 
+  @doc "Returns true if the latest message in the session is an unhandled background completion notice."
+  def pending_background_notice?(pid) when is_pid(pid) do
+    GenServer.call(pid, :pending_background_notice, 5_000)
+  rescue
+    _ -> fallback_pending_notice(pid)
+  catch
+    :exit, _ -> fallback_pending_notice(pid)
+    _, _ -> false
+  end
+
+  def pending_background_notice?(_), do: false
+
+  defp fallback_pending_notice(pid) do
+    case get_messages(pid) do
+      {:ok, messages} when is_list(messages) and messages != [] ->
+        has_pending_notice?(messages)
+
+      _ ->
+        false
+    end
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
+  end
+
   @doc """
   Records an error message (including stacktrace/harness failure details)
   into the session's message log and immediately persists it to disk (.lmml / .lmmlz).
@@ -482,6 +508,11 @@ defmodule Yoke.Brain.Session do
   @impl true
   def handle_call(:get_messages, _from, state) do
     {:reply, {:ok, state.messages}, state}
+  end
+
+  @impl true
+  def handle_call(:pending_background_notice, _from, state) do
+    {:reply, has_pending_notice?(state.messages), state}
   end
 
   @impl true
@@ -775,7 +806,8 @@ defmodule Yoke.Brain.Session do
       max_tool_depth: state.max_tool_depth,
       bash_calls_count: bash_stats.total_calls,
       ineffective_bash_calls_count: bash_stats.ineffective_calls,
-      ineffective_bash_percentage: bash_stats.ineffective_percentage
+      ineffective_bash_percentage: bash_stats.ineffective_percentage,
+      pending_followup?: has_pending_notice?(state.messages)
     }
 
     {:reply, stats, state}
@@ -975,7 +1007,16 @@ defmodule Yoke.Brain.Session do
       end
 
     notice = %{"role" => "user", "content" => notice_content}
-    {:noreply, %{state | messages: state.messages ++ [notice]}}
+    new_state = %{state | messages: state.messages ++ [notice]}
+    SessionStore.save_session(new_state, state.cwd)
+
+    if Yoke.CLI.TerminalOwner.active?() do
+      status_msg = "Async subagent '#{sub_id}' completed."
+      Yoke.CLI.TerminalOwner.interject(Yoke.CLI.Formatter.format_info(status_msg) <> "\r\n")
+      Yoke.CLI.TerminalOwner.redraw()
+    end
+
+    {:noreply, new_state}
   end
 
   @impl true
@@ -2032,4 +2073,17 @@ defmodule Yoke.Brain.Session do
     SessionStore.save_session(new_state, state.cwd)
     new_state
   end
+
+  defp has_pending_notice?([]), do: false
+
+  defp has_pending_notice?(messages) when is_list(messages) do
+    last = List.last(messages)
+    content = Map.get(last, "content", "") || ""
+
+    Map.get(last, "role") == "user" and
+      (String.starts_with?(content, "=== Async Background Job Finished") or
+         String.starts_with?(content, "=== Async Subagent Result"))
+  end
+
+  defp has_pending_notice?(_), do: false
 end

@@ -129,7 +129,11 @@ defmodule Yoke.PluginLoaderTest do
     sub_dir = Path.join(tmp_dir, "lib/cure")
     File.mkdir_p!(sub_dir)
     target_file = Path.join(sub_dir, "repl.ex")
-    File.write!(target_file, "def cmd_check(state) do\n  :ok\nend\ndef hole_goals(state), do: []\n")
+
+    File.write!(
+      target_file,
+      "def cmd_check(state) do\n  :ok\nend\ndef hole_goals(state), do: []\n"
+    )
 
     # Primary query argument
     {:ok, res1} =

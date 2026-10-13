@@ -152,7 +152,10 @@ defmodule Yoke.Plugin.DefaultTools do
               description: "Target directory or file path to search (default: '.')."
             },
             query: %{type: "string", description: "String or regex pattern to search for."},
-            pattern: %{type: "string", description: "Alias for query string or regex pattern to search for."},
+            pattern: %{
+              type: "string",
+              description: "Alias for query string or regex pattern to search for."
+            },
             path_pattern: %{
               type: "string",
               description: "Optional file glob pattern to filter search (e.g. '*.ex')."
@@ -186,8 +189,7 @@ defmodule Yoke.Plugin.DefaultTools do
       },
       %{
         name: "mcp_ragex_search_code",
-        description:
-          "[MCP:ragex] Code search across workspace files (alias for grep_search).",
+        description: "[MCP:ragex] Code search across workspace files (alias for grep_search).",
         parameters: %{
           type: "object",
           properties: %{
@@ -210,7 +212,10 @@ defmodule Yoke.Plugin.DefaultTools do
           type: "object",
           properties: %{
             path: %{type: "string", description: "Relative or absolute path to the file."},
-            start_line: %{type: "integer", description: "Optional 1-indexed starting line number."},
+            start_line: %{
+              type: "integer",
+              description: "Optional 1-indexed starting line number."
+            },
             end_line: %{type: "integer", description: "Optional 1-indexed ending line number."}
           },
           required: ["path"]
@@ -224,7 +229,10 @@ defmodule Yoke.Plugin.DefaultTools do
         parameters: %{
           type: "object",
           properties: %{
-            path: %{type: "string", description: "Directory path (defaults to current directory '.')."}
+            path: %{
+              type: "string",
+              description: "Directory path (defaults to current directory '.')."
+            }
           },
           required: []
         },
@@ -677,7 +685,8 @@ defmodule Yoke.Plugin.DefaultTools do
   end
 
   def grep_search_tool(_args) do
-    {:error, "Invalid arguments for grep_search. Expected a map with 'query' or 'pattern' string."}
+    {:error,
+     "Invalid arguments for grep_search. Expected a map with 'query' or 'pattern' string."}
   end
 
   def evaluate_elixir(%{"code" => code}) do

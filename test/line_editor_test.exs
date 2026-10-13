@@ -26,6 +26,53 @@ defmodule Yoke.LineEditorTest do
       assert String.contains?(prompt, "deepseek-chat")
       assert String.contains?(prompt, "id:02ec14fa")
     end
+
+    test "includes [⚡] before ❯ when pending_followup? is true in starship style" do
+      prompt_without =
+        LineEditor.build_prompt("main", "deepseek-chat", :local, ".", false,
+          pending_followup?: false
+        )
+
+      clean_without = String.replace(prompt_without, ~r/\e\[[0-9;?]*[a-zA-Z~]/, "")
+      refute String.contains?(clean_without, "[⚡]")
+      assert String.ends_with?(clean_without, "❯ ")
+
+      prompt_with =
+        LineEditor.build_prompt("main", "deepseek-chat", :local, ".", false,
+          pending_followup?: true
+        )
+
+      assert String.contains?(prompt_with, "[⚡]")
+      clean_with = String.replace(prompt_with, ~r/\e\[[0-9;?]*[a-zA-Z~]/, "")
+      assert String.ends_with?(clean_with, "[⚡] ❯ ")
+    end
+
+    test "includes [⚡] before ❯ when pending_followup? is true across styles" do
+      for style <- ["extended", "compact", "minimal"] do
+        tmp_dir =
+          Path.join(
+            System.tmp_dir!(),
+            "yoke_test_style_#{style}_#{System.unique_integer([:positive])}"
+          )
+
+        File.mkdir_p!(Path.join(tmp_dir, ".yoke"))
+        File.write!(Path.join(tmp_dir, ".yoke/config.json"), ~s({"prompt_style": "#{style}"}))
+
+        try do
+          prompt =
+            LineEditor.build_prompt("02ec14fa-0fae", "deepseek-chat", :local, tmp_dir, false,
+              pending_followup?: true
+            )
+
+          clean = String.replace(prompt, ~r/\e\[[0-9;?]*[a-zA-Z~]/, "")
+
+          assert String.ends_with?(clean, "[⚡] ❯ "),
+                 "Expected style #{style} to end with '[⚡] ❯ '"
+        after
+          File.rm_rf(tmp_dir)
+        end
+      end
+    end
   end
 
   describe "persistent history" do

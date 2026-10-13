@@ -395,4 +395,24 @@ defmodule Yoke.BrainSessionTest do
     assert lmml_content =~ "[HARNESS ERROR]"
     assert lmml_content =~ "ArgumentError"
   end
+
+  test "pending_background_notice? tracks background job and subagent completions", %{pid: pid} do
+    refute Session.pending_background_notice?(pid)
+
+    stats = Session.get_stats(pid)
+    refute stats.pending_followup?
+
+    # Simulate background job completion
+    send(pid, {:job_completed, "job_test_1", "mix test", {:exited, 0}, "All passed"})
+    _ = :sys.get_state(pid)
+
+    assert Session.pending_background_notice?(pid)
+    stats_after = Session.get_stats(pid)
+    assert stats_after.pending_followup?
+
+    # Simulate subagent completion
+    send(pid, {:subagent_completed, "sub_test_1", {:ok, %{content: "Task completed"}}})
+    _ = :sys.get_state(pid)
+    assert Session.pending_background_notice?(pid)
+  end
 end

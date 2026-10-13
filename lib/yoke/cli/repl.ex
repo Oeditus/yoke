@@ -94,7 +94,8 @@ defmodule Yoke.CLI.Repl do
         stats.model,
         stats.hands_mode,
         ".",
-        stats.sandbox_workspace
+        stats.sandbox_workspace,
+        pending_followup?: pending_background_notice?(session_pid)
       )
     end
 
@@ -110,6 +111,7 @@ defmodule Yoke.CLI.Repl do
       |> Map.put(:git_dirty?, Git.dirty?())
       |> Map.put(:compact_status_bar?, compact_status_bar?)
       |> Map.put(:prompt_builder, prompt_builder)
+      |> Map.put(:pending_followup?, pending_background_notice?(session_pid))
 
     case LineEditor.get_line(prompt_str, history, render_context) do
       :eof ->
@@ -2628,24 +2630,11 @@ defmodule Yoke.CLI.Repl do
       {:error, "Session process crashed or stopped: #{inspect(reason)}"}
   end
 
-  defp pending_background_notice?(session_pid) do
-    case Session.get_messages(session_pid) do
-      {:ok, messages} when is_list(messages) and messages != [] ->
-        last = List.last(messages)
-        content = Map.get(last, "content", "") || ""
-
-        Map.get(last, "role") == "user" and
-          (String.starts_with?(content, "=== Async Background Job Finished") or
-             String.starts_with?(content, "=== Async Subagent Result"))
-
-      _ ->
-        false
-    end
-  rescue
-    _ -> false
-  catch
-    _, _ -> false
+  def pending_background_notice?(session_pid) when is_pid(session_pid) do
+    Session.pending_background_notice?(session_pid)
   end
+
+  def pending_background_notice?(_), do: false
 
   defp handle_pr_queue(_session_pid, _session_id) do
     IO.puts(Formatter.format_info("Fetching Pull Request queue from GitHub…"))

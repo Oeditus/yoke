@@ -153,7 +153,7 @@ defmodule Yoke.CLI.LineEditor do
   end
 
   @doc """
-  Formats a configurable prompt string using config template or default.
+  Builds the rendered prompt string according to the configured `prompt_style`.
 
   `sandbox_override` (optional 5th arg), when a boolean, reflects the live
   session's actual sandbox state (as set via `/sandbox` or the Ctrl+G
@@ -161,28 +161,66 @@ defmodule Yoke.CLI.LineEditor do
   the prompt's sandbox indicator matches reality. Omit it (or pass `nil`) to
   fall back to the config-file value, e.g. from tests or one-shot contexts
   with no live session.
+
+  Accepts an optional 6th argument `opts` (or boolean) specifying options such
+  as `:pending_followup?` (or `:pending_followup`). When an automated follow-up
+  turn is available (e.g. from finished background jobs or async subagents),
+  a yellow `[⚡]` indicator is rendered at the end of the prompt right before `❯`.
   """
-  def build_prompt(session_id, model, hands_mode \\ "local", cwd \\ ".", sandbox_override \\ nil) do
+  def build_prompt(
+        session_id,
+        model,
+        hands_mode \\ "local",
+        cwd \\ ".",
+        sandbox_override \\ nil,
+        opts \\ []
+      ) do
     config = Config.load_config(cwd)
     style = Map.get(config, "prompt_style", "starship")
 
-    sandbox? =
-      if is_boolean(sandbox_override),
-        do: sandbox_override,
-        else: Map.get(config, "sandbox_workspace", false)
+    {sandbox?, opts} =
+      if is_list(sandbox_override) and Keyword.keyword?(sandbox_override) do
+        {Map.get(config, "sandbox_workspace", false), sandbox_override}
+      else
+        sb =
+          if is_boolean(sandbox_override),
+            do: sandbox_override,
+            else: Map.get(config, "sandbox_workspace", false)
+
+        {sb, opts}
+      end
+
+    followup? =
+      cond do
+        is_boolean(opts) ->
+          opts
+
+        is_list(opts) ->
+          Keyword.get(opts, :pending_followup?, Keyword.get(opts, :pending_followup, false))
+
+        is_map(opts) ->
+          Map.get(opts, :pending_followup?, Map.get(opts, :pending_followup, false))
+
+        true ->
+          false
+      end
 
     case style do
       "starship" ->
-        build_starship_prompt(session_id, model, hands_mode, cwd, sandbox?)
+        build_starship_prompt(session_id, model, hands_mode, cwd, sandbox?, followup?)
 
       "extended" ->
-        build_extended_prompt(session_id, model, hands_mode, cwd, sandbox?)
+        build_extended_prompt(session_id, model, hands_mode, cwd, sandbox?, followup?)
 
       "compact" ->
-        build_compact_prompt(session_id, model, cwd)
+        build_compact_prompt(session_id, model, cwd, followup?)
 
       "minimal" ->
-        "#{Formatter.cyan()}❯#{Formatter.reset()} "
+        if followup? do
+          "#{Formatter.yellow()}[⚡]#{Formatter.reset()} #{Formatter.cyan()}❯#{Formatter.reset()} "
+        else
+          "#{Formatter.cyan()}❯#{Formatter.reset()} "
+        end
 
       _ ->
         template = Map.get(config, "prompt_format", "user@{session} [{model}]> ")
@@ -190,15 +228,36 @@ defmodule Yoke.CLI.LineEditor do
         task_str =
           if running_units_count() > 0, do: "󱐋#{running_units_count()} running", else: "idle"
 
-        template
-        |> String.replace("{session}", session_id)
-        |> String.replace("{model}", model)
-        |> String.replace("{mode}", to_string(hands_mode))
-        |> String.replace("{tasks}", task_str)
+        followup_badge =
+          if followup?, do: "#{Formatter.yellow()}[⚡]#{Formatter.reset()}", else: ""
+
+        rendered =
+          template
+          |> String.replace("{session}", session_id)
+          |> String.replace("{model}", model)
+          |> String.replace("{mode}", to_string(hands_mode))
+          |> String.replace("{tasks}", task_str)
+          |> String.replace("{followup}", followup_badge)
+
+        if followup? and not String.contains?(template, "{followup}") do
+          cond do
+            String.contains?(rendered, "❯") ->
+              String.replace(rendered, "❯", "#{followup_badge} ❯", global: false)
+
+            String.ends_with?(rendered, "> ") ->
+              String.slice(rendered, 0, String.length(rendered) - 2) <>
+                "#{followup_badge} > "
+
+            true ->
+              rendered <> " #{followup_badge}"
+          end
+        else
+          rendered
+        end
     end
   end
 
-  defp build_starship_prompt(_session_id, model, hands_mode, cwd, sandbox?) do
+  defp build_starship_prompt(_session_id, model, hands_mode, cwd, sandbox?, followup?) do
     folder = Path.basename(Path.expand(cwd))
     branch = Yoke.Git.current_branch(cwd)
     branch_str = if branch != "", do: " 󰘬 #{branch}", else: ""
@@ -226,17 +285,25 @@ defmodule Yoke.CLI.LineEditor do
         other -> " 󰖟 #{other}"
       end
 
+    followup_badge =
+      if followup? do
+        " #{Formatter.yellow()}[⚡]#{Formatter.reset()}"
+      else
+        ""
+      end
+
     line =
       "#{Formatter.cyan()}󰉋 #{folder}#{Formatter.reset()}" <>
         "#{Formatter.magenta()}#{branch_str}#{Formatter.reset()}" <>
         " #{Formatter.green()}#{model_icon} #{model}#{Formatter.reset()}" <>
         "#{Formatter.yellow()}#{sandbox}#{mode_badge}#{Formatter.reset()}" <>
-        task_badge
+        task_badge <>
+        followup_badge
 
     "#{line} #{Formatter.cyan()}❯#{Formatter.reset()} "
   end
 
-  defp build_extended_prompt(session_id, model, hands_mode, cwd, sandbox?) do
+  defp build_extended_prompt(session_id, model, hands_mode, cwd, sandbox?, followup?) do
     folder = Path.basename(Path.expand(cwd))
     branch = Yoke.Git.current_branch(cwd)
     branch_str = if branch != "", do: " 󰘬 #{branch}", else: ""
@@ -257,23 +324,38 @@ defmodule Yoke.CLI.LineEditor do
 
     short_id = String.slice(session_id, 0, 8)
 
+    followup_badge =
+      if followup? do
+        " #{Formatter.yellow()}[⚡]#{Formatter.reset()}"
+      else
+        ""
+      end
+
     line =
       "#{Formatter.cyan()}󰉋 #{folder}#{Formatter.reset()}" <>
         "#{Formatter.magenta()}#{branch_str}#{Formatter.reset()}" <>
         " #{Formatter.green()}󰚩 #{model}#{Formatter.reset()}" <>
         "#{Formatter.dim()} [id:#{short_id}]#{Formatter.reset()}" <>
         "#{Formatter.yellow()}#{sandbox}#{mode_badge}#{Formatter.reset()}" <>
-        task_badge
+        task_badge <>
+        followup_badge
 
     "#{line} #{Formatter.cyan()}❯#{Formatter.reset()} "
   end
 
-  defp build_compact_prompt(_session_id, model, cwd) do
+  defp build_compact_prompt(_session_id, model, cwd, followup?) do
     folder = Path.basename(Path.expand(cwd))
     branch = Yoke.Git.current_branch(cwd)
     branch_str = if branch != "", do: "  #{branch}", else: ""
 
-    "#{Formatter.cyan()}#{folder}#{Formatter.magenta()}#{branch_str}#{Formatter.reset()} [#{model}] #{Formatter.cyan()}❯#{Formatter.reset()} "
+    followup_badge =
+      if followup? do
+        " #{Formatter.yellow()}[⚡]#{Formatter.reset()}"
+      else
+        ""
+      end
+
+    "#{Formatter.cyan()}#{folder}#{Formatter.magenta()}#{branch_str}#{Formatter.reset()} [#{model}]#{followup_badge} #{Formatter.cyan()}❯#{Formatter.reset()} "
   end
 
   # ---------------------------------------------------------------------
