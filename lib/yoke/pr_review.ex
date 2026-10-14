@@ -67,6 +67,7 @@ defmodule Yoke.PRReview do
       - Use real em dashes (—) for parenthetical clauses or abrupt breaks—never double hyphens (--) or loose hyphens.
       - Use proper curly typographic quotes (“ ” and ‘ ’) in prose explanations and commentary instead of plain straight quotes (" '). Straight quotes and backticks must still be used inside code snippets and JSON.
     - **No rhetorical fillers**: Strip AI filler phrases (“it’s worth noting”, “this is a classic”, “let’s dive into”).
+    - **Subtitles must match their content**: Every section heading and sub-label (e.g. “File: Scanner.scan”, “Risk: …”, “Recommendation: …”) MUST accurately describe the content that follows it. Never emit a subtitle that names a file, symbol, or topic the section does not actually discuss. Triple-check each subtitle against its body before finalizing; if they do not correspond, fix the subtitle (or move the content) so they do.
     - **Ask rather than assert** when a difference could be deliberate (e.g., “The ticket specifies X, but the code does Y. Is this intentional?”).
     - **Actionable & Committable**: Provide concrete replacement code in `fix_suggestion` whenever possible.
     #{patterns_section}
@@ -188,9 +189,9 @@ defmodule Yoke.PRReview do
       )
 
     case match do
-      [_, f, "", rest] -> {f, nil, String.slice(rest, 0, 80)}
-      [_, f, l_str, rest] -> {f, parse_int(l_str), String.slice(rest, 0, 80)}
-      _ -> {nil, nil, String.slice(text, 0, 80)}
+      [_, f, "", rest] -> {f, nil, String.trim(rest)}
+      [_, f, l_str, rest] -> {f, parse_int(l_str), String.trim(rest)}
+      _ -> {nil, nil, String.trim(text)}
     end
   end
 
@@ -346,18 +347,15 @@ defmodule Yoke.PRReview do
         accepted_findings
         |> Enum.with_index(1)
         |> Enum.map_join("\n\n", fn {f, idx} ->
-          loc =
-            cond do
-              f.file && f.line -> "File: #{f.file}:#{f.line}"
-              f.file -> "File: #{f.file}"
-              true -> "Scope: General"
-            end
+          loc = fix_prompt_location(f)
 
           fix =
             if is_binary(f.fix_suggestion) and f.fix_suggestion != "",
               do: "\n   Suggested Fix: " <> f.fix_suggestion,
               else: ""
 
+          # The title is emitted verbatim on the first line (in square brackets)
+          # and MUST NOT be truncated, regardless of its length.
           """
           #{idx}. [#{f.title}]
              #{loc}
@@ -371,6 +369,22 @@ defmodule Yoke.PRReview do
 
       #{findings_text}
       """
+    end
+  end
+
+  # Renders the location line for a finding in the fix prompt.
+  #
+  # Every finding MUST carry both a file name and a line number so the model
+  # can apply the fix precisely. When a line number is unavailable we still
+  # emit the file name plus an explicit placeholder, and when the file itself
+  # is unknown we emit a clearly-scoped general marker.
+  defp fix_prompt_location(f) do
+    file = if is_binary(f.file) and f.file != "", do: f.file, else: nil
+
+    cond do
+      file && f.line -> "File: #{file}:#{f.line}"
+      file -> "File: #{file} (line number unavailable — locate the relevant site in this file)"
+      true -> "Scope: General (no specific file or line number was identified)"
     end
   end
 
@@ -510,12 +524,24 @@ defmodule Yoke.PRReview do
         }
       end)
 
+    # The review body already contains a "Findings Summary & Accepted Issues"
+    # section that lists every accepted finding. Only surface an off-diff
+    # sidenote in the "General Observations & Out-of-Diff Notes" section when
+    # it is NOT already mentioned in that summary, otherwise the section would
+    # be an exact duplicate of the summary. If nothing new remains, omit the
+    # section entirely.
+    novel_sidenotes =
+      Enum.reject(body_sidenotes, fn f ->
+        title = to_string(f.title)
+        title != "" and String.contains?(review_body, title)
+      end)
+
     full_body =
-      if body_sidenotes == [] do
+      if novel_sidenotes == [] do
         review_body
       else
         sidenotes_text =
-          Enum.map_join(body_sidenotes, "\n", fn f ->
+          Enum.map_join(novel_sidenotes, "\n", fn f ->
             loc = if f.file, do: "`#{f.file}`#{if f.line, do: ":#{f.line}"}", else: "General"
             "- **[#{f.severity |> String.upcase()}]** #{loc} - **#{f.title}**: #{f.description}"
           end)

@@ -125,6 +125,58 @@ defmodule Yoke.PRReviewTest do
     test "returns empty string when accepted findings list is empty" do
       assert PRReview.build_fix_prompt([]) == ""
     end
+
+    test "includes both file name and line number for every finding" do
+      accepted = [
+        %{
+          id: 1,
+          file: "lib/yoke/git.ex",
+          line: 42,
+          title: "With line",
+          description: "d",
+          severity: "medium",
+          fix_suggestion: ""
+        },
+        %{
+          id: 2,
+          file: "lib/yoke/cli.ex",
+          line: nil,
+          title: "Without line",
+          description: "d",
+          severity: "low",
+          fix_suggestion: ""
+        }
+      ]
+
+      prompt = PRReview.build_fix_prompt(accepted)
+
+      assert String.contains?(prompt, "File: lib/yoke/git.ex:42")
+      # A file with no line still names the file and flags the missing line.
+      assert String.contains?(prompt, "File: lib/yoke/cli.ex")
+      assert String.contains?(prompt, "line number unavailable")
+    end
+
+    test "never truncates finding titles, however long" do
+      long_title =
+        "This is an extremely long finding title that far exceeds any reasonable " <>
+          "single-line width and must therefore be preserved verbatim in full"
+
+      accepted = [
+        %{
+          id: 1,
+          file: "lib/yoke/git.ex",
+          line: 42,
+          title: long_title,
+          description: "d",
+          severity: "medium",
+          fix_suggestion: ""
+        }
+      ]
+
+      prompt = PRReview.build_fix_prompt(accepted)
+
+      assert String.contains?(prompt, "1. [#{long_title}]")
+    end
   end
 
   describe "build_pr_comment_body/3" do
@@ -257,6 +309,63 @@ defmodule Yoke.PRReviewTest do
       # Finding 2 should be in body sidenotes
       assert String.contains?(payload["body"], "Outside diff issue")
     end
+
+    test "omits the General Observations section when sidenotes duplicate the summary" do
+      findings = [
+        %{
+          id: 1,
+          file: "lib/other.ex",
+          line: 99,
+          title: "Outside diff issue",
+          description: "Old code has a bug",
+          severity: "low",
+          fix_suggestion: ""
+        }
+      ]
+
+      # The summary body already mentions this finding by title, so the
+      # off-diff sidenotes section would be an exact duplicate and must be
+      # suppressed entirely.
+      review_body =
+        "### 📋 Findings Summary & Accepted Issues\n" <>
+          "- **1. [LOW]** `lib/other.ex`:99 - **Outside diff issue**: Old code has a bug"
+
+      payload =
+        PRReview.build_atomic_review_payload(
+          findings,
+          review_body,
+          "COMMENT",
+          MapSet.new()
+        )
+
+      refute String.contains?(payload["body"], "General Observations & Out-of-Diff Notes")
+      assert payload["body"] == review_body
+    end
+
+    test "publishes the General Observations section only for novel sidenotes" do
+      findings = [
+        %{
+          id: 1,
+          file: "lib/other.ex",
+          line: 99,
+          title: "Outside diff issue",
+          description: "Old code has a bug",
+          severity: "low",
+          fix_suggestion: ""
+        }
+      ]
+
+      payload =
+        PRReview.build_atomic_review_payload(
+          findings,
+          "## Summary with no findings listed",
+          "COMMENT",
+          MapSet.new()
+        )
+
+      assert String.contains?(payload["body"], "General Observations & Out-of-Diff Notes")
+      assert String.contains?(payload["body"], "Outside diff issue")
+    end
   end
 
   describe "prompt_instructions self-critique and tone" do
@@ -267,6 +376,7 @@ defmodule Yoke.PRReviewTest do
       assert String.contains?(prompt, "typographic quotes (“ ” and ‘ ’)")
       assert String.contains?(prompt, "Ask rather than assert")
       assert String.contains?(prompt, "Tone & Comment Phrasing Rules")
+      assert String.contains?(prompt, "Subtitles must match their content")
     end
   end
 end
