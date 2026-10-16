@@ -28,7 +28,13 @@ defmodule Yoke.MCP.ServerManager do
   end
 
   @doc "Starts and registers Ragex (@../ragex) as a first-class MCP server targeting specified working directory."
-  def start_ragex(opts \\ []) do
+  def start_ragex(opts \\ [])
+
+  def start_ragex(target_dir) when is_binary(target_dir) do
+    start_ragex(target_dir: target_dir)
+  end
+
+  def start_ragex(opts) when is_list(opts) do
     target_dir = opts[:target_dir] || opts[:cwd] || File.cwd!()
     GenServer.call(@name, {:start_ragex, target_dir, opts}, :infinity)
   end
@@ -119,7 +125,11 @@ defmodule Yoke.MCP.ServerManager do
         tools: tools_registered
       })
 
-    Enum.each(state.waiting_callers, fn caller -> GenServer.reply(caller, :ok) end)
+    Enum.each(state.waiting_callers, fn
+      {:start, caller} -> GenServer.reply(caller, {:ok, dir, tools_registered})
+      {:await, caller} -> GenServer.reply(caller, :ok)
+      caller -> GenServer.reply(caller, :ok)
+    end)
 
     {:noreply, %{state | servers: new_servers, ragex_status: :ready, waiting_callers: []}}
   end
@@ -127,7 +137,12 @@ defmodule Yoke.MCP.ServerManager do
   @impl true
   def handle_cast({:ragex_failed, reason}, state) do
     Logger.warning("󱐋🔌 Ragex auto-start notice: #{inspect(reason)}")
-    Enum.each(state.waiting_callers, fn caller -> GenServer.reply(caller, {:error, reason}) end)
+
+    Enum.each(state.waiting_callers, fn
+      {_tag, caller} -> GenServer.reply(caller, {:error, reason})
+      caller -> GenServer.reply(caller, {:error, reason})
+    end)
+
     {:noreply, %{state | ragex_status: :ready, waiting_callers: []}}
   end
 
@@ -135,7 +150,7 @@ defmodule Yoke.MCP.ServerManager do
   def handle_call(:await_ragex, from, state) do
     case state.ragex_status do
       :starting ->
-        {:noreply, %{state | waiting_callers: [from | state.waiting_callers]}}
+        {:noreply, %{state | waiting_callers: [{:await, from} | state.waiting_callers]}}
 
       _ ->
         {:reply, :ok, state}
@@ -186,7 +201,7 @@ defmodule Yoke.MCP.ServerManager do
   def handle_call({:start_ragex, target_dir, opts}, from, state) do
     case state.ragex_status do
       :starting ->
-        {:noreply, %{state | waiting_callers: [from | state.waiting_callers]}}
+        {:noreply, %{state | waiting_callers: [{:start, from} | state.waiting_callers]}}
 
       _ ->
         Task.start(fn ->
@@ -199,7 +214,7 @@ defmodule Yoke.MCP.ServerManager do
           end
         end)
 
-        {:noreply, %{state | ragex_status: :starting, waiting_callers: [from]}}
+        {:noreply, %{state | ragex_status: :starting, waiting_callers: [{:start, from}]}}
     end
   end
 
@@ -276,33 +291,45 @@ defmodule Yoke.MCP.ServerManager do
 
       if existing_nodes > 0 do
         Logger.info("󱐋🔌 Ragex Knowledge Graph loaded from store (#{existing_nodes} nodes ready).")
-      else
-        Yoke.CLI.Spinner.run(
-          fn ->
-            orig_level = Logger.level()
-            Logger.configure(level: :warning)
-
-            try do
-              case Ragex.Analyzers.Directory.analyze_directory(target_dir) do
-                {:ok, stats} ->
-                  Logger.configure(level: orig_level)
-
-                  Logger.info(
-                    "󱐋🔌 Ragex indexing complete! Indexed #{stats.success} files into Knowledge Graph."
-                  )
-
-                {:error, reason} ->
-                  Logger.configure(level: orig_level)
-                  Logger.warning("󱐋🔌 Ragex indexing notice: #{inspect(reason)}")
-              end
-            after
-              Logger.configure(level: orig_level)
-            end
-          end,
-          title: "Indexing Ragex Knowledge Graph…",
-          tip: false
-        )
       end
+
+      # Always re-analyze the target directory on every run (even when cached
+      # nodes already exist in the store) because Yoke may be restarted on a
+      # different git branch in the same directory. Ragex's directory analyzer
+      # uses FileTracker content hashes for incremental updates while we also
+      # prune any stale entities from files deleted or modified across branches.
+      Yoke.CLI.Spinner.run(
+        fn ->
+          orig_level = Logger.level()
+          Logger.configure(level: :warning)
+
+          try do
+            if Code.ensure_loaded?(Ragex.Graph.Store) do
+              Ragex.Graph.Store.load_project(target_dir)
+            end
+
+            stale_snapshot = snapshot_stale_tracking()
+
+            case analyze_ragex_directory(target_dir, opts) do
+              {:ok, stats} ->
+                prune_stale_tracked_entities(target_dir, stale_snapshot)
+                Logger.configure(level: orig_level)
+
+                Logger.info(
+                  "󱐋🔌 Ragex indexing complete! Indexed #{stats.success} files into Knowledge Graph."
+                )
+
+              {:error, reason} ->
+                Logger.configure(level: orig_level)
+                Logger.warning("󱐋🔌 Ragex indexing notice: #{inspect(reason)}")
+            end
+          after
+            Logger.configure(level: orig_level)
+          end
+        end,
+        title: "Indexing Ragex Knowledge Graph…",
+        tip: false
+      )
 
       raw_tools = MCPTools.list_tools()
       tools_list = Map.get(raw_tools, :tools, [])
@@ -334,6 +361,109 @@ defmodule Yoke.MCP.ServerManager do
     else
       start_ragex_external(target_dir, opts)
     end
+  end
+
+  defp analyze_ragex_directory(target_dir, opts) when is_list(opts) do
+    analyze_opts =
+      Keyword.take(opts, [
+        :max_depth,
+        :exclude_patterns,
+        :incremental,
+        :force_refresh,
+        :notify,
+        :timeout,
+        :max_concurrency,
+        :load_project,
+        :watch
+      ])
+
+    if analyze_opts == [] do
+      Ragex.Analyzers.Directory.analyze_directory(target_dir)
+    else
+      Ragex.Analyzers.Directory.analyze_directory(target_dir, analyze_opts)
+    end
+  end
+
+  defp analyze_ragex_directory(target_dir, _opts) do
+    Ragex.Analyzers.Directory.analyze_directory(target_dir)
+  end
+
+  defp snapshot_stale_tracking do
+    if Code.ensure_loaded?(Ragex.Embeddings.FileTracker) do
+      try do
+        Enum.reduce(
+          Ragex.Embeddings.FileTracker.list_tracked_files(),
+          %{deleted_files: [], candidate_entities: []},
+          fn {file_id, metadata}, acc ->
+            entities = Map.get(metadata, :entities, [])
+
+            case Ragex.Embeddings.FileTracker.has_changed?(file_id) do
+              {:deleted, _} ->
+                %{
+                  acc
+                  | deleted_files: [file_id | acc.deleted_files],
+                    candidate_entities: entities ++ acc.candidate_entities
+                }
+
+              {:changed, _} ->
+                %{acc | candidate_entities: entities ++ acc.candidate_entities}
+
+              _ ->
+                acc
+            end
+          end
+        )
+      rescue
+        _ -> %{deleted_files: [], candidate_entities: []}
+      catch
+        _, _ -> %{deleted_files: [], candidate_entities: []}
+      end
+    else
+      %{deleted_files: [], candidate_entities: []}
+    end
+  end
+
+  defp prune_stale_tracked_entities(
+         target_dir,
+         %{deleted_files: deleted_files, candidate_entities: candidate_entities}
+       ) do
+    if (deleted_files != [] or candidate_entities != []) and
+         Code.ensure_loaded?(Ragex.Embeddings.FileTracker) and
+         Code.ensure_loaded?(Ragex.Graph.Store) do
+      try do
+        Enum.each(deleted_files, fn file_id ->
+          Ragex.Embeddings.FileTracker.untrack_file(file_id)
+        end)
+
+        active_entities =
+          Ragex.Embeddings.FileTracker.list_tracked_files()
+          |> Enum.flat_map(fn {_path, metadata} -> Map.get(metadata, :entities, []) end)
+          |> MapSet.new()
+
+        removed_entities =
+          candidate_entities
+          |> Enum.uniq()
+          |> Enum.reject(&MapSet.member?(active_entities, &1))
+
+        Enum.each(removed_entities, fn
+          {entity_type, entity_id} ->
+            Ragex.Graph.Store.remove_node(entity_type, entity_id)
+
+          _ ->
+            :ok
+        end)
+
+        if deleted_files != [] or removed_entities != [] do
+          Ragex.Graph.Store.save_cache(target_dir)
+        end
+      rescue
+        _ -> :ok
+      catch
+        _, _ -> :ok
+      end
+    end
+
+    :ok
   end
 
   # ---------------------------------------------------------------------
@@ -456,10 +586,10 @@ defmodule Yoke.MCP.ServerManager do
   end
 
   defp configure_ragex_store(target_dir) do
-    use_dllb? = Code.ensure_loaded?(Dllb)
+    use_dllb? = Code.ensure_loaded?(Dllb) and Application.get_env(:dllb, :enabled, true)
     backend = if use_dllb?, do: :dllb, else: :ets
 
-    ensure_dllb_server_binary()
+    if use_dllb?, do: ensure_dllb_server_binary()
 
     host = System.get_env("DLLB_HOST", Application.get_env(:dllb, :host, "127.0.0.1"))
 
@@ -502,6 +632,8 @@ defmodule Yoke.MCP.ServerManager do
 
           {:error, reason} ->
             Logger.warning("󱐋🔌 Per-project Dllb startup notice: #{inspect(reason)}")
+            Application.put_env(:ragex, :store_backend, :ets)
+            Application.put_env(:dllb, :enabled, false)
         end
       else
         Logger.info("󱐋🔌 Connecting to global Dllb server on #{host}:#{port}…")
@@ -532,7 +664,7 @@ defmodule Yoke.MCP.ServerManager do
       if Process.whereis(Dllb.Pool) != nil or dllb_mode == :per_project do
         already_bootstrapped? =
           try do
-            case Dllb.query("SELECT * FROM ast_node LIMIT 1;") do
+            case DllbStore.query("SELECT * FROM ast_node LIMIT 1;") do
               {:ok, _} -> true
               _ -> false
             end

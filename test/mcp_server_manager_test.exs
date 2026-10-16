@@ -1,5 +1,5 @@
 defmodule Yoke.MCPServerManagerTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Yoke.MCP.ServerManager, as: MCPServerManager
 
@@ -23,6 +23,91 @@ defmodule Yoke.MCPServerManagerTest do
   test "handles removing connected MCP server gracefully" do
     assert {:error, msg} = MCPServerManager.remove_server("non_existent_server")
     assert msg =~ "not connected"
+  end
+
+  test "reanalyzes directory with ragex on each subsequent run when branch files change" do
+    tmp_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "yoke_ragex_reanalyze_test_#{System.unique_integer([:positive])}"
+      )
+
+    lib_dir = Path.join(tmp_dir, "lib")
+    File.mkdir_p!(lib_dir)
+
+    on_exit(fn ->
+      File.rm_rf(tmp_dir)
+    end)
+
+    shared_file = Path.join(lib_dir, "shared.ex")
+    branch_a_file = Path.join(lib_dir, "branch_a_only.ex")
+    branch_b_file = Path.join(lib_dir, "branch_b_only.ex")
+
+    # Simulate Run 1 on Branch A
+    File.write!(shared_file, """
+    defmodule YokeRagexTest.Shared do
+      def common_fn, do: :ok
+      def branch_a_fn, do: :from_a
+    end
+    """)
+
+    File.write!(branch_a_file, """
+    defmodule YokeRagexTest.BranchAOnly do
+      def only_a, do: :a
+    end
+    """)
+
+    assert {:ok, ^tmp_dir, tools} =
+             MCPServerManager.start_ragex(target_dir: tmp_dir, watch: false, notify: false)
+
+    assert is_list(tools) and tools != []
+    Ragex.Graph.Store.sync()
+
+    assert Ragex.Graph.Store.get_module(YokeRagexTest.Shared) != nil
+    assert Ragex.Graph.Store.get_function(YokeRagexTest.Shared, :common_fn, 0) != nil
+    assert Ragex.Graph.Store.get_function(YokeRagexTest.Shared, :branch_a_fn, 0) != nil
+    assert Ragex.Graph.Store.get_module(YokeRagexTest.BranchAOnly) != nil
+    assert Ragex.Graph.Store.get_function(YokeRagexTest.BranchAOnly, :only_a, 0) != nil
+    assert Ragex.Graph.Store.get_module(YokeRagexTest.BranchBOnly) == nil
+
+    # Simulate switching to Branch B in the same directory and restarting Ragex (Run 2):
+    # - shared.ex is modified (branch_a_fn removed, branch_b_fn added)
+    # - branch_a_only.ex is deleted
+    # - branch_b_only.ex is added
+    File.rm!(branch_a_file)
+
+    File.write!(shared_file, """
+    defmodule YokeRagexTest.Shared do
+      def common_fn, do: :ok
+      def branch_b_fn, do: :from_b
+    end
+    """)
+
+    File.write!(branch_b_file, """
+    defmodule YokeRagexTest.BranchBOnly do
+      def only_b, do: :b
+    end
+    """)
+
+    # Existing nodes are > 0 before second run
+    assert Ragex.Graph.Store.stats().nodes > 0
+
+    assert {:ok, ^tmp_dir, _tools} =
+             MCPServerManager.start_ragex(target_dir: tmp_dir, watch: false, notify: false)
+
+    Ragex.Graph.Store.sync()
+
+    # Verify new & modified symbols from Branch B are indexed
+    assert Ragex.Graph.Store.get_module(YokeRagexTest.Shared) != nil
+    assert Ragex.Graph.Store.get_function(YokeRagexTest.Shared, :common_fn, 0) != nil
+    assert Ragex.Graph.Store.get_function(YokeRagexTest.Shared, :branch_b_fn, 0) != nil
+    assert Ragex.Graph.Store.get_module(YokeRagexTest.BranchBOnly) != nil
+    assert Ragex.Graph.Store.get_function(YokeRagexTest.BranchBOnly, :only_b, 0) != nil
+
+    # Verify removed symbols from Branch A are pruned
+    assert Ragex.Graph.Store.get_function(YokeRagexTest.Shared, :branch_a_fn, 0) == nil
+    assert Ragex.Graph.Store.get_module(YokeRagexTest.BranchAOnly) == nil
+    assert Ragex.Graph.Store.get_function(YokeRagexTest.BranchAOnly, :only_a, 0) == nil
   end
 
   test "formats validation errors with dynamic language (JS/TS support)" do

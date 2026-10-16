@@ -2332,7 +2332,7 @@ defmodule Yoke.CLI.Repl do
   def handle_input("/ragex reindex", _session_pid, _session_id) do
     IO.puts(Formatter.format_info("Re-indexing project codebase into Ragex Knowledge Graph…"))
 
-    case MCPServerManager.start_ragex(File.cwd!()) do
+    case MCPServerManager.start_ragex(target_dir: File.cwd!(), force_refresh: true) do
       {:ok, _dir, _tools} ->
         IO.puts(Formatter.format_success("Knowledge Graph re-indexing triggered successfully!"))
 
