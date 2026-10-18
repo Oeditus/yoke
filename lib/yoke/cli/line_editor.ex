@@ -11,7 +11,8 @@ defmodule Yoke.CLI.LineEditor do
     - Full keyboard cursor navigation (Left/Right, Home/End, Backspace/Delete)
     - Persistent history navigation (Up/Down arrows) with ~/.yoke/history
     - Reverse incremental search (Ctrl+R)
-    - Tab auto-completion for slash commands
+    - Tab auto-completion for slash commands and file paths inside backticks
+    - Interactive `@` file picker that inserts plain editable text
     - Emacs shortcuts (Ctrl+A, Ctrl+E, Ctrl+U, Ctrl+K, Ctrl+W, Ctrl+C, Ctrl+D)
     - Live status bar hotkeys: Ctrl+P (permission mode), Ctrl+G (sandbox),
       Ctrl+B (status bar gauge/compact toggle)
@@ -763,15 +764,77 @@ defmodule Yoke.CLI.LineEditor do
   @skills_subcommands ["/skills show", "/skills path", "/skills edit", "/skills new"]
   @jobs_subcommands ["/jobs kill", "/jobs kill all"]
 
+  @ignored_completion_dirs [
+    ".git",
+    "_build",
+    "deps",
+    ".elixir_ls",
+    "node_modules",
+    "dist",
+    "build"
+  ]
+
   @doc """
-  Tab-completes slash commands and subcommands given input.
+  Applies tab completion at the current cursor position in `state`.
+
+  Supports slash-command completion as well as file path completion when the
+  cursor is inside backticks (inserting the completed file path as plain
+  editable text in the buffer).
+
+  Returns:
+    - `{:ok, updated_state}` when completion uniquely resolves or extends the prefix
+    - `{:ambiguous, matches, updated_state}` when multiple candidates match
+    - `{:none, state}` when no completion applies
+  """
+  def tab_complete_state(%{search_mode: true} = state), do: {:none, state}
+
+  def tab_complete_state(%{buffer: buffer, cursor: cursor} = state) do
+    clamped = max(0, min(cursor, length(buffer)))
+    {left, right} = Enum.split(buffer, clamped)
+    left_str = Enum.join(left)
+
+    cwd =
+      Map.get(state, :cwd) || get_in(state, [:context, :cwd]) || get_in(state, [:context, "cwd"]) ||
+        "."
+
+    case tab_complete(left_str, cwd) do
+      {:ok, completed_left} ->
+        new_left = String.graphemes(completed_left)
+        {:ok, %{state | buffer: new_left ++ right, cursor: length(new_left)}}
+
+      {:ambiguous, matches} ->
+        {:ambiguous, matches, %{state | first_render: true, last_render: nil}}
+
+      :none ->
+        {:none, state}
+    end
+  end
+
+  @doc """
+  Returns true when the end of `text` (the cursor position) sits inside an
+  unclosed inline backtick span.
+  """
+  def inside_backticks?(text) when is_binary(text) do
+    cleaned = String.replace(text, "```", "")
+    not String.ends_with?(text, "```") and rem(count_occurrences(cleaned, "`"), 2) == 1
+  end
+
+  @doc """
+  Tab-completes file paths (when inside backticks) or slash commands and
+  subcommands given input.
 
   Returns `{:ok, completed}` when the prefix uniquely resolves or extends to
   a longer common prefix, `{:ambiguous, matches}` when multiple candidates
   share no longer common prefix, and `:none` when nothing matches.
   """
-  def tab_complete(input) when is_binary(input) do
+  def tab_complete(input, cwd \\ ".") when is_binary(input) do
     cond do
+      inside_backticks?(input) ->
+        parts = String.split(input, "`")
+        before_backtick = parts |> Enum.drop(-1) |> Enum.join("`")
+        after_backtick = List.last(parts) || ""
+        complete_backtick_path(before_backtick, after_backtick, cwd)
+
       String.starts_with?(input, "/bash ") ->
         complete_candidates(input, @bash_subcommands)
 
@@ -792,6 +855,139 @@ defmodule Yoke.CLI.LineEditor do
 
       true ->
         :none
+    end
+  end
+
+  defp complete_backtick_path(before_backtick, after_backtick, cwd) do
+    case complete_file_path(after_backtick, cwd) do
+      {:ok, completed_path} ->
+        {:ok, before_backtick <> "`" <> completed_path}
+
+      {:ambiguous, matches} ->
+        {:ambiguous, matches}
+
+      :none ->
+        case Regex.run(~r/^(.*\s)(\S*)$/s, after_backtick) do
+          [_, leading, last_token] ->
+            case complete_file_path(last_token, cwd) do
+              {:ok, completed_token} ->
+                {:ok, before_backtick <> "`" <> leading <> completed_token}
+
+              {:ambiguous, matches} ->
+                {:ambiguous, matches}
+
+              :none ->
+                :none
+            end
+
+          _ ->
+            :none
+        end
+    end
+  end
+
+  @doc """
+  Autocompletes a file or directory path prefix relative to `cwd`.
+
+  Returns `{:ok, completed_path}`, `{:ambiguous, candidates}`, or `:none`.
+  """
+  def complete_file_path(path_prefix, cwd \\ ".") when is_binary(path_prefix) do
+    {dir_prefix, name_prefix} = split_path_prefix(path_prefix)
+    fs_dir = resolve_completion_dir(dir_prefix, cwd)
+
+    fs_candidates =
+      case File.ls(fs_dir) do
+        {:ok, entries} ->
+          entries
+          |> Enum.filter(fn entry ->
+            String.starts_with?(entry, name_prefix) and
+              valid_completion_entry?(entry, name_prefix)
+          end)
+          |> Enum.sort()
+          |> Enum.map(fn entry ->
+            full_path = Path.join(fs_dir, entry)
+            if File.dir?(full_path), do: dir_prefix <> entry <> "/", else: dir_prefix <> entry
+          end)
+
+        {:error, _} ->
+          []
+      end
+
+    case fs_candidates do
+      [_ | _] ->
+        complete_candidates(path_prefix, fs_candidates)
+
+      [] when dir_prefix == "" and name_prefix != "" ->
+        workspace_matches =
+          cwd
+          |> list_workspace_files()
+          |> Enum.filter(fn file ->
+            String.starts_with?(Path.basename(file), name_prefix)
+          end)
+          |> Enum.sort()
+
+        case workspace_matches do
+          [] ->
+            :none
+
+          [single] ->
+            {:ok, single}
+
+          multiple ->
+            prefix = common_prefix(multiple)
+
+            if String.length(prefix) > String.length(path_prefix) and
+                 String.starts_with?(Path.basename(prefix), name_prefix) do
+              {:ok, prefix}
+            else
+              {:ambiguous, multiple}
+            end
+        end
+
+      [] ->
+        :none
+    end
+  end
+
+  defp split_path_prefix(""), do: {"", ""}
+
+  defp split_path_prefix(path_prefix) do
+    if String.ends_with?(path_prefix, "/") do
+      {path_prefix, ""}
+    else
+      case String.split(path_prefix, "/") do
+        [single] ->
+          {"", single}
+
+        parts ->
+          name = List.last(parts)
+          dir = (parts |> Enum.drop(-1) |> Enum.join("/")) <> "/"
+          {dir, name}
+      end
+    end
+  end
+
+  defp resolve_completion_dir("", cwd), do: cwd
+
+  defp resolve_completion_dir(dir_prefix, cwd) do
+    cond do
+      String.starts_with?(dir_prefix, "~/") or dir_prefix == "~" ->
+        Path.expand(dir_prefix)
+
+      String.starts_with?(dir_prefix, "/") ->
+        dir_prefix
+
+      true ->
+        Path.join(cwd, dir_prefix)
+    end
+  end
+
+  defp valid_completion_entry?(entry, name_prefix) do
+    if String.starts_with?(name_prefix, ".") do
+      not ((entry == ".git" and not String.starts_with?(name_prefix, ".git")) or
+             (entry == ".elixir_ls" and not String.starts_with?(name_prefix, ".elixir")))
+    else
+      not String.starts_with?(entry, ".") and entry not in @ignored_completion_dirs
     end
   end
 
@@ -1019,19 +1215,17 @@ defmodule Yoke.CLI.LineEditor do
   defp handle_tab(%{search_mode: true} = state), do: raw_loop(state)
 
   defp handle_tab(state) do
-    buf_str = Enum.join(state.buffer)
+    case tab_complete_state(state) do
+      {:ok, new_state} ->
+        raw_loop(new_state)
 
-    case tab_complete(buf_str) do
-      {:ok, completed} ->
-        chars = String.graphemes(completed)
-        raw_loop(%{state | buffer: chars, cursor: length(chars)})
-
-      {:ambiguous, matches} ->
+      {:ambiguous, matches, new_state} ->
+        erase_full(state)
         show_completions(matches)
-        raw_loop(%{state | first_render: true})
+        raw_loop(new_state)
 
-      :none ->
-        raw_loop(state)
+      {:none, new_state} ->
+        raw_loop(new_state)
     end
   end
 
@@ -1888,6 +2082,8 @@ defmodule Yoke.CLI.LineEditor do
     end
   end
 
+  def file_picker_modal(%{search_mode: true} = state), do: handle_char(state, "@")
+
   def file_picker_modal(state) do
     cwd =
       Map.get(state, :cwd) || get_in(state, [:context, :cwd]) || get_in(state, [:context, "cwd"]) ||
@@ -1896,18 +2092,19 @@ defmodule Yoke.CLI.LineEditor do
     config = Config.load_config(cwd)
 
     if Map.get(config, "enable_file_picker", true) do
-      all_files = list_workspace_files()
+      all_files = list_workspace_files(cwd)
 
       opts =
         Enum.map(all_files, fn f ->
-          icon = if File.dir?(f), do: "󰉋", else: "󰈔"
+          icon = if File.dir?(Path.join(cwd, f)), do: "󰉋", else: "󰈔"
           "#{icon} #{f}"
         end)
 
       if opts == [] do
         insert_char(state, "@")
       else
-        {left, right} = Enum.split(state.buffer, state.cursor)
+        clamped = max(0, min(state.cursor, length(state.buffer)))
+        {left, right} = Enum.split(state.buffer, clamped)
         left_str = Enum.join(left)
 
         {initial_filter, strip_count} =
@@ -1916,18 +2113,32 @@ defmodule Yoke.CLI.LineEditor do
             _ -> {"", 0}
           end
 
+        if tty?() do
+          erase_full(state)
+          TerminalOwner.clear()
+          Formatter.flush()
+        end
+
         ans =
-          Yoke.CLI.Spinner.with_paused(fn ->
-            Yoke.CLI.QuestionPrompt.ask_single_question(
-              "Select file context to attach:",
-              opts,
-              false,
-              false,
-              filterable: true,
-              initial_filter: initial_filter,
-              clear_on_done: true
-            )
-          end)
+          try do
+            Yoke.CLI.Spinner.with_paused(fn ->
+              Yoke.CLI.QuestionPrompt.ask_single_question(
+                "Select file context to attach:",
+                opts,
+                false,
+                false,
+                filterable: true,
+                initial_filter: initial_filter,
+                clear_on_done: true,
+                keep_raw_mode: true
+              )
+            end)
+          after
+            if tty?() do
+              set_raw_mode()
+              Formatter.flush()
+            end
+          end
 
         case ans do
           %{selected: [sel]} when is_binary(sel) and sel != "" ->
@@ -1940,15 +2151,15 @@ defmodule Yoke.CLI.LineEditor do
           _ ->
             if strip_count == 0 do
               st = insert_char(state, "@")
-              %{st | first_render: true}
+              %{st | first_render: true, last_render: nil}
             else
-              %{state | first_render: true}
+              %{state | first_render: true, last_render: nil}
             end
         end
       end
     else
       st = insert_char(state, "@")
-      %{st | first_render: true}
+      %{st | first_render: true, last_render: nil}
     end
   end
 
@@ -1971,59 +2182,54 @@ defmodule Yoke.CLI.LineEditor do
       state
       | buffer: new_buffer,
         cursor: new_cursor,
-        first_render: true
+        first_render: true,
+        last_render: nil
     }
   end
 
-  defp list_workspace_files do
+  defp list_workspace_files(cwd) do
     raw_files =
       case System.cmd("git", ["ls-files", "--cached", "--others", "--exclude-standard"],
+             cd: cwd,
              stderr_to_stdout: true
            ) do
         {out, 0} ->
           String.split(out, "\n", trim: true)
 
         _ ->
-          fallback_wildcard_files()
+          fallback_wildcard_files(cwd)
       end
 
     raw_files
-    |> Enum.reject(fn path ->
-      String.starts_with?(path, ".git") or
-        String.starts_with?(path, "_build") or
-        String.contains?(path, "/_build/") or
-        String.starts_with?(path, "deps") or
-        String.contains?(path, "/deps/") or
-        String.starts_with?(path, ".elixir_ls") or
-        String.contains?(path, "/.elixir_ls/") or
-        String.starts_with?(path, "node_modules") or
-        String.contains?(path, "/node_modules/") or
-        String.starts_with?(path, "dist") or
-        String.contains?(path, "/dist/") or
-        String.starts_with?(path, "build") or
-        String.contains?(path, "/build/")
-    end)
+    |> Enum.reject(&ignored_workspace_path?/1)
   rescue
-    _ -> fallback_wildcard_files()
+    _ -> fallback_wildcard_files(cwd)
   end
 
-  defp fallback_wildcard_files do
-    Path.wildcard("**/*")
-    |> Enum.reject(fn path ->
-      String.starts_with?(path, ".git") or
-        String.starts_with?(path, "_build") or
-        String.contains?(path, "/_build/") or
-        String.starts_with?(path, "deps") or
-        String.contains?(path, "/deps/") or
-        String.starts_with?(path, ".elixir_ls") or
-        String.contains?(path, "/.elixir_ls/") or
-        String.starts_with?(path, "node_modules") or
-        String.contains?(path, "/node_modules/") or
-        String.starts_with?(path, "dist") or
-        String.contains?(path, "/dist/") or
-        String.starts_with?(path, "build") or
-        String.contains?(path, "/build/")
+  defp fallback_wildcard_files(cwd) do
+    pattern = if cwd in [".", ""], do: "**/*", else: Path.join(cwd, "**/*")
+
+    Path.wildcard(pattern)
+    |> Enum.map(fn path ->
+      if cwd in [".", ""], do: path, else: Path.relative_to(path, cwd)
     end)
+    |> Enum.reject(&ignored_workspace_path?/1)
+  end
+
+  defp ignored_workspace_path?(path) do
+    String.starts_with?(path, ".git") or
+      String.starts_with?(path, "_build") or
+      String.contains?(path, "/_build/") or
+      String.starts_with?(path, "deps") or
+      String.contains?(path, "/deps/") or
+      String.starts_with?(path, ".elixir_ls") or
+      String.contains?(path, "/.elixir_ls/") or
+      String.starts_with?(path, "node_modules") or
+      String.contains?(path, "/node_modules/") or
+      String.starts_with?(path, "dist") or
+      String.contains?(path, "/dist/") or
+      String.starts_with?(path, "build") or
+      String.contains?(path, "/build/")
   end
 
   def display_width(str) when is_binary(str), do: Formatter.display_width(str)

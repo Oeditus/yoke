@@ -115,7 +115,7 @@ defmodule Yoke.CLI.QuestionPrompt do
           List.update_at(options, 0, fn opt -> "#{opt} (Recommended)" end)
       end
 
-    if god_mode?() do
+    if god_mode?() and not filterable do
       selected_opt =
         Enum.find(options, Enum.at(options, 0), fn opt ->
           String.contains?(to_string(opt), "(Recommended)")
@@ -361,8 +361,12 @@ defmodule Yoke.CLI.QuestionPrompt do
   end
 
   defp prompt_tty(question, options, is_multi, custom_idx, show_numbers, progress, subagent, opts) do
+    keep_raw_mode? = Keyword.get(opts, :keep_raw_mode, false)
     set_raw_mode()
-    drain_stale_input()
+
+    unless keep_raw_mode? do
+      drain_stale_input()
+    end
 
     state =
       new_state(question, options, is_multi, custom_idx, show_numbers, progress, subagent, opts)
@@ -387,7 +391,9 @@ defmodule Yoke.CLI.QuestionPrompt do
         TerminalOwner.clear()
       end
 
-    restore_tty_mode()
+    unless keep_raw_mode? do
+      restore_tty_mode()
+    end
 
     unless Keyword.get(opts, :clear_on_done, false) do
       IO.write(:user, "\r\n")
@@ -418,7 +424,9 @@ defmodule Yoke.CLI.QuestionPrompt do
     IO.write(:user, "\r\e[#{n}A\e[0J")
   end
 
-  defp erase_modal(_), do: :ok
+  defp erase_modal(_) do
+    IO.write(:user, "\r\e[0J")
+  end
 
   defp tui_loop(state) do
     state = render_modal(state)

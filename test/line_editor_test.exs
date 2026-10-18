@@ -406,6 +406,75 @@ defmodule Yoke.LineEditorTest do
       assert {:ok, "/jobs kill all"} = LineEditor.tab_complete("/jobs kill a")
       assert {:ok, "/jobs kill"} = LineEditor.tab_complete("/jobs k")
     end
+
+    test "completes file path when inside backticks and inserts as plain text" do
+      tmp_dir = Path.join(System.tmp_dir!(), "yoke_test_bt_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(tmp_dir, "lib/sub"))
+      File.write!(Path.join(tmp_dir, "lib/sub/alpha_module.ex"), "defmodule Alpha, do: nil\n")
+      File.write!(Path.join(tmp_dir, "lib/beta_one.ex"), "defmodule BetaOne, do: nil\n")
+      File.write!(Path.join(tmp_dir, "lib/beta_two.ex"), "defmodule BetaTwo, do: nil\n")
+      on_exit(fn -> File.rm_rf(tmp_dir) end)
+
+      # Unique directory match appends trailing slash
+      assert {:ok, "Check `lib/"} = LineEditor.tab_complete("Check `li", tmp_dir)
+      assert {:ok, "Check `lib/sub/"} = LineEditor.tab_complete("Check `lib/s", tmp_dir)
+
+      # Unique file match inside backticks
+      assert {:ok, "Check `lib/sub/alpha_module.ex"} =
+               LineEditor.tab_complete("Check `lib/sub/al", tmp_dir)
+
+      # Extends common prefix when multiple files share a longer prefix
+      assert {:ok, "Check `lib/beta_"} = LineEditor.tab_complete("Check `lib/b", tmp_dir)
+
+      # Reports ambiguous matches when common prefix cannot be extended further
+      assert {:ambiguous, ["lib/beta_one.ex", "lib/beta_two.ex"]} =
+               LineEditor.tab_complete("Check `lib/beta_", tmp_dir)
+
+      # Outside backticks (even count), does not complete file path
+      assert :none = LineEditor.tab_complete("Check `lib/beta_one.ex` and lib/sub/al", tmp_dir)
+
+      # Inside a second backtick span on the same line, completes the second path
+      assert {:ok, "Compare `lib/beta_one.ex` with `lib/sub/alpha_module.ex"} =
+               LineEditor.tab_complete("Compare `lib/beta_one.ex` with `lib/sub/al", tmp_dir)
+
+      # Completes path token after whitespace inside backticks (e.g. inline command)
+      assert {:ok, "Run `mix test lib/sub/alpha_module.ex"} =
+               LineEditor.tab_complete("Run `mix test lib/sub/al", tmp_dir)
+
+      # Basename fallback when typing a unique file basename without directory prefix
+      assert {:ok, "Inspect `lib/sub/alpha_module.ex"} =
+               LineEditor.tab_complete("Inspect `alpha_mod", tmp_dir)
+    end
+
+    test "tab_complete_state/1 completes file path inside closed backtick pair and leaves editable plain text" do
+      tmp_dir =
+        Path.join(System.tmp_dir!(), "yoke_test_bts_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(Path.join(tmp_dir, "lib"))
+      File.write!(Path.join(tmp_dir, "lib/sample_file.ex"), "ok\n")
+      on_exit(fn -> File.rm_rf(tmp_dir) end)
+
+      initial = "Please check `lib/sam` now"
+      # Cursor at index 21 (right after "lib/sam", before "` now")
+      state = %{
+        LineEditor.new_state("prompt> ", [], %{cwd: tmp_dir})
+        | buffer: String.graphemes(initial),
+          cursor: 21
+      }
+
+      assert {:ok, completed_state} = LineEditor.tab_complete_state(state)
+      assert Enum.join(completed_state.buffer) == "Please check `lib/sample_file.ex` now"
+      assert completed_state.cursor == String.length("Please check `lib/sample_file.ex")
+
+      # Resulting text is plain graphemes that can be deleted/edited directly
+      edited =
+        completed_state
+        |> LineEditor.delete_backward()
+        |> LineEditor.delete_backward()
+        |> LineEditor.insert_char("exs")
+
+      assert Enum.join(edited.buffer) == "Please check `lib/sample_file.exs` now"
+    end
   end
 
   describe "syntax highlighting and ghost suggestions" do
@@ -721,6 +790,32 @@ defmodule Yoke.LineEditorTest do
       assert Enum.join(result.buffer) == "@lib/yoke.ex "
       assert result.cursor == 13
       assert result.first_render == true
+    end
+
+    test "inserted file picker text is plain text that can be freely edited and deleted" do
+      state = LineEditor.new_state("prompt> ")
+      state = %{state | buffer: String.graphemes("Look at  please"), cursor: 8}
+
+      {left, right} = Enum.split(state.buffer, state.cursor)
+      result = LineEditor.replace_or_insert_file_ref(state, "lib/yoke.ex", 0, left, right)
+
+      assert Enum.join(result.buffer) == "Look at @lib/yoke.ex  please"
+      assert result.cursor == 21
+
+      # Can delete backward into the inserted file path and edit it as plain text
+      edited =
+        result
+        |> LineEditor.delete_backward()
+        |> LineEditor.delete_backward()
+        |> LineEditor.delete_backward()
+        |> LineEditor.insert_char("exs ")
+
+      assert Enum.join(edited.buffer) == "Look at @lib/yoke.exs  please"
+
+      # Can delete the entire inserted file reference with delete_word_backward
+      deleted = LineEditor.delete_word_backward(edited)
+      assert Enum.join(deleted.buffer) == "Look at  please"
+      assert deleted.cursor == 8
     end
   end
 end
