@@ -9,6 +9,7 @@ defmodule Yoke.PRReview do
   alias Yoke.CLI.Formatter
   alias Yoke.CLI.QuestionPrompt
   alias Yoke.Json
+  alias Yoke.PRReview.Markdown
   alias Yoke.PRReview.Patterns
 
   @type finding :: %{
@@ -40,10 +41,10 @@ defmodule Yoke.PRReview do
         "id": 1,
         "file": "path/to/file.ex",
         "line": 42,
-        "title": "Short title of issue",
-        "description": "Clear explanation of the problem.",
+        "title": "Short title with `inline_code` in backticks",
+        "description": "Clear explanation of the problem with `short_code_pieces` in backticks and multiline code snippets in code fences.",
         "severity": "high",
-        "fix_suggestion": "Proposed code fix or recommendation (can be committable code)."
+        "fix_suggestion": "Proposed code fix or recommendation (can be committable code or fenced block)."
       }
     ]
     ```
@@ -63,6 +64,10 @@ defmodule Yoke.PRReview do
 
     ### 9. Tone & Comment Phrasing Rules:
     - **Technical issues only**: Never raise process, organizational, or interpersonal concerns.
+    - **Markdown formatting for GitHub PR comments**:
+      - Findings payload fields (`title`, `description`, `fix_suggestion`) are posted directly as GitHub Pull Request inline review comments and summary items. They MUST be formatted in rich GitHub-flavored Markdown, NEVER plain text.
+      - **Backticks for code pieces**: Enclose all short code pieces—function/macro calls and arities (e.g. `mark_read/2`), expressions (e.g. `send(self(), ...)`), module/type names (e.g. `LiveView`), atoms/keys (e.g. `:comment_event`), variables/assigns (e.g. `socket.assigns.view`), and file paths (e.g. `config/dev.exs`)—in single backticks (`...`).
+      - **Code fences for multiline snippets**: Enclose all multiline code blocks in fenced code blocks with language identifiers (e.g. ```elixir ... ```) or ```suggestion ... ``` for direct replacement code. Never emit raw unfenced multiline code.
     - **Enforce proper typography**:
       - Use real em dashes (—) for parenthetical clauses or abrupt breaks—never double hyphens (--) or loose hyphens.
       - Use proper curly typographic quotes (“ ” and ‘ ’) in prose explanations and commentary instead of plain straight quotes (" '). Straight quotes and backticks must still be used inside code snippets and JSON.
@@ -400,8 +405,10 @@ defmodule Yoke.PRReview do
         |> Enum.with_index(1)
         |> Enum.map_join("\n", fn {f, idx} ->
           loc = if f.file, do: "`#{f.file}`#{if f.line, do: ":#{f.line}"}", else: "General"
+          title = Markdown.format_inline_code(f.title)
+          desc = Markdown.format_inline_code(f.description)
 
-          "- **#{idx}. [#{f.severity |> String.upcase()}]** #{loc} - **#{f.title}**: #{f.description}"
+          "- **#{idx}. [#{f.severity |> String.upcase()}]** #{loc} - **#{title}**: #{desc}"
         end)
       end
 
@@ -533,7 +540,10 @@ defmodule Yoke.PRReview do
     novel_sidenotes =
       Enum.reject(body_sidenotes, fn f ->
         title = to_string(f.title)
-        title != "" and String.contains?(review_body, title)
+        formatted_title = Markdown.format_inline_code(title)
+
+        title != "" and
+          (String.contains?(review_body, title) or String.contains?(review_body, formatted_title))
       end)
 
     full_body =
@@ -543,7 +553,9 @@ defmodule Yoke.PRReview do
         sidenotes_text =
           Enum.map_join(novel_sidenotes, "\n", fn f ->
             loc = if f.file, do: "`#{f.file}`#{if f.line, do: ":#{f.line}"}", else: "General"
-            "- **[#{f.severity |> String.upcase()}]** #{loc} - **#{f.title}**: #{f.description}"
+            title = Markdown.format_inline_code(f.title)
+            desc = Markdown.format_inline_code(f.description)
+            "- **[#{f.severity |> String.upcase()}]** #{loc} - **#{title}**: #{desc}"
           end)
 
         review_body <> "\n\n### 📝 General Observations & Out-of-Diff Notes\n" <> sidenotes_text
@@ -566,20 +578,7 @@ defmodule Yoke.PRReview do
   end
 
   defp format_inline_comment_body(f) do
-    suggestion_block =
-      if is_binary(f.fix_suggestion) and String.trim(f.fix_suggestion) != "" do
-        fix = String.trim(f.fix_suggestion)
-
-        if String.contains?(fix, "```") do
-          "\n\n" <> fix
-        else
-          "\n\n```suggestion\n#{fix}\n```"
-        end
-      else
-        ""
-      end
-
-    "**[#{String.upcase(to_string(f.severity))}] #{f.title}**\n\n#{f.description}#{suggestion_block}"
+    Markdown.format_inline_comment_body(f)
   end
 
   @doc """

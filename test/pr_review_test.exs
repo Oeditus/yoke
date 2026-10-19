@@ -377,6 +377,48 @@ defmodule Yoke.PRReviewTest do
       assert String.contains?(prompt, "Ask rather than assert")
       assert String.contains?(prompt, "Tone & Comment Phrasing Rules")
       assert String.contains?(prompt, "Subtitles must match their content")
+      assert String.contains?(prompt, "Markdown formatting for GitHub PR comments")
+      assert String.contains?(prompt, "Backticks for code pieces")
+      assert String.contains?(prompt, "Code fences for multiline snippets")
+    end
+  end
+
+  describe "markdown formatting of inline comments and summaries" do
+    test "formats short code pieces in backticks and multiline code in fences" do
+      findings = [
+        %{
+          id: 1,
+          file: "apps/api/lib/drawer.ex",
+          line: 930,
+          title: "Drawer sends itself a :comment_event message with no handle_info/2",
+          description: "mark_read/2 calls send(self(), {:comment_event, %{event: :read, ...}}). self() inside a LiveComponent is the LiveView process, and Drawer defines no handle_info/2.",
+          severity: "high",
+          fix_suggestion: """
+          @impl true
+          def handle_info({:comment_event, event}, socket) do
+            {:ok, handle_comment_event(socket, event)}
+          end
+          """
+        }
+      ]
+
+      valid_lines = MapSet.new([{"apps/api/lib/drawer.ex", 930}])
+      pr_body = PRReview.build_pr_comment_body(findings)
+      payload = PRReview.build_atomic_review_payload(findings, pr_body, "COMMENT", valid_lines)
+
+      # Summary body formatting
+      assert String.contains?(pr_body, "`:comment_event`")
+      assert String.contains?(pr_body, "`handle_info/2`")
+
+      # Inline comment formatting
+      [c] = payload["comments"]
+      assert String.contains?(c["body"], "`:comment_event`")
+      assert String.contains?(c["body"], "`handle_info/2`")
+      assert String.contains?(c["body"], "`mark_read/2`")
+      assert String.contains?(c["body"], "`LiveComponent`")
+      assert String.contains?(c["body"], "`LiveView`")
+      assert String.contains?(c["body"], "```")
+      assert String.contains?(c["body"], "def handle_info")
     end
   end
 end
