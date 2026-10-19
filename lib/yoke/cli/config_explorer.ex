@@ -2090,12 +2090,7 @@ defmodule Yoke.CLI.ConfigExplorer do
   end
 
   defp read_char_with_timeout(timeout_ms) do
-    task = Task.async(fn -> read_char() end)
-
-    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, result} -> result
-      _ -> nil
-    end
+    Yoke.CLI.LineEditor.read_char_with_timeout(timeout_ms, :user)
   end
 
   defp read_available_escape_bytes(acc, count) when count > 0 do

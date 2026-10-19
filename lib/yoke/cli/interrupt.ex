@@ -133,13 +133,15 @@ defmodule Yoke.CLI.Interrupt do
     after
       pause()
       Agent.update(__MODULE__, fn _ -> nil end)
+      Yoke.CLI.LineEditor.purge_dead_io_requests()
       restore_tty_mode()
       Yoke.CLI.Formatter.flush()
     end
   end
 
   # Kills the watcher and waits (bounded) for its `:DOWN` before returning,
-  # so no in-flight `set_raw_mode/0` can race the caller's `restore_tty_mode/0`.
+  # so no in-flight `set_raw_mode/0` can race the caller's `restore_tty_mode/0`,
+  # then purges the killed watcher's orphaned `:get_chars` request from `:group`.
   defp stop_watcher(watcher, ref) do
     Process.exit(watcher, :kill)
 
@@ -148,6 +150,8 @@ defmodule Yoke.CLI.Interrupt do
     after
       500 -> :ok
     end
+
+    Yoke.CLI.LineEditor.purge_dead_io_requests()
   end
 
   defp watch_for_interrupt(session_pid) do

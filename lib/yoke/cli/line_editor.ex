@@ -552,13 +552,20 @@ defmodule Yoke.CLI.LineEditor do
   @doc """
   Normalizes clipboard line endings (`\\r\\n` and bare `\\r`, e.g. from a
   Windows-originated clipboard, or a terminal that doesn't fully translate
-  them) to plain `\\n`, so a paste's embedded carriage returns are never
-  later misread as an Enter keypress.
+  them) to plain `\\n`, strips trailing newlines so a copied terminal line
+  does not leave an unwanted blank line or trigger submission, and strips any
+  damaged bracketed-paste boundary artifacts (`~~0`, `00~`, `200~`, `\\e[200~`,
+  `\\e[201~`).
   """
   def normalize_paste_text(text) when is_binary(text) do
     text
+    |> String.replace("\e[200~", "")
+    |> String.replace("\e[201~", "")
+    |> String.replace(~r/\A(?:\e?\[?200~|\e(?:00~|0~|~~0|~0|~)|00~|0~|~~0|~0~?)+/, "")
+    |> String.replace(~r/(?:\e\[?201~|\e0?1~|\[201~)\z/, "")
     |> String.replace("\r\n", "\n")
     |> String.replace("\r", "\n")
+    |> String.trim_trailing("\n")
   end
 
   @doc """
@@ -662,15 +669,21 @@ defmodule Yoke.CLI.LineEditor do
   def handle_paste_or_clipboard_image(%{search_mode: true} = state, text),
     do: handle_paste(state, text)
 
-  def handle_paste_or_clipboard_image(state, text) do
-    case Yoke.Clipboard.fetch_image() do
-      {:ok, mime, bytes} ->
-        paste_image_bytes(state, mime, bytes)
+  def handle_paste_or_clipboard_image(state, text) when is_binary(text) do
+    if normalize_paste_text(text) != "" do
+      handle_paste(state, text)
+    else
+      case Yoke.Clipboard.fetch_image() do
+        {:ok, mime, bytes} ->
+          paste_image_bytes(state, mime, bytes)
 
-      _ ->
-        handle_paste(state, text)
+        _ ->
+          handle_paste(state, text)
+      end
     end
   end
+
+  def handle_paste_or_clipboard_image(state, _text), do: state
 
   @doc "Saves raw image bytes from clipboard to .yoke/sessions/assets and inserts reference into prompt buffer."
   def paste_image_bytes(state, mime, bytes) when is_binary(bytes) do
@@ -1079,6 +1092,8 @@ defmodule Yoke.CLI.LineEditor do
   end
 
   defp set_raw_mode do
+    purge_dead_io_requests()
+
     result =
       case :shell.start_interactive({:noshell, :raw}) do
         :ok -> :ok
@@ -1093,6 +1108,7 @@ defmodule Yoke.CLI.LineEditor do
   end
 
   defp restore_tty_mode do
+    purge_dead_io_requests()
     disable_bracketed_paste()
 
     case :shell.start_interactive({:noshell, :cooked}) do
@@ -2318,8 +2334,17 @@ defmodule Yoke.CLI.LineEditor do
 
   defp read_key do
     case get_raw_input_chunk() do
-      "\e[200~" -> {:paste, read_bracketed_paste()}
-      other -> match_key(other)
+      {:paste, text} ->
+        {:paste, text}
+
+      seq when seq in ["\e[200~", "\e200~", "\e00~", "\e0~", "\e~~0", "\e~0"] ->
+        {:paste, read_bracketed_paste()}
+
+      seq when seq in ["\e[201~", "\e201~", "\e01~"] ->
+        :other
+
+      other ->
+        match_key(other)
     end
   end
 
@@ -2387,9 +2412,12 @@ defmodule Yoke.CLI.LineEditor do
     end
   end
 
-  # Reads exactly one character via OTP's native raw-mode stdin handling
+  # Reads one key or paste burst via OTP's native raw-mode stdin handling
   # (see `set_raw_mode/0`). `:io.get_chars/2` returns as soon as data is
   # available, so this behaves like a blocking single-keystroke read.
+  # Also recovers if a bracketed-paste start sequence had its leading `\e`
+  # consumed by a prior reader, or if a multi-character paste burst arrives
+  # with embedded/trailing `\r` or `\e[201~` in `:group`'s input buffer.
   defp get_raw_input_chunk do
     case read_char() do
       "\e" ->
@@ -2398,11 +2426,72 @@ defmodule Yoke.CLI.LineEditor do
       :eof ->
         "\x04"
 
-      char when is_binary(char) ->
-        char
+      char when is_binary(char) and char != "" ->
+        maybe_recover_paste_burst(char)
 
       _ ->
         ""
+    end
+  end
+
+  defp maybe_recover_paste_burst(char) do
+    buf = peek_group_buffer()
+
+    cond do
+      buf == "" ->
+        char
+
+      damaged_paste_prefix_bytes = match_damaged_paste_prefix(char <> buf) ->
+        # A bracketed-paste start marker lost its leading `\e` (or `\e[`).
+        # Drain the rest of the start marker from stdin and read the paste.
+        to_consume = max(0, damaged_paste_prefix_bytes - byte_size(char))
+        consume_n_chars(to_consume)
+        {:paste, read_bracketed_paste()}
+
+      String.contains?(buf, "\e[201~") or String.contains?(buf, "\e201~") ->
+        {:paste, read_bracketed_paste([char])}
+
+      char not in ["\r", "\n"] and (String.contains?(buf, "\r") or String.contains?(buf, "\n")) ->
+        # An unbracketed multi-character paste burst already sitting in
+        # `:group`'s buffer contains a newline/CR; slurp the buffered burst
+        # as a paste so a trailing `\r` is normalized instead of submitting.
+        {:paste, char <> drain_buffered_chars(byte_size(buf))}
+
+      true ->
+        char
+    end
+  end
+
+  defp match_damaged_paste_prefix(str) when is_binary(str) do
+    Enum.find_value(["[200~", "200~", "00~", "0~", "~~0", "~0"], fn prefix ->
+      if String.starts_with?(str, prefix), do: byte_size(prefix)
+    end)
+  end
+
+  defp consume_n_chars(n) when n <= 0, do: :ok
+
+  defp consume_n_chars(n) do
+    _ = read_char_with_timeout(15)
+    consume_n_chars(n - 1)
+  end
+
+  defp drain_buffered_chars(max_bytes) when max_bytes <= 0, do: ""
+
+  defp drain_buffered_chars(_max_bytes) do
+    drain_buffered_chars_loop([])
+  end
+
+  defp drain_buffered_chars_loop(acc) do
+    if peek_group_buffer() == "" do
+      acc |> Enum.reverse() |> Enum.join()
+    else
+      case read_char_with_timeout(10) do
+        char when is_binary(char) and char != "" ->
+          drain_buffered_chars_loop([char | acc])
+
+        _ ->
+          acc |> Enum.reverse() |> Enum.join()
+      end
     end
   end
 
@@ -2410,6 +2499,10 @@ defmodule Yoke.CLI.LineEditor do
     case read_char_with_timeout(50) do
       char when char in ["[", "O"] ->
         read_csi_sequence("\e" <> char, 16)
+
+      char when char in ["2", "0", "~"] ->
+        # If `[` in `\e[200~` or `\e[201~` was lost, continue reading CSI digits/tilde
+        read_csi_sequence("\e" <> char, 8)
 
       char when is_binary(char) and char != "" ->
         "\e" <> char
@@ -2425,12 +2518,21 @@ defmodule Yoke.CLI.LineEditor do
         new_acc = acc <> char
         last_char = String.last(new_acc)
 
-        if last_char in ["A", "B", "C", "D", "H", "F", "~", "M", "Z"] or
-             (byte_size(new_acc) >= 3 and last_char >= "a" and last_char <= "z") or
-             (byte_size(new_acc) >= 3 and last_char >= "A" and last_char <= "Z") do
-          new_acc
-        else
-          read_csi_sequence(new_acc, count - 1)
+        cond do
+          new_acc in ["\e~~0", "\e~0"] ->
+            new_acc
+
+          last_char == "~" and new_acc in ["\e~", "\e~~"] and
+              String.starts_with?(peek_group_buffer(), "0") ->
+            read_csi_sequence(new_acc, count - 1)
+
+          last_char in ["A", "B", "C", "D", "H", "F", "~", "M", "Z"] or
+            (byte_size(new_acc) >= 3 and last_char >= "a" and last_char <= "z") or
+              (byte_size(new_acc) >= 3 and last_char >= "A" and last_char <= "Z") ->
+            new_acc
+
+          true ->
+            read_csi_sequence(new_acc, count - 1)
         end
 
       _ ->
@@ -2440,16 +2542,204 @@ defmodule Yoke.CLI.LineEditor do
 
   defp read_csi_sequence(acc, _count), do: acc
 
-  defp read_char_with_timeout(timeout_ms) do
-    task = Task.async(fn -> read_char() end)
+  @doc """
+  Reads a single character from `io_server` (defaults to `Process.group_leader()`)
+  with a timeout in milliseconds, without spawning a temporary process or leaving
+  a zombie `:get_chars` request in OTP's `:group` server when the timeout expires.
+  """
+  def read_char_with_timeout(timeout_ms, io_server \\ Process.group_leader()) do
+    purge_dead_io_requests(io_server)
+    mref = Process.monitor(io_server)
+    send(io_server, {:io_request, self(), mref, {:get_chars, :unicode, "", 1}})
 
-    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, result} -> result
-      _ -> nil
+    receive do
+      {:io_reply, ^mref, reply} ->
+        Process.demonitor(mref, [:flush])
+        normalize_io_reply(reply)
+
+      {:DOWN, ^mref, _, _, _} ->
+        nil
+    after
+      timeout_ms ->
+        cancel_io_request(io_server, mref)
+        Process.demonitor(mref, [:flush])
+
+        receive do
+          {:io_reply, ^mref, reply} -> normalize_io_reply(reply)
+        after
+          0 -> nil
+        end
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp normalize_io_reply(:eof), do: :eof
+  defp normalize_io_reply({:error, _reason}), do: :eof
+  defp normalize_io_reply(char) when is_binary(char), do: char
+  defp normalize_io_reply(char) when is_list(char), do: IO.iodata_to_binary(char)
+  defp normalize_io_reply(_), do: nil
+
+  @doc """
+  Purges any orphaned `:input_state` records in OTP's `:group` server (`:user` /
+  `Process.group_leader()`) whose requesting process is no longer alive.
+
+  OTP's `:group` `gen_statem` does not monitor callers of `:io.get_chars/2`. When a
+  background keystroke reader (such as `Yoke.CLI.Interrupt`'s Ctrl+Q watcher or a
+  killed `Task.async` reader) is terminated while waiting for input, its
+  `{:input_state, dead_pid, ...}` remains inside `:group`. On the next multi-byte
+  burst (such as a bracketed paste `\e[200~...\e[201~`), `:group` pops the queued
+  dead request(s) and feeds them intermediate bytes of `\e[200~` (e.g. `[`, `2`),
+  leaking `00~` / `~~0` into the prompt and breaking bracketed paste so a trailing
+  `\r` executes the prompt immediately.
+  """
+  def purge_dead_io_requests(io_server \\ nil) do
+    servers =
+      case io_server do
+        nil -> [Process.group_leader(), Process.whereis(:user)]
+        target when is_atom(target) -> [Process.whereis(target)]
+        target when is_pid(target) -> [target]
+        _ -> []
+      end
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    Enum.each(servers, &purge_dead_io_requests_on_pid/1)
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  defp purge_dead_io_requests_on_pid(pid) when is_pid(pid) do
+    :sys.replace_state(pid, fn
+      {statem_state, data} when is_tuple(data) and elem(data, 0) == :state ->
+        clean_group_statem_state(statem_state, data, fn
+          item when is_tuple(item) and tuple_size(item) >= 3 and elem(item, 0) == :input_state ->
+            from = elem(item, 1)
+            is_pid(from) and not Process.alive?(from)
+
+          _ ->
+            false
+        end)
+
+      other ->
+        other
+    end)
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp cancel_io_request(io_server, target_mref) do
+    pid =
+      cond do
+        is_pid(io_server) -> io_server
+        is_atom(io_server) -> Process.whereis(io_server)
+        true -> nil
+      end
+
+    if is_pid(pid) do
+      :sys.replace_state(pid, fn
+        {statem_state, data} when is_tuple(data) and elem(data, 0) == :state ->
+          clean_group_statem_state(statem_state, data, fn
+            item
+            when is_tuple(item) and tuple_size(item) >= 3 and elem(item, 0) == :input_state ->
+              from = elem(item, 1)
+              mref = elem(item, 2)
+              mref == target_mref or (is_pid(from) and not Process.alive?(from))
+
+            _ ->
+              false
+          end)
+
+        other ->
+          other
+      end)
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp clean_group_statem_state(statem_state, data, drop_fn) do
+    size = tuple_size(data)
+    q_idx = size - 3
+    input_idx = size - 1
+
+    q = elem(data, q_idx)
+    input = elem(data, input_idx)
+
+    cleaned_q =
+      if :queue.is_queue(q) do
+        :queue.filter(fn item -> not drop_fn.(item) end, q)
+      else
+        q
+      end
+
+    if drop_fn.(input) do
+      case :queue.is_queue(cleaned_q) and :queue.out(cleaned_q) do
+        {{:value, next_input}, rest_q} ->
+          new_data =
+            data
+            |> put_elem(q_idx, rest_q)
+            |> put_elem(input_idx, next_input)
+
+          {statem_state, new_data}
+
+        _ ->
+          new_data =
+            data
+            |> put_elem(q_idx, cleaned_q)
+            |> put_elem(input_idx, :undefined)
+
+          next_statem_state = if statem_state == :dumb, do: :server, else: statem_state
+          {next_statem_state, new_data}
+      end
+    else
+      {statem_state, put_elem(data, q_idx, cleaned_q)}
     end
   end
 
+  @doc false
+  def peek_group_buffer(io_server \\ Process.group_leader()) do
+    pid =
+      cond do
+        is_pid(io_server) -> io_server
+        is_atom(io_server) -> Process.whereis(io_server)
+        true -> nil
+      end
+
+    if is_pid(pid) do
+      case :sys.get_state(pid, 50) do
+        {_statem_state, data} when is_tuple(data) and elem(data, 0) == :state ->
+          buf = elem(data, tuple_size(data) - 2)
+
+          cond do
+            is_binary(buf) -> buf
+            is_list(buf) -> :unicode.characters_to_binary(buf)
+            true -> ""
+          end
+
+        _ ->
+          ""
+      end
+    else
+      ""
+    end
+  rescue
+    _ -> ""
+  catch
+    _, _ -> ""
+  end
+
   @paste_end_marker "\e[201~"
+  @damaged_paste_end_marker "\e201~"
   @paste_end_marker_length String.length(@paste_end_marker)
 
   # Reads the remainder of a bracketed-paste payload (see
@@ -2461,10 +2751,13 @@ defmodule Yoke.CLI.LineEditor do
   # list so checking for the terminator only ever inspects the last few
   # characters, rather than re-scanning the whole (potentially very large)
   # paste on every single character.
+  # Uses a generous per-character timeout so that if the terminating marker
+  # was lost or truncated, the editor recovers the pasted text cleanly
+  # instead of hanging forever.
   defp read_bracketed_paste, do: read_bracketed_paste([])
 
   defp read_bracketed_paste(acc) do
-    case read_char() do
+    case read_char_with_timeout(150) do
       char when is_binary(char) and char != "" ->
         new_acc = [char | acc]
 
@@ -2473,24 +2766,31 @@ defmodule Yoke.CLI.LineEditor do
           |> Enum.reverse()
           |> Enum.join()
           |> String.trim_trailing(@paste_end_marker)
+          |> String.trim_trailing(@damaged_paste_end_marker)
         else
           read_bracketed_paste(new_acc)
         end
 
       _ ->
-        # EOF or a read error mid-paste: return whatever was captured
-        # rather than blocking forever waiting for a terminator that will
-        # never arrive.
-        acc |> Enum.reverse() |> Enum.join()
+        # EOF, read error, or end-of-burst timeout when terminator was lost:
+        # return whatever was captured rather than blocking forever.
+        acc
+        |> Enum.reverse()
+        |> Enum.join()
+        |> String.trim_trailing(@paste_end_marker)
+        |> String.trim_trailing(@damaged_paste_end_marker)
     end
   end
 
   defp paste_terminated?(acc) do
-    acc
-    |> Enum.take(@paste_end_marker_length)
-    |> Enum.reverse()
-    |> Enum.join()
-    |> String.ends_with?(@paste_end_marker)
+    tail =
+      acc
+      |> Enum.take(@paste_end_marker_length)
+      |> Enum.reverse()
+      |> Enum.join()
+
+    String.ends_with?(tail, @paste_end_marker) or
+      String.ends_with?(tail, @damaged_paste_end_marker)
   end
 
   defp read_char do

@@ -651,6 +651,70 @@ defmodule Yoke.LineEditorTest do
     test "expand_pastes/2 is a no-op when there are no tracked pastes" do
       assert LineEditor.expand_pastes("hello", %{}) == "hello"
     end
+
+    test "handle_paste/2 strips leaked bracketed-paste markers (~~0, 00~, 200~, [200~, \\e[200~, \\e[201~) and trailing CR/LF" do
+      for prefix <- ["~~0", "~0", "00~", "0~", "200~", "[200~", "\e[200~"] do
+        state = LineEditor.new_state("> ")
+        pasted = prefix <> "copied marcli output\r\n"
+        new_state = LineEditor.handle_paste(state, pasted)
+
+        assert Enum.join(new_state.buffer) == "copied marcli output",
+               "Expected prefix #{inspect(prefix)} and trailing CRLF to be stripped"
+      end
+
+      for suffix <- ["\e[201~", "\e201~", "[201~", "\r", "\n", "\r\n"] do
+        state = LineEditor.new_state("> ")
+        pasted = "copied marcli output" <> suffix
+        new_state = LineEditor.handle_paste(state, pasted)
+
+        assert Enum.join(new_state.buffer) == "copied marcli output",
+               "Expected suffix #{inspect(suffix)} to be stripped"
+      end
+    end
+
+    test "purge_dead_io_requests/1 and read_char_with_timeout/2 prevent zombie :group requests from eating bracketed paste bytes" do
+      drv =
+        spawn(fn ->
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      group_pid = :group.start(drv, :noshell, [])
+
+      on_exit(fn ->
+        Process.exit(group_pid, :kill)
+        Process.exit(drv, :kill)
+      end)
+
+      # 1. Simulate `Yoke.CLI.Interrupt` watcher calling `:io.get_chars(group_pid, "", 1)`
+      # and then being killed when the LLM turn finishes.
+      watcher =
+        spawn(fn ->
+          :io.get_chars(group_pid, "", 1)
+        end)
+
+      Process.sleep(15)
+      Process.exit(watcher, :kill)
+      Process.sleep(10)
+
+      # 2. Also exercise `read_char_with_timeout/2` timing out on `group_pid`.
+      assert LineEditor.read_char_with_timeout(10, group_pid) == nil
+
+      # 3. Purge dead IO requests (also done automatically by `read_char_with_timeout/2`
+      # and `set_raw_mode/0`).
+      assert :ok = LineEditor.purge_dead_io_requests(group_pid)
+
+      # 4. Now simulate a bracketed paste burst arriving from the terminal driver.
+      # Without the fix, the dead watcher's orphaned `#input_state{}` in `:group`
+      # consumes `[` from `\e[200~`, leaving `200~` / `00~` (`~~0`) in the stream!
+      send(group_pid, {drv, {:data, ~c"\e[200~hello\r\e[201~"}})
+
+      first = :io.get_chars(group_pid, "", 1)
+      rest = for _ <- 1..5, do: LineEditor.read_char_with_timeout(50, group_pid)
+
+      assert IO.iodata_to_binary([first | rest]) == "\e[200~"
+    end
   end
 
   describe "vertical cursor movement within a multi-line buffer" do
