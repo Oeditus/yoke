@@ -433,7 +433,7 @@ The full reference lives in [`docs/cheat_sheet.md`](docs/cheat_sheet.md); the es
 
 | Key | Default | Purpose |
 | :--- | :--- | :--- |
-| `model` | `"deepseek-chat"` | Default LLM model identifier |
+| `model` | `"deepseek-flash"` | Default LLM model identifier |
 | `endpoint` | `"https://api.deepseek.com/chat/completions"` | LLM API base endpoint URL (DeepSeek, OpenRouter, Ollama, etc.) |
 | `prompt_style` | `"starship"` | Prompt layout: `starship`, `extended`, `compact`, or `minimal` |
 | `permission_mode` | `"ask_confirm"` | Tool execution safety mode (`ask_confirm` or `auto_approve`) |

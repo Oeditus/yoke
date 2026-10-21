@@ -96,15 +96,15 @@ defmodule Yoke.CLI.ConfigExplorerTest do
       tree = ConfigExplorer.scan_directory_tree(tmp_dir)
 
       assert is_map(tree.config)
-      assert tree.config["model"] == "deepseek-chat"
+      assert tree.config["model"] == "deepseek-flash"
 
-      assert length(tree.sessions) == 1
-      assert hd(tree.sessions).id == "test_sess"
-      assert hd(tree.sessions).model == "deepseek-chat"
-      assert hd(tree.sessions).preview == "Fix async worker task engine"
+      assert [session] = tree.sessions
+      assert session.id == "test_sess"
+      assert session.model == "deepseek-chat"
+      assert session.preview == "Fix async worker task engine"
 
-      assert length(tree.jobs) == 1
-      assert hd(tree.jobs).id == "job_101"
+      assert [job] = tree.jobs
+      assert job.id == "job_101"
 
       assert is_list(tree.skills)
       assert Enum.any?(tree.skills, &(&1.name == "custom_skill"))
@@ -146,7 +146,7 @@ defmodule Yoke.CLI.ConfigExplorerTest do
       summary = ConfigExplorer.format_non_tty_summary(tree)
 
       assert String.contains?(summary, "Yoke Config Directory Explorer Summary")
-      assert String.contains?(summary, "deepseek-chat")
+      assert String.contains?(summary, "Model: deepseek-flash")
       assert String.contains?(summary, "Saved Sessions/Conversations (1 files)")
       assert String.contains?(summary, "Custom & Discovered Skills")
       assert String.contains?(summary, "Living Review Patterns")

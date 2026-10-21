@@ -211,7 +211,7 @@ all: <text>             # Applied to ALL prompt turns
 
 ```json
 {
-  "model": "deepseek-chat",
+  "model": "deepseek-flash",
   "permission_mode": "ask_confirm",
   "max_tool_depth": 1000,
   "plan_gate_enabled": true,

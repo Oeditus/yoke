@@ -24,11 +24,35 @@ config :ragex,
 config :ragex, :ai, providers: []
 
 # Configure EXLA to disable log sink when NIF is uncompiled/unavailable.
+# Restrict GPU memory allocation: avoid grabbing all VRAM at once (default to 1/4
+# memory fraction without eager preallocation) so multiple instances can run concurrently.
 # Skipped entirely under the `escript` Mix env, which deliberately excludes
 # exla/nx/bumblebee/image from the dependency tree (see mix.exs) so the
 # standalone `yoke` escript doesn't try to load an unloadable NIF.
 if config_env() != :escript do
-  config :exla, start_log_sink: false
+  gpu_mem_fraction =
+    case System.get_env("EXLA_GPU_MEMORY_FRACTION") do
+      nil ->
+        0.25
+
+      val ->
+        case Float.parse(val) do
+          {f, _} -> f
+          :error -> 0.25
+        end
+    end
+
+  gpu_preallocate = System.get_env("EXLA_GPU_PREALLOCATE") in ["true", "1"]
+
+  config :exla,
+    start_log_sink: false,
+    clients: [
+      cuda: [platform: :cuda, preallocate: gpu_preallocate, memory_fraction: gpu_mem_fraction],
+      rocm: [platform: :rocm, preallocate: gpu_preallocate, memory_fraction: gpu_mem_fraction],
+      tpu: [platform: :tpu],
+      host: [platform: :host]
+    ]
+
   config :nx, :default_backend, Nx.BinaryBackend
 end
 

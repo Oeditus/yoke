@@ -12,6 +12,7 @@ defmodule Yoke.CLI.Main do
     Yoke.CLI.LogFormatter.install()
 
     configure_ragex_ai()
+    configure_exla()
 
     # Ensure application dependencies are started
     Application.ensure_all_started(:yoke)
@@ -186,6 +187,44 @@ defmodule Yoke.CLI.Main do
   def configure_ragex_ai do
     ai_cfg = Application.get_env(:ragex, :ai, [])
     Application.put_env(:ragex, :ai, Keyword.put(ai_cfg, :providers, []))
+  end
+
+  @doc false
+  def configure_exla do
+    gpu_mem_fraction =
+      case System.get_env("EXLA_GPU_MEMORY_FRACTION") do
+        nil ->
+          0.25
+
+        val ->
+          case Float.parse(val) do
+            {f, _} -> f
+            :error -> 0.25
+          end
+      end
+
+    gpu_preallocate = System.get_env("EXLA_GPU_PREALLOCATE") in ["true", "1"]
+
+    existing_clients = Application.get_env(:exla, :clients, [])
+
+    cuda_opts =
+      Keyword.get(existing_clients, :cuda, platform: :cuda)
+      |> Keyword.put_new(:preallocate, gpu_preallocate)
+      |> Keyword.put_new(:memory_fraction, gpu_mem_fraction)
+
+    rocm_opts =
+      Keyword.get(existing_clients, :rocm, platform: :rocm)
+      |> Keyword.put_new(:preallocate, gpu_preallocate)
+      |> Keyword.put_new(:memory_fraction, gpu_mem_fraction)
+
+    clients =
+      existing_clients
+      |> Keyword.put(:cuda, cuda_opts)
+      |> Keyword.put(:rocm, rocm_opts)
+      |> Keyword.put_new(:tpu, platform: :tpu)
+      |> Keyword.put_new(:host, platform: :host)
+
+    Application.put_env(:exla, :clients, clients)
   end
 
   defp print_usage do

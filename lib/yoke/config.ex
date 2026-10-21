@@ -126,6 +126,13 @@ defmodule Yoke.Config do
 
     merged_cfg = Map.merge(global_cfg, local_cfg)
 
+    # Migrate legacy default model "deepseek-chat" to "deepseek-flash"
+    merged_cfg =
+      case Map.get(merged_cfg, "model") do
+        "deepseek-chat" -> Map.put(merged_cfg, "model", "deepseek-flash")
+        _ -> merged_cfg
+      end
+
     global_perms = Map.get(global_cfg, "tool_permissions", %{})
     local_perms = Map.get(local_cfg, "tool_permissions", %{})
     combined_perms = Map.merge(global_perms, local_perms)

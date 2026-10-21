@@ -1473,6 +1473,7 @@ defmodule Yoke.CLI.Repl do
           "r1" -> "deepseek-reasoner"
           "chat" -> "deepseek-flash"
           "v3" -> "deepseek-flash"
+          "deepseek-chat" -> "deepseek-flash"
           "coder" -> "deepseek-coder"
           "v2.5" -> "deepseek-coder"
           "vision" -> "deepseek-v4-flash-vision-exp"

@@ -334,10 +334,19 @@ defmodule Yoke.CLI.LineEditor do
         ""
       end
 
+    model_icon =
+      case model do
+        "deepseek-reasoner" -> "󰧑"
+        "deepseek-coder" -> "󰘦"
+        "deepseek-flash" -> "󱐋"
+        "deepseek-v4-pro" -> "󰚩"
+        _ -> "󰚩"
+      end
+
     line =
       "#{Formatter.cyan()}󰉋 #{folder}#{Formatter.reset()}" <>
         "#{Formatter.magenta()}#{branch_str}#{Formatter.reset()}" <>
-        " #{Formatter.green()}󰚩 #{model}#{Formatter.reset()}" <>
+        " #{Formatter.green()}#{model_icon} #{model}#{Formatter.reset()}" <>
         "#{Formatter.dim()} [id:#{short_id}]#{Formatter.reset()}" <>
         "#{Formatter.yellow()}#{sandbox}#{mode_badge}#{Formatter.reset()}" <>
         task_badge <>

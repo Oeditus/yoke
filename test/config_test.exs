@@ -103,6 +103,23 @@ defmodule Yoke.ConfigTest do
     File.rm_rf!(tmp_dir)
   end
 
+  test "migrates the legacy chat model on load without rewriting workspace config" do
+    tmp_dir =
+      Path.join(System.tmp_dir!(), "config_model_test_#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm_rf!(tmp_dir) end)
+
+    legacy_config = %{"model" => "deepseek-chat", "god_mode" => false}
+    assert :ok = Config.save_config(legacy_config, tmp_dir)
+    config_path = Path.join(tmp_dir, ".yoke/config.json")
+    original_content = File.read!(config_path)
+
+    loaded = Config.load_config(tmp_dir)
+    assert loaded["model"] == "deepseek-flash"
+    assert loaded["god_mode"] == false
+    assert File.read!(config_path) == original_content
+  end
+
   test "sets per-tool permission policy in config" do
     tmp_dir =
       Path.join(
