@@ -5,7 +5,7 @@ defmodule Yoke.Config do
 
   @default_config %{
     "assistant_name" => "Robby Ott",
-    "model" => "deepseek-chat",
+    "model" => "deepseek-flash",
     "endpoint" => "https://api.deepseek.com/chat/completions",
     # "auto_approve" | "ask_confirm"
     "permission_mode" => "ask_confirm",
@@ -59,7 +59,9 @@ defmodule Yoke.Config do
     "plan_gate_threshold" => 2,
     # God mode switcher: when enabled, all questions and confirmations are
     # automatically answered without user interaction. Default: false.
-    "god_mode" => false
+    "god_mode" => false,
+    # Reasoning output ANSI color ("yellow", "cyan", "green", "magenta", "blue", "red", "gray", "white", etc.)
+    "reasoning_color" => "yellow"
   }
 
   @doc "Returns the configured assistant name, defaulting to 'Robby Ott'."
@@ -99,6 +101,18 @@ defmodule Yoke.Config do
           cfg = load_config(cwd)
           Map.get(cfg, "god_mode", false) or Map.get(cfg, "god_mode_enabled", false)
         end
+    end
+  end
+
+  @doc "Returns the configured reasoning color (e.g. 'yellow', 'cyan', 'magenta'). Defaults to 'yellow'."
+  def reasoning_color(cwd \\ ".") do
+    case Application.get_env(:yoke, :reasoning_color) do
+      c when is_binary(c) and c != "" ->
+        c
+
+      _ ->
+        cfg = load_config(cwd)
+        Map.get(cfg, "reasoning_color") || Map.get(cfg, "reasoning_colour") || "yellow"
     end
   end
 

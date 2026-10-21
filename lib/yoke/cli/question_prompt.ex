@@ -491,7 +491,7 @@ defmodule Yoke.CLI.QuestionPrompt do
             result
         end
 
-      :ctrl_c ->
+      key when key in [:ctrl_c, :ctrl_q] ->
         if Map.get(state, :clear_on_done, false), do: erase_modal(state)
         %{cancelled: true, selected: []}
 
@@ -1032,6 +1032,7 @@ defmodule Yoke.CLI.QuestionPrompt do
   defp match_key("\x7f"), do: :backspace
   defp match_key("\x0f"), do: :ctrl_o
   defp match_key("\x03"), do: :ctrl_c
+  defp match_key("\x11"), do: :ctrl_q
   defp match_key("\e"), do: :escape
 
   defp match_key(other) when is_binary(other) do

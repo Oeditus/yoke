@@ -882,4 +882,13 @@ defmodule Yoke.LineEditorTest do
       assert deleted.cursor == 8
     end
   end
+
+  describe "flow control and Ctrl+Q handling" do
+    test "disable_flow_control/1 executes safely without error" do
+      assert :ok == LineEditor.disable_flow_control()
+      assert Application.get_env(:yoke, :flow_control_disabled) == true
+      # Idempotent call
+      assert :ok == LineEditor.disable_flow_control()
+    end
+  end
 end

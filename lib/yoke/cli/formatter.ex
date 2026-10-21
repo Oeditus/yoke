@@ -322,6 +322,16 @@ defmodule Yoke.CLI.Formatter do
       "#{color}#{bold()}#{hint}#{reset()}"
   end
 
+  def format_agent_response(%{content: content} = map) do
+    reasoning = Map.get(map, :reasoning_content) || Map.get(map, "reasoning_content")
+
+    if is_binary(reasoning) and String.trim(reasoning) != "" do
+      format_reasoning(reasoning) <> "\n\n" <> format_agent_response(content)
+    else
+      format_agent_response(content)
+    end
+  end
+
   def format_agent_response(content) when is_binary(content) do
     safe_content = String.replace_invalid(content)
     rendered = format_markdown(safe_content)
@@ -336,6 +346,203 @@ defmodule Yoke.CLI.Formatter do
     format_agent_response(to_string(content))
   rescue
     _ -> inspect(content)
+  end
+
+  @doc """
+  Formats reasoning / chain-of-thought model output in a fancy yellow block
+  with quotation markers, ensuring all lines start at the beginning of the line.
+  """
+  def format_reasoning(content, opts \\ [])
+
+  def format_reasoning(content, opts) when is_binary(content) do
+    clean_raw = sanitize_utf8(content) |> String.trim()
+
+    if clean_raw == "" do
+      ""
+    else
+      {header_title, body_text} = extract_reasoning_title_and_body(clean_raw, opts)
+
+      clean_body =
+        body_text
+        |> String.trim()
+        |> String.trim_leading("“")
+        |> String.trim_trailing("”")
+        |> String.trim()
+
+      if clean_body == "" do
+        ""
+      else
+        title = clean_title(header_title)
+        cwd = Keyword.get(opts, :cwd, ".")
+        color_name = Keyword.get(opts, :color) || Yoke.Config.reasoning_color(cwd)
+        color = ansi_color(color_name)
+
+        header = "#{color}#{bold()}● [#{title}]#{reset()}"
+
+        max_width = max(terminal_columns() - 2, 40)
+
+        lines =
+          clean_body
+          |> String.split(~r/\r?\n/)
+          |> Enum.flat_map(&wrap_reasoning_line(&1, max_width))
+
+        formatted_body = format_reasoning_lines(lines, color)
+
+        header <> "\r\n" <> formatted_body
+      end
+    end
+  end
+
+  def format_reasoning(nil, _opts), do: ""
+
+  def format_reasoning(content, opts) do
+    format_reasoning(to_string(content), opts)
+  rescue
+    _ -> inspect(content)
+  end
+
+  defp extract_reasoning_title_and_body(clean_raw, opts) do
+    case Regex.run(~r/^\s*\[(.*?)\]\s*\r?\n(.*)$/s, clean_raw) do
+      [_, header_title, rest] ->
+        title = Keyword.get(opts, :title, header_title)
+        {title, rest}
+
+      _ ->
+        title =
+          Keyword.get(opts, :title) || default_reasoning_title(Keyword.get(opts, :model, ""))
+
+        {title, clean_raw}
+    end
+  end
+
+  defp clean_title(title) do
+    title
+    |> String.trim()
+    |> String.trim_leading("[")
+    |> String.trim_trailing("]")
+  end
+
+  defp default_reasoning_title(model) when is_binary(model) do
+    down = String.downcase(model)
+
+    cond do
+      down == "" ->
+        "DeepSeek-R1 Reasoning"
+
+      String.contains?(down, "r1") or String.contains?(down, "deepseek-reasoner") ->
+        "DeepSeek-R1 Reasoning"
+
+      String.contains?(down, "deepseek") ->
+        "DeepSeek Reasoning"
+
+      true ->
+        "#{model} Reasoning"
+    end
+  end
+
+  defp default_reasoning_title(_), do: "DeepSeek-R1 Reasoning"
+
+  defp wrap_reasoning_line(line, max_width) do
+    trimmed = String.trim_trailing(line)
+
+    cond do
+      trimmed == "" ->
+        [""]
+
+      display_width(trimmed) <= max_width ->
+        [trimmed]
+
+      true ->
+        words = String.split(trimmed, ~r/\s+/)
+        wrap_words_to_lines(words, max_width)
+    end
+  end
+
+  defp wrap_words_to_lines([], _max_width), do: [""]
+
+  defp wrap_words_to_lines(words, max_width) do
+    {lines, current} =
+      Enum.reduce(words, {[], ""}, fn word, {acc, current} ->
+        cond do
+          current == "" ->
+            {acc, word}
+
+          display_width(current) + 1 + display_width(word) <= max_width ->
+            {acc, current <> " " <> word}
+
+          true ->
+            {acc ++ [current], word}
+        end
+      end)
+
+    if current != "", do: lines ++ [current], else: lines
+  end
+
+  defp format_reasoning_lines([single], color) do
+    "#{color}“ #{single} ”#{reset()}"
+  end
+
+  defp format_reasoning_lines([first | rest], color) do
+    {middles, [last]} = Enum.split(rest, length(rest) - 1)
+
+    first_line = "#{color}“ #{first}#{reset()}"
+
+    middle_lines =
+      Enum.map(middles, fn line ->
+        if line == "" do
+          ""
+        else
+          "#{color}#{line}#{reset()}"
+        end
+      end)
+
+    last_line = "#{color}#{last} ”#{reset()}"
+
+    Enum.join([first_line | middle_lines] ++ [last_line], "\r\n")
+  end
+
+  defp format_reasoning_lines([], _color), do: ""
+
+  @doc """
+  Resolves a color name string or atom into its ANSI escape sequence.
+  Supported: yellow (default), cyan, green, magenta, red, blue, gray/grey/light_black,
+  white, light_yellow, light_cyan, light_green, light_magenta, light_red, light_blue, etc.
+  """
+  def ansi_color(color_name) when is_binary(color_name) or is_atom(color_name) do
+    case color_name |> to_string() |> String.downcase() |> String.trim() do
+      "yellow" -> yellow()
+      "light_yellow" -> IO.ANSI.light_yellow()
+      "cyan" -> cyan()
+      "light_cyan" -> IO.ANSI.light_cyan()
+      "green" -> green()
+      "light_green" -> IO.ANSI.light_green()
+      "magenta" -> magenta()
+      "light_magenta" -> IO.ANSI.light_magenta()
+      "purple" -> magenta()
+      "red" -> red()
+      "light_red" -> IO.ANSI.light_red()
+      "blue" -> blue()
+      "light_blue" -> IO.ANSI.light_blue()
+      "gray" -> gray()
+      "grey" -> gray()
+      "light_black" -> gray()
+      "white" -> IO.ANSI.white()
+      "light_white" -> IO.ANSI.light_white()
+      "dim" -> dim()
+      "bright" -> bold()
+      "bold" -> bold()
+      _ -> yellow()
+    end
+  end
+
+  def ansi_color(_), do: yellow()
+
+  @doc "Returns the current terminal column width safely."
+  def terminal_columns do
+    case :io.columns() do
+      {:ok, c} when is_integer(c) and c > 10 -> c
+      _ -> 120
+    end
   end
 
   def format_error(msg) do

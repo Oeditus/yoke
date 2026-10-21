@@ -138,6 +138,12 @@ build_release() {
   )
 }
 
+# Disable terminal software flow control (IXON / XON / XOFF) so that Ctrl+Q (\x11)
+# reaches the application instead of being intercepted by the OS kernel line discipline.
+if [ -t 0 ]; then
+  stty -ixon 2>/dev/null || true
+fi
+
 case "$TARGET_ENV" in
   prod)
     export YOKE_ENV="prod"

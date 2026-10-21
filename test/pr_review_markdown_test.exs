@@ -131,7 +131,8 @@ defmodule Yoke.PRReview.MarkdownTest do
         line: 930,
         severity: "high",
         title: "Drawer sends itself a :comment_event message with no handle_info/2",
-        description: "mark_read/2 calls send(self(), {:comment_event, %{event: :read, ...}}). self() inside a LiveComponent is the LiveView process, and Drawer defines no handle_info/2.",
+        description:
+          "mark_read/2 calls send(self(), {:comment_event, %{event: :read, ...}}). self() inside a LiveComponent is the LiveView process, and Drawer defines no handle_info/2.",
         fix_suggestion: """
         @impl true
         def handle_info({:comment_event, event}, socket) do

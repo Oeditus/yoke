@@ -216,7 +216,7 @@ defmodule Yoke.Brain.SessionStoreTest do
 
       assert session_id == "bare_import"
       assert {:ok, loaded} = SessionStore.load_session("bare_import", tmp_dir)
-      assert loaded["model"] == "deepseek-chat"
+      assert loaded["model"] == "deepseek-flash"
       assert length(loaded["messages"]) == 1
     end
 

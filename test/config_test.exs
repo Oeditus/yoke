@@ -194,4 +194,29 @@ defmodule Yoke.ConfigTest do
       end
     end
   end
+
+  describe "reasoning_color/1" do
+    test "defaults to yellow" do
+      assert Config.reasoning_color() == "yellow"
+      assert Config.load_config()["reasoning_color"] == "yellow"
+    end
+
+    test "allows workspace config file override" do
+      tmp_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "config_reasoning_color_test_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp_dir)
+
+      try do
+        assert :ok = Config.save_config(%{"reasoning_color" => "magenta"}, tmp_dir)
+        assert Config.load_config(tmp_dir)["reasoning_color"] == "magenta"
+        assert Config.reasoning_color(tmp_dir) == "magenta"
+      after
+        File.rm_rf!(tmp_dir)
+      end
+    end
+  end
 end

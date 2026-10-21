@@ -116,6 +116,7 @@ defmodule Yoke.CLI.Interrupt do
 
   defp run_interruptible(session_pid, turn_fun) do
     ensure_started()
+    Yoke.CLI.LineEditor.disable_flow_control()
     task = Task.async(turn_fun)
 
     # `spawn_monitor/1` (rather than `spawn/1` + a later `Process.monitor/1`)
@@ -200,6 +201,8 @@ defmodule Yoke.CLI.Interrupt do
   end
 
   defp set_raw_mode do
+    Yoke.CLI.LineEditor.disable_flow_control()
+
     case :shell.start_interactive({:noshell, :raw}) do
       :ok -> :ok
       {:error, :already_started} -> :ok

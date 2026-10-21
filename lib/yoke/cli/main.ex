@@ -197,14 +197,14 @@ defmodule Yoke.CLI.Main do
       yoke -c <conversation_id>        Resume existing conversation
       yoke "Your prompt here"          One-shot mode
       yoke --prompt "Your prompt"      One-shot mode with flags
-      yoke --model deepseek-reasoner   Specify model (deepseek-chat or deepseek-reasoner)
+      yoke --model deepseek-flash      Specify model (deepseek-flash, deepseek-v4-pro, or deepseek-reasoner)
       yoke --node brain_1 --connect hands@127.0.0.1   Distributed Brain/Hands mode
       yoke --plugin path/to/plugin.exs Load custom plugin on startup
 
     OPTIONS:
       -c, --conversation STRING  Resume specific conversation ID
       -p, --prompt STRING        Input prompt to send to agent
-      -m, --model STRING         Model selection (deepseek-chat, deepseek-reasoner, deepseek-v4-flash-vision-exp)
+      -m, --model STRING         Model selection (deepseek-flash, deepseek-v4-pro, deepseek-reasoner, deepseek-v4-flash-vision-exp)
           --node STRING          Start local Erlang distributed node name
           --connect STRING       Connect to remote Hands node
           --plugin FILE          Load external Elixir plugin file (.ex or .exs)

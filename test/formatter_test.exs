@@ -98,6 +98,69 @@ defmodule Yoke.FormatterTest do
     assert String.contains?(Formatter.format_info("Notice"), "●")
   end
 
+  describe "format_reasoning/2" do
+    test "formats reasoning in yellow, starting lines at column 0 with CRLF and quotes" do
+      reasoning = "Analyzing request.\nNeed to search files.\nFound 2 files."
+      formatted = Formatter.format_reasoning(reasoning)
+
+      assert formatted =~ IO.ANSI.yellow()
+      assert formatted =~ "● [DeepSeek-R1 Reasoning]"
+      assert formatted =~ "“ Analyzing request."
+      assert formatted =~ "Found 2 files. ”"
+      # Every newline must be CRLF so in raw terminal mode lines start at beginning of line
+      assert formatted =~ "\r\n"
+      refute formatted =~ ~r/[^\r]\n/
+    end
+
+    test "respects model or custom title options" do
+      formatted = Formatter.format_reasoning("Thinking...", model: "qwen-coder-32b")
+      assert formatted =~ "● [qwen-coder-32b Reasoning]"
+
+      custom = Formatter.format_reasoning("Thinking...", title: "R1 CoT")
+      assert custom =~ "● [R1 CoT]"
+    end
+
+    test "allows configuring reasoning color via options" do
+      cyan = Formatter.format_reasoning("Thinking in cyan...", color: "cyan")
+      assert cyan =~ IO.ANSI.cyan()
+      refute cyan =~ IO.ANSI.yellow()
+
+      magenta = Formatter.format_reasoning("Thinking in magenta...", color: "magenta")
+      assert magenta =~ IO.ANSI.magenta()
+    end
+
+    test "loads reasoning color from Yoke.Config" do
+      Application.put_env(:yoke, :reasoning_color, "green")
+      on_exit(fn -> Application.delete_env(:yoke, :reasoning_color) end)
+
+      formatted = Formatter.format_reasoning("Thinking in green...")
+      assert formatted =~ IO.ANSI.green()
+    end
+
+    test "handles single line reasoning" do
+      formatted = Formatter.format_reasoning("Just one thought.")
+      assert formatted =~ "“ Just one thought. ”"
+      assert formatted =~ IO.ANSI.yellow()
+    end
+
+    test "extracts existing header title if present in string" do
+      input = "[DeepSeek-R1 Reasoning]\nNow I understand."
+      formatted = Formatter.format_reasoning(input)
+      assert formatted =~ "● [DeepSeek-R1 Reasoning]"
+      assert formatted =~ "“ Now I understand. ”"
+      refute formatted =~ "[[DeepSeek-R1 Reasoning]]"
+    end
+
+    test "format_agent_response formats reasoning if response map contains reasoning_content" do
+      resp = %{content: "Here is the result.", reasoning_content: "Thought process here."}
+      rendered = Formatter.format_agent_response(resp)
+      assert rendered =~ "● [DeepSeek-R1 Reasoning]"
+      assert rendered =~ "“ Thought process here. ”"
+      assert rendered =~ "DeepSeek >"
+      assert rendered =~ "Here is the result."
+    end
+  end
+
   test "formats markdown string with marcli rendering" do
     md = "# Title\n- Item 1\n- Item 2"
     rendered = Formatter.format_markdown(md)

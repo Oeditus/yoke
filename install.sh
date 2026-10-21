@@ -43,6 +43,9 @@ if [ -z "\${DLLB_SERVER_BIN:-}" ]; then
   fi
 fi
 cd "\$PWD"
+if [ -t 0 ]; then
+  stty -ixon 2>/dev/null || true
+fi
 exec "$INSTALL_DIR/yoke" --prod "\$@"
 EOF
 

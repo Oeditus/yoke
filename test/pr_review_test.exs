@@ -391,7 +391,8 @@ defmodule Yoke.PRReviewTest do
           file: "apps/api/lib/drawer.ex",
           line: 930,
           title: "Drawer sends itself a :comment_event message with no handle_info/2",
-          description: "mark_read/2 calls send(self(), {:comment_event, %{event: :read, ...}}). self() inside a LiveComponent is the LiveView process, and Drawer defines no handle_info/2.",
+          description:
+            "mark_read/2 calls send(self(), {:comment_event, %{event: :read, ...}}). self() inside a LiveComponent is the LiveView process, and Drawer defines no handle_info/2.",
           severity: "high",
           fix_suggestion: """
           @impl true

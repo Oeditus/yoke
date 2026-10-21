@@ -277,6 +277,8 @@ defmodule Yoke.CLI.LineEditor do
       case model do
         "deepseek-reasoner" -> "󰧑"
         "deepseek-coder" -> "󰘦"
+        "deepseek-flash" -> "󱐋"
+        "deepseek-v4-pro" -> "󰚩"
         _ -> "󰚩"
       end
 
@@ -1091,7 +1093,44 @@ defmodule Yoke.CLI.LineEditor do
     end
   end
 
+  @doc """
+  Disables software flow control (`IXON` / XON / XOFF) on the terminal so that
+  Ctrl+Q (`\\x11`) reaches the application instead of being swallowed by the
+  OS kernel TTY line discipline.
+  """
+  def disable_flow_control(opts \\ []) do
+    force = Keyword.get(opts, :force, false)
+
+    if force or not Application.get_env(:yoke, :flow_control_disabled, false) do
+      if tty?() do
+        cond do
+          File.exists?("/dev/tty") ->
+            System.cmd("sh", ["-c", "stty -ixon < /dev/tty 2>/dev/null || true"])
+            :ok
+
+          File.exists?("/proc/self/fd/0") ->
+            System.cmd("stty", ["-F", "/proc/self/fd/0", "-ixon"], stderr_to_stdout: true)
+            :ok
+
+          true ->
+            System.cmd("sh", ["-c", "stty -ixon 2>/dev/null || true"])
+            :ok
+        end
+      end
+
+      Application.put_env(:yoke, :flow_control_disabled, true)
+      :ok
+    else
+      :ok
+    end
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
   defp set_raw_mode do
+    disable_flow_control()
     purge_dead_io_requests()
 
     result =
@@ -1145,7 +1184,8 @@ defmodule Yoke.CLI.LineEditor do
     case read_key() do
       :enter -> handle_enter(state)
       :tab -> handle_tab(state)
-      :ctrl_c -> handle_interrupt(state)
+      :ctrl_c -> handle_interrupt(state, "^C")
+      :ctrl_q -> handle_interrupt(state, "^Q")
       :ctrl_d -> handle_eof(state)
       :up -> raw_loop(handle_vertical_move(state, :up))
       :down -> raw_loop(handle_vertical_move(state, :down))
@@ -1361,9 +1401,9 @@ defmodule Yoke.CLI.LineEditor do
 
   defp handle_char(state, char), do: insert_char(state, char)
 
-  defp handle_interrupt(state) do
+  defp handle_interrupt(state, label) do
     redraw_prefix = erase_prefix(state)
-    IO.write(redraw_prefix <> "^C\r\n")
+    IO.write(redraw_prefix <> label <> "\r\n")
     TerminalOwner.clear()
     ""
   end
@@ -2379,6 +2419,7 @@ defmodule Yoke.CLI.LineEditor do
   defp match_key("\x0c"), do: :ctrl_l
   defp match_key("\x0f"), do: :ctrl_o
   defp match_key("\x10"), do: :ctrl_p
+  defp match_key("\x11"), do: :ctrl_q
   defp match_key("\x12"), do: :ctrl_r
   defp match_key("\x15"), do: :ctrl_u
   defp match_key("\x16"), do: :ctrl_v

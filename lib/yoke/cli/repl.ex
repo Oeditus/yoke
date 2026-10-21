@@ -18,6 +18,7 @@ defmodule Yoke.CLI.Repl do
   alias Yoke.TaskEngine.JobManager
 
   def start(opts \\ []) do
+    LineEditor.disable_flow_control()
     MCPServerManager.await_ragex()
     IO.puts(Formatter.banner())
 
@@ -1465,10 +1466,13 @@ defmodule Yoke.CLI.Repl do
     else
       target_model =
         case clean_target do
+          "flash" -> "deepseek-flash"
+          "pro" -> "deepseek-v4-pro"
+          "v4-pro" -> "deepseek-v4-pro"
           "reasoner" -> "deepseek-reasoner"
           "r1" -> "deepseek-reasoner"
-          "chat" -> "deepseek-chat"
-          "v3" -> "deepseek-chat"
+          "chat" -> "deepseek-flash"
+          "v3" -> "deepseek-flash"
           "coder" -> "deepseek-coder"
           "v2.5" -> "deepseek-coder"
           "vision" -> "deepseek-v4-flash-vision-exp"
@@ -2282,7 +2286,7 @@ defmodule Yoke.CLI.Repl do
   end
 
   def handle_input("/env", _session_pid, _session_id) do
-    env_model = System.get_env("DEEPSEEK_MODEL") || "deepseek-chat (default)"
+    env_model = System.get_env("DEEPSEEK_MODEL") || "deepseek-flash (default)"
 
     has_key? =
       not is_nil(System.get_env("DEEPSEEK_API_KEY")) and

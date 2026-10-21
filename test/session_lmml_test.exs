@@ -200,7 +200,7 @@ defmodule Yoke.Brain.SessionLmmlTest do
 
       assert {:ok, decoded} = SessionLmml.decode(narrative)
       assert decoded["messages"] == [%{"role" => "user", "content" => "hi"}]
-      assert decoded["model"] == "deepseek-chat"
+      assert decoded["model"] == "deepseek-flash"
       assert decoded["permission_mode"] == "ask_confirm"
       assert decoded["step_count"] == 0
       assert decoded["snapshots"] == []

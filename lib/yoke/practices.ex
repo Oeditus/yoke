@@ -411,7 +411,7 @@ defmodule Yoke.Practices do
         target_model =
           Keyword.get(opts, :model) ||
             System.get_env("DEEPSEEK_MODEL") ||
-            Map.get(Yoke.Config.load_config(cwd), "model", "deepseek-chat")
+            Map.get(Yoke.Config.load_config(cwd), "model", "deepseek-flash")
 
         case Yoke.Client.DeepSeekAPI.chat_completion(
                [%{"role" => "user", "content" => prompt}],

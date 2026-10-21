@@ -222,7 +222,7 @@ defmodule Yoke.Workflow.Engine do
 
     default_model =
       System.get_env("DEEPSEEK_MODEL") ||
-        Map.get(Yoke.Config.load_config("."), "model", "deepseek-chat")
+        Map.get(Yoke.Config.load_config("."), "model", "deepseek-flash")
 
     case DeepSeekAPI.chat_completion(messages, [], Keyword.put_new(opts, :model, default_model)) do
       {:ok, %{content: content}} when is_binary(content) -> {:ok, content}

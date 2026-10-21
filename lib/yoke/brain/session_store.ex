@@ -362,7 +362,7 @@ defmodule Yoke.Brain.SessionStore do
       else
         session_state = %{
           session_id: session_id,
-          model: meta["model"] || "deepseek-chat",
+          model: meta["model"] || "deepseek-flash",
           permission_mode: normalize_permission_mode(meta["permission_mode"]),
           step_count: meta["step_count"] || 0,
           total_prompt_tokens: meta["total_prompt_tokens"] || 0,

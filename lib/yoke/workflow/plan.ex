@@ -42,7 +42,7 @@ defmodule Yoke.Workflow.Plan do
   `opts` may carry:
     * `:cwd`   - working root (currently unused by the LLM calls, kept for
       parity with the workflow context; default `"."`).
-    * `:model` - model name (default `"deepseek-chat"`).
+    * `:model` - model name (default `"deepseek-flash"`).
     * `:mock`  - force mock mode (default: auto-enabled in the `:test` env by
       `DeepSeekAPI`).
 
@@ -84,7 +84,7 @@ defmodule Yoke.Workflow.Plan do
 
     default_model =
       System.get_env("DEEPSEEK_MODEL") ||
-        Map.get(Yoke.Config.load_config("."), "model", "deepseek-chat")
+        Map.get(Yoke.Config.load_config("."), "model", "deepseek-flash")
 
     call_opts =
       [model: Keyword.get(opts, :model, default_model)]

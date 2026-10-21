@@ -12,6 +12,7 @@ defmodule Yoke.Brain.Session do
   alias Yoke.Brain.ContextCompressor
   alias Yoke.Brain.SessionStore
   alias Yoke.CLI.ContextExpander
+  alias Yoke.CLI.Formatter
   alias Yoke.Client.DeepSeekAPI
   alias Yoke.Config
   alias Yoke.Hands.Executor, as: HandsExecutor
@@ -111,7 +112,7 @@ defmodule Yoke.Brain.Session do
     GenServer.call(pid, :get_endpoint, :infinity)
   end
 
-  @doc "Sets the DeepSeek model ('deepseek-chat' or 'deepseek-reasoner')."
+  @doc "Sets the DeepSeek model ('deepseek-flash', 'deepseek-v4-pro', 'deepseek-reasoner', etc.)."
   def set_model(pid, model) do
     GenServer.call(pid, {:set_model, model}, :infinity)
   end
@@ -269,7 +270,7 @@ defmodule Yoke.Brain.Session do
           Map.get(
             Config.load_config(cwd),
             "model",
-            "deepseek-chat"
+            "deepseek-flash"
           ),
       endpoint:
         opts[:endpoint] ||
@@ -1201,7 +1202,9 @@ defmodule Yoke.Brain.Session do
     state = accumulate_usage(state, response[:usage])
 
     if response[:reasoning_content] do
-      Logger.info("[DeepSeek-R1 Reasoning]\n#{response.reasoning_content}")
+      Logger.info(
+        Formatter.format_reasoning(response.reasoning_content, model: state.model, cwd: state.cwd)
+      )
     end
 
     assistant_msg = build_assistant_tool_msg(response, tool_calls)
@@ -1496,7 +1499,9 @@ defmodule Yoke.Brain.Session do
     state = accumulate_usage(state, response[:usage])
 
     if response[:reasoning_content] do
-      Logger.info("[DeepSeek-R1 Reasoning]\n#{response.reasoning_content}")
+      Logger.info(
+        Formatter.format_reasoning(response.reasoning_content, model: state.model, cwd: state.cwd)
+      )
     end
 
     final_msg = %{"role" => "assistant", "content" => response.content}

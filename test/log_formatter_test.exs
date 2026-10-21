@@ -62,6 +62,35 @@ defmodule Yoke.CLI.LogFormatterTest do
     assert LogFormatter.format(event3, %{}) == ""
   end
 
+  test "formats reasoning log event with yellow styling and quotes without stair-stepping" do
+    event = %{
+      level: :info,
+      msg: "[DeepSeek-R1 Reasoning]\nNow I have an understanding.\nLet me run some tools."
+    }
+
+    formatted = LogFormatter.format(event, %{})
+
+    assert formatted =~ IO.ANSI.yellow()
+    assert formatted =~ "● [DeepSeek-R1 Reasoning]"
+    assert formatted =~ "“ Now I have an understanding."
+    assert formatted =~ "Let me run some tools. ”"
+    # All interior newlines must be \r\n
+    assert formatted =~ "\r\n"
+    refute formatted =~ ~r/[^\r]\n/
+  end
+
+  test "ensures multi-line log events use CRLF to prevent stair-stepping in raw mode" do
+    event = %{
+      level: :info,
+      msg: "Line 1\nLine 2\nLine 3"
+    }
+
+    formatted = LogFormatter.format(event, %{})
+
+    assert formatted =~ "\r\n"
+    refute formatted =~ ~r/[^\r]\n/
+  end
+
   test "installs log formatter handler without raising" do
     assert LogFormatter.install() == :ok or LogFormatter.install() == :error
   end

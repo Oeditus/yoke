@@ -298,7 +298,7 @@ defmodule Yoke.Brain.SessionLmml do
   defp build_manifest(session_state, session_id) do
     %{
       "session_id" => session_id,
-      "model" => Map.get(session_state, :model, "deepseek-chat"),
+      "model" => Map.get(session_state, :model, "deepseek-flash"),
       "permission_mode" => to_string(Map.get(session_state, :permission_mode, :ask_confirm)),
       "step_count" => Map.get(session_state, :step_count, 0),
       "total_prompt_tokens" => Map.get(session_state, :total_prompt_tokens, 0),
@@ -338,7 +338,7 @@ defmodule Yoke.Brain.SessionLmml do
   defp default_manifest do
     %{
       "session_id" => nil,
-      "model" => "deepseek-chat",
+      "model" => "deepseek-flash",
       "permission_mode" => "ask_confirm",
       "step_count" => 0,
       "total_prompt_tokens" => 0,
@@ -351,7 +351,7 @@ defmodule Yoke.Brain.SessionLmml do
   defp normalize_manifest(data) do
     base = %{
       "session_id" => Map.get(data, "session_id"),
-      "model" => Map.get(data, "model", "deepseek-chat"),
+      "model" => Map.get(data, "model", "deepseek-flash"),
       "permission_mode" => Map.get(data, "permission_mode", "ask_confirm"),
       "step_count" => Map.get(data, "step_count", 0),
       "total_prompt_tokens" => Map.get(data, "total_prompt_tokens", 0),

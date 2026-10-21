@@ -24,6 +24,13 @@ defmodule Yoke.CLI.LogFormatter do
     if noisy_log?(formatted_msg) do
       ""
     else
+      formatted_msg =
+        if reasoning_header?(formatted_msg) do
+          Formatter.format_reasoning(formatted_msg)
+        else
+          formatted_msg
+        end
+
       circle =
         case level do
           :error -> IO.ANSI.red() <> "●" <> IO.ANSI.reset()
@@ -38,7 +45,7 @@ defmodule Yoke.CLI.LogFormatter do
         if String.starts_with?(formatted_msg, "\e") or String.starts_with?(formatted_msg, "●") or
              String.starts_with?(formatted_msg, "⚡") or String.starts_with?(formatted_msg, "󱐋") or
              String.starts_with?(formatted_msg, "◈") or String.starts_with?(formatted_msg, "❯") or
-             String.starts_with?(formatted_msg, "⟡") do
+             String.starts_with?(formatted_msg, "⟡") or String.starts_with?(formatted_msg, "“") do
           "#{formatted_msg}\r\n"
         else
           "#{circle} #{formatted_msg}\r\n"
@@ -92,25 +99,35 @@ defmodule Yoke.CLI.LogFormatter do
   end
 
   defp truncate_to_terminal(line) do
-    if LineEditor.expand_tool_calls?() do
+    if LineEditor.expand_tool_calls?() or reasoning_message?(line) do
       to_crlf(line)
     else
       content = String.trim_trailing(line, "\r\n")
       budget = max(terminal_cols() - 2, 1)
 
       content
-      |> String.split("\n")
-      |> Enum.map_join("\n", &LineEditor.truncate_to_width(&1, budget))
+      |> String.split(~r/\r?\n/)
+      |> Enum.map_join("\r\n", &LineEditor.truncate_to_width(&1, budget))
       |> Kernel.<>("\r\n")
     end
   end
 
   defp to_crlf(line) do
-    if String.ends_with?(line, "\r\n") do
-      line
-    else
-      line |> String.trim_trailing("\n") |> String.replace("\n", "\r\n") |> Kernel.<>("\r\n")
-    end
+    line
+    |> String.trim_trailing("\r\n")
+    |> String.split(~r/\r?\n/)
+    |> Enum.join("\r\n")
+    |> Kernel.<>("\r\n")
+  end
+
+  defp reasoning_header?(msg) do
+    String.starts_with?(msg, "[DeepSeek-R1 Reasoning]") or
+      String.starts_with?(msg, "[Reasoning]") or
+      Regex.match?(~r/^\s*\[[a-zA-Z0-9_\-\.\s]+ Reasoning\]/i, msg)
+  end
+
+  defp reasoning_message?(line) do
+    String.contains?(line, "Reasoning") or String.contains?(line, "“")
   end
 
   defp terminal_cols do

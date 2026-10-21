@@ -1,17 +1,17 @@
 defmodule Yoke.Client.DeepSeekAPI do
   @moduledoc """
-  Client interface for DeepSeek API (deepseek-chat V3 and deepseek-reasoner R1).
+  Client interface for DeepSeek API (deepseek-flash, deepseek-v4-pro, and deepseek-reasoner R1).
   Handles message serialization, tool declarations, reasoning extraction (R1),
   real token usage tracking, SSE response streaming, and mock execution mode.
   """
   require Logger
 
   @default_endpoint "https://api.deepseek.com/chat/completions"
-  @default_model "deepseek-chat"
+  @default_model "deepseek-flash"
 
   defmodule ClientConfig do
     @moduledoc "Configuration parameters for DeepSeek API requests."
-    defstruct model: "deepseek-chat",
+    defstruct model: "deepseek-flash",
               api_key: nil,
               endpoint: "https://api.deepseek.com/chat/completions",
               temperature: 0.7,
@@ -66,7 +66,14 @@ defmodule Yoke.Client.DeepSeekAPI do
     if ((is_nil(config.api_key) or config.api_key == "") and not local_endpoint?(config.endpoint)) or
          config.mock == true do
       {:ok,
-       ["deepseek-chat", "deepseek-reasoner", "deepseek-coder", "deepseek-v4-flash-vision-exp"]}
+       [
+         "deepseek-flash",
+         "deepseek-v4-pro",
+         "deepseek-reasoner",
+         "deepseek-coder",
+         "deepseek-v4-flash-vision-exp",
+         "deepseek-chat"
+       ]}
     else
       fetch_real_models(config)
     end
@@ -111,7 +118,7 @@ defmodule Yoke.Client.DeepSeekAPI do
           |> Enum.sort()
 
         if Enum.empty?(model_ids) do
-          {:ok, ["deepseek-chat", "deepseek-reasoner"]}
+          {:ok, ["deepseek-flash", "deepseek-v4-pro", "deepseek-reasoner", "deepseek-chat"]}
         else
           {:ok, model_ids}
         end

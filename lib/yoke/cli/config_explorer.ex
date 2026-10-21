@@ -126,7 +126,7 @@ defmodule Yoke.CLI.ConfigExplorer do
           model =
             case Regex.run(~r/"model"\s*:\s*"([^"]+)"/, content) do
               [_, m] -> m
-              _ -> "deepseek-chat"
+              _ -> "deepseek-flash"
             end
 
           msg_count = Regex.scan(~r/^# (User|Assistant|Tool Call)/m, content) |> length()
@@ -1186,7 +1186,7 @@ defmodule Yoke.CLI.ConfigExplorer do
 
   defp format_item_row(:sessions, sess, is_selected, cols, theme) do
     size_kb = Float.round(sess.size / 1024, 1)
-    model = Map.get(sess, :model, "deepseek-chat")
+    model = Map.get(sess, :model, "deepseek-flash")
     msg_cnt = Map.get(sess, :msg_count, 0)
     preview = Map.get(sess, :preview, "")
     ts = Map.get(sess, :timestamp, "")
@@ -1445,7 +1445,7 @@ defmodule Yoke.CLI.ConfigExplorer do
       "Session ID:   #{sess.id}",
       "File Path:    #{sess.path}",
       "File Size:    #{sess.size} bytes",
-      "Model:        #{Map.get(sess, :model, "deepseek-chat")}",
+      "Model:        #{Map.get(sess, :model, "deepseek-flash")}",
       "Total Messages: #{Map.get(sess, :msg_count, 0)}",
       "------------------------------------------------------------------"
     ]
@@ -1900,7 +1900,7 @@ defmodule Yoke.CLI.ConfigExplorer do
           :ok
         end
 
-      :ctrl_c ->
+      key when key in [:ctrl_c, :ctrl_q] ->
         :ok
 
       {:char, c} when c >= ?1 and c <= ?8 ->
@@ -1939,6 +1939,7 @@ defmodule Yoke.CLI.ConfigExplorer do
       Permission mode: #{tree.config["permission_mode"]}
       Plan gate: #{tree.config["plan_gate_enabled"]} (threshold: #{tree.config["plan_gate_threshold"]})
       God mode: #{tree.config["god_mode"]}
+      Reasoning color: #{tree.config["reasoning_color"] || "yellow"}
 
     ● Prompt Rules (#{length(tree.rules)} active)
     ● Saved Sessions/Conversations (#{length(tree.sessions)} files)
@@ -2052,6 +2053,7 @@ defmodule Yoke.CLI.ConfigExplorer do
   defp match_key(" "), do: :space
   defp match_key("\e"), do: :escape
   defp match_key("\x03"), do: :ctrl_c
+  defp match_key("\x11"), do: :ctrl_q
 
   defp match_key(other) when is_binary(other) do
     cond do

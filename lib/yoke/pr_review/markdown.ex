@@ -139,7 +139,10 @@ defmodule Yoke.PRReview.Markdown do
       line = List.first(lines)
 
       (String.ends_with?(line, ".") or
-         String.match?(line, ~r/^(Wrap|Use|Add|Consider|Ensure|Remove|Replace|Check|Verify|Pass|Guard)\s/)) and
+         String.match?(
+           line,
+           ~r/^(Wrap|Use|Add|Consider|Ensure|Remove|Replace|Check|Verify|Pass|Guard)\s/
+         )) and
         not String.match?(line, ~r/^\s*(def|defp|if|case|cond|with|@|use|alias|import)\s/) and
         not String.contains?(line, ", do:")
     else
