@@ -628,7 +628,10 @@ defmodule Yoke.PRReview do
     end
   end
 
-  defp get_repo_name(cwd) do
+  @doc """
+  Determines the GitHub repository (`owner/repo`) using `gh repo view`.
+  """
+  def get_repo_name(cwd \\ ".") do
     case System.cmd("gh", ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
            cd: cwd,
            stderr_to_stdout: true
@@ -688,34 +691,47 @@ defmodule Yoke.PRReview do
   end
 
   @doc """
-  Detects PR info (number, url, head, base) using `gh` CLI.
-  `target` can be a numeric string ("123"), branch name ("feature-x"), or nil (current branch).
+  Detects PR info (number, url, head, base, author) using `gh` CLI.
+  `target` can be a numeric string ("123"), integer (123), branch name ("feature-x"), or nil (current branch).
   """
   def detect_pr(target \\ nil, cwd \\ ".") do
-    target_str = if is_binary(target), do: String.trim(target), else: ""
+    target_str =
+      cond do
+        is_integer(target) -> to_string(target)
+        is_binary(target) -> String.trim(target)
+        true -> ""
+      end
 
     args =
       cond do
         Regex.match?(~r/^\d+$/, target_str) ->
-          ["pr", "view", target_str, "--json", "number,url,headRefName,baseRefName"]
+          ["pr", "view", target_str, "--json", "number,url,headRefName,baseRefName,author"]
 
         target_str != "" and target_str != "HEAD" ->
-          ["pr", "view", target_str, "--json", "number,url,headRefName,baseRefName"]
+          ["pr", "view", target_str, "--json", "number,url,headRefName,baseRefName,author"]
 
         true ->
-          ["pr", "view", "--json", "number,url,headRefName,baseRefName"]
+          ["pr", "view", "--json", "number,url,headRefName,baseRefName,author"]
       end
 
     case System.cmd("gh", args, cd: cwd, stderr_to_stdout: true) do
       {out, 0} ->
         case Json.decode(out) do
           {:ok, %{"number" => num, "url" => url} = map} ->
+            author_login =
+              case Map.get(map, "author") do
+                %{"login" => l} when is_binary(l) -> l
+                l when is_binary(l) -> l
+                _ -> nil
+              end
+
             {:ok,
              %{
                number: num,
                url: url,
                head: Map.get(map, "headRefName"),
-               base: Map.get(map, "baseRefName")
+               base: Map.get(map, "baseRefName"),
+               author: author_login
              }}
 
           _ ->
@@ -724,6 +740,589 @@ defmodule Yoke.PRReview do
 
       {out, _code} ->
         {:error, "gh pr view failed: #{String.trim(out)}"}
+    end
+  end
+
+  @doc """
+  Fetches all peer review comments (inline review comments, review summaries, and conversation comments)
+  on the GitHub Pull Request page, excluding comments made by the PR author.
+  Returns `{:ok, comments_list}` on success or `{:error, reason}` on failure.
+  """
+  def fetch_peer_comments(target_or_pr_num, opts \\ []) do
+    cwd = Keyword.get(opts, :cwd, ".")
+    explicit_author = Keyword.get(opts, :pr_author)
+
+    with {:ok, pr_info} <- resolve_pr_info(target_or_pr_num, cwd),
+         {:ok, repo_name} <- get_repo_name(cwd) do
+      pr_num = to_string(pr_info.number)
+      pr_author = explicit_author || pr_info.author
+
+      inline_comments = fetch_inline_review_comments(repo_name, pr_num, cwd)
+      pr_view_comments = fetch_pr_view_comments(pr_num, cwd)
+
+      all_comments = inline_comments ++ pr_view_comments
+
+      peer_comments =
+        all_comments
+        |> Enum.reject(fn c ->
+          pr_author?(c, pr_author) or String.trim(c.body) == ""
+        end)
+        |> deduplicate_comments()
+
+      {:ok, peer_comments}
+    else
+      {:error, err} -> {:error, err}
+    end
+  end
+
+  defp resolve_pr_info(pr_num, cwd) when is_integer(pr_num) do
+    detect_pr(to_string(pr_num), cwd)
+  end
+
+  defp resolve_pr_info(target, cwd) do
+    detect_pr(target, cwd)
+  end
+
+  defp fetch_inline_review_comments(repo_name, pr_num, cwd) do
+    case System.cmd("gh", ["api", "repos/#{repo_name}/pulls/#{pr_num}/comments?per_page=100"],
+           cd: cwd,
+           stderr_to_stdout: true
+         ) do
+      {out, 0} ->
+        case Json.decode(out) do
+          {:ok, list} when is_list(list) ->
+            Enum.map(list, fn item ->
+              line =
+                Map.get(item, "line") ||
+                  Map.get(item, "original_line") ||
+                  Map.get(item, "start_line") ||
+                  Map.get(item, "original_start_line")
+
+              line_int =
+                cond do
+                  is_integer(line) -> line
+                  is_binary(line) -> parse_int(line)
+                  true -> nil
+                end
+
+              %{
+                type: :inline,
+                file: Map.get(item, "path"),
+                line: line_int,
+                author: get_in(item, ["user", "login"]) || "unknown",
+                body: Map.get(item, "body") || "",
+                diff_hunk: Map.get(item, "diff_hunk")
+              }
+            end)
+
+          _ ->
+            []
+        end
+
+      _ ->
+        []
+    end
+  end
+
+  defp fetch_pr_view_comments(pr_num, cwd) do
+    case System.cmd("gh", ["pr", "view", pr_num, "--json", "comments,reviews"],
+           cd: cwd,
+           stderr_to_stdout: true
+         ) do
+      {out, 0} ->
+        case Json.decode(out) do
+          {:ok, map} when is_map(map) ->
+            raw_reviews = Map.get(map, "reviews") || []
+            raw_comments = Map.get(map, "comments") || []
+
+            reviews =
+              Enum.map(raw_reviews, fn r ->
+                %{
+                  type: :review,
+                  file: nil,
+                  line: nil,
+                  author: get_in(r, ["author", "login"]) || "unknown",
+                  body: Map.get(r, "body") || "",
+                  diff_hunk: nil
+                }
+              end)
+
+            comments =
+              Enum.map(raw_comments, fn c ->
+                %{
+                  type: :issue,
+                  file: nil,
+                  line: nil,
+                  author: get_in(c, ["author", "login"]) || "unknown",
+                  body: Map.get(c, "body") || "",
+                  diff_hunk: nil
+                }
+              end)
+
+            reviews ++ comments
+
+          _ ->
+            []
+        end
+
+      _ ->
+        []
+    end
+  end
+
+  defp pr_author?(_comment, nil), do: false
+
+  defp pr_author?(comment, pr_author) when is_binary(pr_author) do
+    author = to_string(comment.author || "")
+    String.downcase(author) == String.downcase(pr_author)
+  end
+
+  defp deduplicate_comments(comments) do
+    Enum.uniq_by(comments, fn c ->
+      {c.author, c.file, c.line, String.trim(c.body)}
+    end)
+  end
+
+  @doc """
+  Formats peer comments for inclusion in the code review LLM prompt so the model
+  is aware of issues already raised on the PR page.
+  """
+  def format_peer_comments_for_prompt(peer_comments) when is_list(peer_comments) do
+    meaningful_comments =
+      peer_comments
+      |> Enum.reject(&(String.trim(&1.body) == ""))
+
+    if meaningful_comments == [] do
+      ""
+    else
+      formatted =
+        meaningful_comments
+        |> Enum.with_index(1)
+        |> Enum.map_join("\n\n", fn {c, idx} ->
+          loc =
+            cond do
+              c.file && c.line -> "`#{c.file}:#{c.line}`"
+              c.file -> "`#{c.file}`"
+              true -> "General / PR Summary"
+            end
+
+          author_label = if c.author && c.author != "unknown", do: " by @#{c.author}", else: ""
+          type_label = Atom.to_string(c.type) |> String.capitalize()
+
+          """
+          #{idx}. [#{type_label} on #{loc}#{author_label}]
+             #{indent_text(c.body, 3)}
+          """
+        end)
+
+      """
+
+      ### 6.1 Existing Peer Review Comments on PR Page (Already Reported — Do NOT Re-report)
+      The following findings and observations have ALREADY been reported by other peer reviewers on the PR page.
+      CRITICAL REQUIREMENT: Do NOT duplicate, repeat, or re-report any issue already presented below. You must SILENTLY DROP them from your review and your structured findings JSON array. Focus strictly on fresh, unreported problems:
+
+      #{formatted}
+      """
+    end
+  end
+
+  def format_peer_comments_for_prompt(_), do: ""
+
+  defp indent_text(text, spaces) do
+    padding = String.duplicate(" ", spaces)
+    text |> String.split("\n") |> Enum.map_join("\n", &"#{padding}#{&1}")
+  end
+
+  @doc """
+  Filters findings, silently dropping those already reported by peer reviewers on the PR page.
+  """
+  def drop_already_reported(findings, peer_comments)
+      when is_list(findings) and is_list(peer_comments) do
+    if peer_comments == [] do
+      findings
+    else
+      Enum.reject(findings, fn finding ->
+        finding_already_reported?(finding, peer_comments)
+      end)
+    end
+  end
+
+  def drop_already_reported(findings, _), do: findings
+
+  @doc """
+  Checks if a discrete finding has already been reported by any of the peer comments on the PR page.
+  """
+  def finding_already_reported?(finding, peer_comments)
+      when is_map(finding) and is_list(peer_comments) do
+    Enum.any?(peer_comments, fn comment ->
+      comment_reports_finding?(comment, finding)
+    end)
+  end
+
+  def finding_already_reported?(_, _), do: false
+
+  @common_stop_words MapSet.new([
+                       "a",
+                       "about",
+                       "above",
+                       "after",
+                       "again",
+                       "against",
+                       "all",
+                       "also",
+                       "an",
+                       "and",
+                       "any",
+                       "are",
+                       "aren't",
+                       "as",
+                       "at",
+                       "be",
+                       "because",
+                       "been",
+                       "before",
+                       "being",
+                       "below",
+                       "between",
+                       "both",
+                       "but",
+                       "by",
+                       "can",
+                       "cannot",
+                       "could",
+                       "couldn't",
+                       "did",
+                       "didn't",
+                       "do",
+                       "does",
+                       "doesn't",
+                       "doing",
+                       "don't",
+                       "down",
+                       "during",
+                       "each",
+                       "else",
+                       "few",
+                       "for",
+                       "from",
+                       "further",
+                       "had",
+                       "hadn't",
+                       "has",
+                       "hasn't",
+                       "have",
+                       "haven't",
+                       "having",
+                       "he",
+                       "her",
+                       "here",
+                       "hers",
+                       "herself",
+                       "him",
+                       "himself",
+                       "his",
+                       "how",
+                       "if",
+                       "in",
+                       "into",
+                       "is",
+                       "isn't",
+                       "it",
+                       "it's",
+                       "its",
+                       "itself",
+                       "just",
+                       "me",
+                       "more",
+                       "most",
+                       "must",
+                       "my",
+                       "myself",
+                       "no",
+                       "nor",
+                       "not",
+                       "of",
+                       "off",
+                       "on",
+                       "once",
+                       "only",
+                       "or",
+                       "other",
+                       "ought",
+                       "our",
+                       "ours",
+                       "ourselves",
+                       "out",
+                       "over",
+                       "own",
+                       "please",
+                       "same",
+                       "should",
+                       "shouldn't",
+                       "so",
+                       "some",
+                       "such",
+                       "than",
+                       "that",
+                       "the",
+                       "their",
+                       "theirs",
+                       "them",
+                       "themselves",
+                       "then",
+                       "there",
+                       "these",
+                       "they",
+                       "this",
+                       "those",
+                       "through",
+                       "to",
+                       "too",
+                       "under",
+                       "until",
+                       "up",
+                       "very",
+                       "was",
+                       "wasn't",
+                       "we",
+                       "were",
+                       "weren't",
+                       "what",
+                       "when",
+                       "where",
+                       "which",
+                       "while",
+                       "who",
+                       "whom",
+                       "why",
+                       "with",
+                       "won't",
+                       "would",
+                       "wouldn't",
+                       "you",
+                       "your",
+                       "yours",
+                       "yourself",
+                       "yourselves"
+                     ])
+
+  defp normalize_path(nil), do: nil
+
+  defp normalize_path(path) when is_binary(path) do
+    path
+    |> String.trim()
+    |> String.replace_prefix("./", "")
+    |> String.downcase()
+  end
+
+  defp same_file?(path_a, path_b) do
+    a = normalize_path(path_a)
+    b = normalize_path(path_b)
+    is_binary(a) and is_binary(b) and a != "" and a == b
+  end
+
+  defp extract_code_identifiers(text) when is_binary(text) do
+    backticked =
+      Regex.scan(~r/`([^`]+)`/, text)
+      |> Enum.map(fn [_, m] -> String.trim(m) |> String.downcase() end)
+      |> Enum.reject(&(&1 == "" or String.length(&1) < 3))
+
+    snake_case =
+      Regex.scan(~r/\b[a-z0-9]+_[a-z0-9_]+\b/i, text)
+      |> Enum.map(fn [m] -> String.trim(m) |> String.downcase() end)
+      |> Enum.reject(&(String.length(&1) < 4))
+
+    camel_case =
+      Regex.scan(~r/\b[A-Z][a-zA-Z0-9]{2,}\b/, text)
+      |> Enum.map(fn [m] -> String.trim(m) |> String.downcase() end)
+
+    dotted =
+      Regex.scan(~r/\b[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+\b/, text)
+      |> Enum.map(fn [m] -> String.trim(m) |> String.downcase() end)
+
+    (backticked ++ snake_case ++ camel_case ++ dotted)
+    |> MapSet.new()
+  end
+
+  defp extract_code_identifiers(_), do: MapSet.new()
+
+  defp extract_significant_words(text) when is_binary(text) do
+    text
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9_]/, " ")
+    |> String.split(~r/\s+/, trim: true)
+    |> Enum.reject(fn w ->
+      String.length(w) < 4 or
+        MapSet.member?(@common_stop_words, w) or
+        Regex.match?(~r/^\d+$/, w)
+    end)
+    |> MapSet.new()
+  end
+
+  defp extract_significant_words(_), do: MapSet.new()
+
+  defp extract_suggestion_code(body) when is_binary(body) do
+    case Regex.run(~r/```suggestion\s*\n(.*?)```/s, body) do
+      [_, code] -> String.trim(code)
+      _ -> nil
+    end
+  end
+
+  defp comment_reports_finding?(comment, finding) do
+    c_body = comment.body || ""
+    c_body_trimmed = String.trim(c_body)
+
+    if c_body_trimmed == "" or praise_only?(c_body_trimmed) do
+      false
+    else
+      f_text = "#{finding.title} #{finding.description} #{finding.fix_suggestion}"
+      f_id_tokens = extract_code_identifiers(f_text)
+      c_id_tokens = extract_code_identifiers(c_body)
+      shared_id_tokens = MapSet.intersection(f_id_tokens, c_id_tokens)
+
+      f_words = extract_significant_words("#{finding.title} #{finding.description}")
+      c_words = extract_significant_words(c_body)
+      shared_words = MapSet.intersection(f_words, c_words)
+
+      c_suggestion = extract_suggestion_code(c_body)
+
+      cond do
+        # 1. Exact or near line in the same file
+        same_file?(comment.file, finding.file) and is_integer(comment.line) and
+          is_integer(finding.line) and abs(comment.line - finding.line) <= 5 ->
+          line_diff = abs(comment.line - finding.line)
+
+          cond do
+            c_suggestion != nil ->
+              true
+
+            line_diff == 0 ->
+              MapSet.size(shared_id_tokens) > 0 or MapSet.size(shared_words) > 0
+
+            true ->
+              MapSet.size(shared_id_tokens) > 0 or MapSet.size(shared_words) >= 2
+          end
+
+        # 2. Same file with shared code identifiers or high word overlap
+        same_file?(comment.file, finding.file) ->
+          cond do
+            c_suggestion != nil and is_binary(finding.fix_suggestion) and
+              finding.fix_suggestion != "" and
+                suggestion_matches?(c_suggestion, finding.fix_suggestion) ->
+              true
+
+            MapSet.size(shared_id_tokens) >= 1 and MapSet.size(shared_words) >= 1 ->
+              true
+
+            MapSet.size(shared_id_tokens) >= 2 ->
+              true
+
+            MapSet.size(shared_words) >= 3 ->
+              true
+
+            jaccard_similarity(f_words, c_words) >= 0.25 and MapSet.size(shared_words) >= 2 ->
+              true
+
+            true ->
+              false
+          end
+
+        # 3. Comment mentions the file (e.g. top-level review or issue comment)
+        comment_mentions_file?(c_body, finding.file) ->
+          cond do
+            MapSet.size(shared_id_tokens) >= 1 ->
+              true
+
+            MapSet.size(shared_words) >= 2 ->
+              true
+
+            true ->
+              false
+          end
+
+        # 4. Across files or general finding: title or strong identifiers match
+        true ->
+          title_clean =
+            finding.title
+            |> String.downcase()
+            |> String.replace("`", "")
+            |> String.trim()
+
+          cond do
+            title_clean != "" and String.length(title_clean) >= 12 and
+                String.contains?(String.downcase(c_body), title_clean) ->
+              true
+
+            MapSet.size(shared_id_tokens) >= 2 and MapSet.size(shared_words) >= 2 ->
+              true
+
+            MapSet.size(shared_words) >= 4 and jaccard_similarity(f_words, c_words) >= 0.35 ->
+              true
+
+            true ->
+              false
+          end
+      end
+    end
+  end
+
+  @praise_words MapSet.new([
+                  "lgtm",
+                  "looks",
+                  "good",
+                  "nice",
+                  "great",
+                  "thanks",
+                  "thank",
+                  "you",
+                  "approved",
+                  "perfect",
+                  "awesome",
+                  "cool",
+                  "fine",
+                  "plus",
+                  "one",
+                  "to",
+                  "me"
+                ])
+
+  defp praise_only?(body) do
+    words =
+      body
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9]/, " ")
+      |> String.split(~r/\s+/, trim: true)
+
+    words != [] and Enum.all?(words, &MapSet.member?(@praise_words, &1))
+  end
+
+  defp comment_mentions_file?(_body, nil), do: false
+
+  defp comment_mentions_file?(body, file) when is_binary(body) and is_binary(file) do
+    file_norm = normalize_path(file)
+    base = Path.basename(file_norm)
+    body_down = String.downcase(body)
+
+    (file_norm != "" and String.contains?(body_down, file_norm)) or
+      (String.length(base) >= 5 and String.contains?(body_down, base))
+  end
+
+  defp suggestion_matches?(suggestion, fix) do
+    s_words = extract_significant_words(suggestion)
+    f_words = extract_significant_words(fix)
+    shared = MapSet.intersection(s_words, f_words)
+    MapSet.size(shared) >= 2 or jaccard_similarity(s_words, f_words) >= 0.3
+  end
+
+  defp jaccard_similarity(set_a, set_b) do
+    union = MapSet.union(set_a, set_b)
+    union_size = MapSet.size(union)
+
+    if union_size == 0 do
+      0.0
+    else
+      intersection = MapSet.intersection(set_a, set_b)
+      MapSet.size(intersection) / union_size
     end
   end
 end

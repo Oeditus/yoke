@@ -422,4 +422,269 @@ defmodule Yoke.PRReviewTest do
       assert String.contains?(c["body"], "def handle_info")
     end
   end
+
+  describe "peer review comments filtering and silent drop" do
+    test "format_peer_comments_for_prompt/1 returns formatted markdown section" do
+      peer_comments = [
+        %{
+          type: :inline,
+          author: "alice",
+          file: "lib/yoke/git.ex",
+          line: 42,
+          body: "System.cmd might raise if git binary is not found on PATH."
+        },
+        %{
+          type: :review,
+          author: "bob",
+          file: nil,
+          line: nil,
+          body: "Please verify that error handling is robust."
+        }
+      ]
+
+      section = PRReview.format_peer_comments_for_prompt(peer_comments)
+
+      assert String.contains?(section, "Existing Peer Review Comments on PR Page")
+      assert String.contains?(section, "CRITICAL REQUIREMENT")
+      assert String.contains?(section, "`lib/yoke/git.ex:42`")
+      assert String.contains?(section, "@alice")
+      assert String.contains?(section, "@bob")
+      assert String.contains?(section, "System.cmd might raise")
+    end
+
+    test "format_peer_comments_for_prompt/1 returns empty string when peer comments are empty" do
+      assert PRReview.format_peer_comments_for_prompt([]) == ""
+      assert PRReview.format_peer_comments_for_prompt(nil) == ""
+    end
+
+    test "silently drops finding matching inline comment on exact same line with shared code tokens" do
+      peer_comments = [
+        %{
+          type: :inline,
+          author: "alice",
+          file: "lib/yoke/git.ex",
+          line: 42,
+          body: "System.cmd might raise ErlangError if git is missing."
+        }
+      ]
+
+      finding = %{
+        id: 1,
+        file: "lib/yoke/git.ex",
+        line: 42,
+        title: "Unhandled System.cmd error",
+        description: "System.cmd might raise if git is missing.",
+        severity: "medium",
+        fix_suggestion: "Wrap in try/rescue block."
+      }
+
+      assert PRReview.finding_already_reported?(finding, peer_comments)
+      assert PRReview.drop_already_reported([finding], peer_comments) == []
+    end
+
+    test "silently drops finding matching inline comment with github suggestion on same line" do
+      peer_comments = [
+        %{
+          type: :inline,
+          author: "am-kantox",
+          file: "install.sh",
+          line: 19,
+          body:
+            "```suggestion\n    git clone https://github.com/Oeditus/dsh.git \"$INSTALL_DIR\"\n```"
+        }
+      ]
+
+      finding = %{
+        id: 1,
+        file: "install.sh",
+        line: 19,
+        title: "Incorrect repository URL in install script",
+        description: "The clone target should point to dsh instead of ragex.",
+        severity: "high",
+        fix_suggestion: "git clone https://github.com/Oeditus/dsh.git \"$INSTALL_DIR\""
+      }
+
+      assert PRReview.finding_already_reported?(finding, peer_comments)
+      assert PRReview.drop_already_reported([finding], peer_comments) == []
+    end
+
+    test "silently drops finding matching comment on nearby line (within 5 lines) sharing code identifiers" do
+      peer_comments = [
+        %{
+          type: :inline,
+          author: "reviewer_1",
+          file: "lib/yoke/pr_review.ex",
+          line: 505,
+          body: "Check build_atomic_review_payload when valid_diff_lines is empty."
+        }
+      ]
+
+      finding = %{
+        id: 1,
+        file: "lib/yoke/pr_review.ex",
+        line: 503,
+        title: "build_atomic_review_payload handling",
+        description: "Make sure build_atomic_review_payload handles nil gracefully.",
+        severity: "medium",
+        fix_suggestion: ""
+      }
+
+      assert PRReview.finding_already_reported?(finding, peer_comments)
+      assert PRReview.drop_already_reported([finding], peer_comments) == []
+    end
+
+    test "silently drops finding when PR review summary mentions file and issue" do
+      peer_comments = [
+        %{
+          type: :review,
+          author: "reviewer_2",
+          file: nil,
+          line: nil,
+          body: "In lib/yoke/git.ex, unhandled System.cmd call might crash the process."
+        }
+      ]
+
+      finding = %{
+        id: 1,
+        file: "lib/yoke/git.ex",
+        line: 42,
+        title: "Unhandled System.cmd call",
+        description: "Process might crash if git is absent.",
+        severity: "high",
+        fix_suggestion: ""
+      }
+
+      assert PRReview.finding_already_reported?(finding, peer_comments)
+      assert PRReview.drop_already_reported([finding], peer_comments) == []
+    end
+
+    test "silently drops finding when comment mentions exact issue title" do
+      peer_comments = [
+        %{
+          type: :issue,
+          author: "reviewer_3",
+          file: nil,
+          line: nil,
+          body: "We already know about: Missing validation check in token exchange."
+        }
+      ]
+
+      finding = %{
+        id: 1,
+        file: "lib/auth.ex",
+        line: 80,
+        title: "Missing validation check in token exchange",
+        description: "Token exchange should validate client id.",
+        severity: "high",
+        fix_suggestion: ""
+      }
+
+      assert PRReview.finding_already_reported?(finding, peer_comments)
+      assert PRReview.drop_already_reported([finding], peer_comments) == []
+    end
+
+    test "keeps novel findings while silently dropping already reported ones" do
+      peer_comments = [
+        %{
+          type: :inline,
+          author: "reviewer_1",
+          file: "lib/yoke/git.ex",
+          line: 42,
+          body: "System.cmd might raise if git is missing."
+        }
+      ]
+
+      already_reported = %{
+        id: 1,
+        file: "lib/yoke/git.ex",
+        line: 42,
+        title: "Unhandled System.cmd error",
+        description: "System.cmd might raise if git is missing.",
+        severity: "medium",
+        fix_suggestion: "Wrap in try/rescue block."
+      }
+
+      novel = %{
+        id: 2,
+        file: "lib/yoke/cli/repl.ex",
+        line: 850,
+        title: "Unchecked pattern match in command dispatcher",
+        description: "Invalid input will trigger FunctionClauseError.",
+        severity: "high",
+        fix_suggestion: "Add catch-all clause."
+      }
+
+      result = PRReview.drop_already_reported([already_reported, novel], peer_comments)
+      assert length(result) == 1
+      assert hd(result).id == 2
+      assert hd(result).file == "lib/yoke/cli/repl.ex"
+    end
+
+    test "does not drop finding when comment is on different file or unrelated line" do
+      peer_comments = [
+        %{
+          type: :inline,
+          author: "reviewer_1",
+          file: "lib/other.ex",
+          line: 10,
+          body: "Typo in comment: fix spelling."
+        }
+      ]
+
+      finding = %{
+        id: 1,
+        file: "lib/yoke/git.ex",
+        line: 42,
+        title: "Unhandled System.cmd error",
+        description: "System.cmd might raise if git is missing.",
+        severity: "medium",
+        fix_suggestion: ""
+      }
+
+      refute PRReview.finding_already_reported?(finding, peer_comments)
+      assert PRReview.drop_already_reported([finding], peer_comments) == [finding]
+    end
+
+    test "does not drop finding when comment is pure praise" do
+      peer_comments = [
+        %{
+          type: :inline,
+          author: "reviewer_1",
+          file: "lib/yoke/git.ex",
+          line: 42,
+          body: "LGTM! Looks good to me."
+        }
+      ]
+
+      finding = %{
+        id: 1,
+        file: "lib/yoke/git.ex",
+        line: 42,
+        title: "Unhandled System.cmd error",
+        description: "System.cmd might raise if git is missing.",
+        severity: "medium",
+        fix_suggestion: ""
+      }
+
+      refute PRReview.finding_already_reported?(finding, peer_comments)
+      assert PRReview.drop_already_reported([finding], peer_comments) == [finding]
+    end
+
+    test "returns findings unchanged when peer comments list is empty" do
+      findings = [
+        %{
+          id: 1,
+          file: "lib/test.ex",
+          line: 1,
+          title: "Issue",
+          description: "Desc",
+          severity: "low",
+          fix_suggestion: ""
+        }
+      ]
+
+      assert PRReview.drop_already_reported(findings, []) == findings
+      assert PRReview.drop_already_reported(findings, nil) == findings
+    end
+  end
 end

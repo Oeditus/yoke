@@ -837,37 +837,19 @@ defmodule Yoke.CLI.Repl do
   end
 
   def handle_input("/review " <> args, session_pid, _session_id) do
-    parts = String.split(args, " ", trim: true)
-
-    {base_branch, head_branch, pr_number} =
-      case parts do
-        [pr_num] ->
-          if Regex.match?(~r/^\d+$/, pr_num) do
-            case Yoke.PRReview.detect_pr(pr_num) do
-              {:ok, info} ->
-                {info.base || "main", info.head || "HEAD", pr_num}
-
-              _ ->
-                {"main", "HEAD", pr_num}
-            end
-          else
-            {pr_num, "HEAD", nil}
-          end
-
-        [base, head | _] ->
-          {base, head, nil}
-
-        _ ->
-          {"main", "HEAD", nil}
-      end
+    ctx = resolve_review_context(args)
 
     IO.puts(
       Formatter.format_info(
-        "Comparing branches '#{base_branch}' vs '#{head_branch}' and generating Code Review…"
+        "Comparing branches '#{ctx.base_branch}' vs '#{ctx.head_branch}' and generating Code Review…"
       )
     )
 
-    review_fn = fn -> Session.generate_code_review(session_pid, base_branch, head_branch) end
+    review_fn = fn ->
+      Session.generate_code_review(session_pid, ctx.base_branch, ctx.head_branch,
+        peer_comments: ctx.peer_comments
+      )
+    end
 
     res =
       Yoke.CLI.Spinner.run(
@@ -880,7 +862,8 @@ defmodule Yoke.CLI.Repl do
         Formatter.safe_puts("\n" <> Formatter.format_agent_response(review_md) <> "\n")
         Formatter.flush()
 
-        findings = Yoke.PRReview.parse_findings(review_md)
+        raw_findings = Yoke.PRReview.parse_findings(review_md)
+        findings = Yoke.PRReview.drop_already_reported(raw_findings, ctx.peer_comments)
 
         if findings == [] do
           IO.puts(Formatter.format_info("No discrete actionable findings parsed from review."))
@@ -891,65 +874,12 @@ defmodule Yoke.CLI.Repl do
             fix_prompt = Yoke.PRReview.build_fix_prompt(accepted_findings)
             pr_body = Yoke.PRReview.build_pr_comment_body(accepted_findings, fix_prompt)
 
-            post_question = "Choose GitHub PR review action for accepted findings:"
-
-            post_options = [
-              "Submit APPROVE review with inline comments (Recommended)",
-              "Submit COMMENT review with inline comments",
-              "Submit REQUEST_CHANGES review with inline comments",
-              "Skip posting to GitHub"
-            ]
-
-            post_choice = Yoke.CLI.QuestionPrompt.ask_single_question(post_question, post_options)
-
-            selected_post =
-              case post_choice do
-                %{selected: [c | _]} -> c
-                %{custom: c} when is_binary(c) -> c
-                _ -> "Submit APPROVE"
-              end
-
-            event =
-              cond do
-                String.contains?(selected_post, "APPROVE") -> "APPROVE"
-                String.contains?(selected_post, "REQUEST_CHANGES") -> "REQUEST_CHANGES"
-                String.contains?(selected_post, "COMMENT") -> "COMMENT"
-                true -> nil
-              end
-
-            if event do
-              valid_lines =
-                if pr_number do
-                  case Yoke.PRReview.fetch_pr_diff(pr_number) do
-                    {:ok, diff} -> Yoke.PRReview.parse_diff_right_lines(diff)
-                    _ -> nil
-                  end
-                else
-                  nil
-                end
-
-              atomic_payload =
-                Yoke.PRReview.build_atomic_review_payload(
-                  accepted_findings,
-                  pr_body,
-                  event,
-                  valid_lines
-                )
-
-              case Yoke.PRReview.post_atomic_review(head_branch, atomic_payload) do
-                {:ok, pr_info} ->
-                  comments_count = length(atomic_payload["comments"])
-
-                  IO.puts(
-                    Formatter.format_success(
-                      "Successfully posted #{event} review with #{comments_count} inline comment(s) to GitHub PR ##{pr_info.number} (#{pr_info.url})"
-                    )
-                  )
-
-                {:error, err} ->
-                  IO.puts(Formatter.format_warning("Could not post to GitHub PR: #{err}"))
-              end
-            end
+            maybe_post_review_to_github(
+              accepted_findings,
+              pr_body,
+              ctx.resolved_pr_number,
+              ctx.head_branch
+            )
 
             pattern_q = "Record accepted findings in .yoke/review_patterns.md living document?"
 
@@ -969,7 +899,11 @@ defmodule Yoke.CLI.Repl do
 
             if String.starts_with?(selected_pattern, "Yes") or
                  String.contains?(selected_pattern, "Yes") do
-              pr_ref = if pr_number, do: "PR ##{pr_number}", else: "PR #{head_branch}"
+              pr_ref =
+                if ctx.resolved_pr_number,
+                  do: "PR ##{ctx.resolved_pr_number}",
+                  else: "PR #{ctx.head_branch}"
+
               Enum.each(accepted_findings, &Yoke.PRReview.Patterns.record_finding(&1, pr_ref))
 
               IO.puts(
@@ -2839,6 +2773,128 @@ defmodule Yoke.CLI.Repl do
     end
 
     :continue
+  end
+
+  defp resolve_review_context(args) do
+    parts = String.split(args, " ", trim: true)
+
+    {base_branch, head_branch, pr_number} =
+      case parts do
+        [pr_num] ->
+          if Regex.match?(~r/^\d+$/, pr_num) do
+            case Yoke.PRReview.detect_pr(pr_num) do
+              {:ok, info} ->
+                {info.base || "main", info.head || "HEAD", pr_num}
+
+              _ ->
+                {"main", "HEAD", pr_num}
+            end
+          else
+            {pr_num, "HEAD", nil}
+          end
+
+        [base, head | _] ->
+          {base, head, nil}
+
+        _ ->
+          {"main", "HEAD", nil}
+      end
+
+    pr_target =
+      cond do
+        pr_number != nil -> pr_number
+        head_branch != nil and head_branch != "HEAD" -> head_branch
+        true -> nil
+      end
+
+    pr_info =
+      case Yoke.PRReview.detect_pr(pr_target) do
+        {:ok, info} -> info
+        _ -> nil
+      end
+
+    resolved_pr_number = if pr_info, do: to_string(pr_info.number), else: pr_number
+    pr_author = if pr_info, do: pr_info.author, else: nil
+
+    peer_comments =
+      if resolved_pr_number do
+        case Yoke.PRReview.fetch_peer_comments(resolved_pr_number, pr_author: pr_author) do
+          {:ok, comments} -> comments
+          _ -> []
+        end
+      else
+        []
+      end
+
+    %{
+      base_branch: base_branch,
+      head_branch: head_branch,
+      resolved_pr_number: resolved_pr_number,
+      pr_author: pr_author,
+      peer_comments: peer_comments
+    }
+  end
+
+  defp maybe_post_review_to_github(accepted_findings, pr_body, resolved_pr_number, head_branch) do
+    post_question = "Choose GitHub PR review action for accepted findings:"
+
+    post_options = [
+      "Submit APPROVE review with inline comments (Recommended)",
+      "Submit COMMENT review with inline comments",
+      "Submit REQUEST_CHANGES review with inline comments",
+      "Skip posting to GitHub"
+    ]
+
+    post_choice = Yoke.CLI.QuestionPrompt.ask_single_question(post_question, post_options)
+
+    selected_post =
+      case post_choice do
+        %{selected: [c | _]} -> c
+        %{custom: c} when is_binary(c) -> c
+        _ -> "Submit APPROVE"
+      end
+
+    event =
+      cond do
+        String.contains?(selected_post, "APPROVE") -> "APPROVE"
+        String.contains?(selected_post, "REQUEST_CHANGES") -> "REQUEST_CHANGES"
+        String.contains?(selected_post, "COMMENT") -> "COMMENT"
+        true -> nil
+      end
+
+    if event do
+      valid_lines =
+        if resolved_pr_number do
+          case Yoke.PRReview.fetch_pr_diff(resolved_pr_number) do
+            {:ok, diff} -> Yoke.PRReview.parse_diff_right_lines(diff)
+            _ -> nil
+          end
+        else
+          nil
+        end
+
+      atomic_payload =
+        Yoke.PRReview.build_atomic_review_payload(
+          accepted_findings,
+          pr_body,
+          event,
+          valid_lines
+        )
+
+      case Yoke.PRReview.post_atomic_review(head_branch, atomic_payload) do
+        {:ok, pr_info} ->
+          comments_count = length(atomic_payload["comments"])
+
+          IO.puts(
+            Formatter.format_success(
+              "Successfully posted #{event} review with #{comments_count} inline comment(s) to GitHub PR ##{pr_info.number} (#{pr_info.url})"
+            )
+          )
+
+        {:error, err} ->
+          IO.puts(Formatter.format_warning("Could not post to GitHub PR: #{err}"))
+      end
+    end
   end
 
   # Returns the token count consumed by the most recently completed turn, or

@@ -158,8 +158,8 @@ defmodule Yoke.Brain.Session do
   end
 
   @doc "Generates a comprehensive Code Review comparing two git branches."
-  def generate_code_review(pid, base_branch, head_branch \\ "HEAD") do
-    GenServer.call(pid, {:generate_code_review, base_branch, head_branch}, :infinity)
+  def generate_code_review(pid, base_branch, head_branch \\ "HEAD", opts \\ []) do
+    GenServer.call(pid, {:generate_code_review, base_branch, head_branch, opts}, :infinity)
   end
 
   @doc "Returns token stats and session cost estimate."
@@ -651,8 +651,16 @@ defmodule Yoke.Brain.Session do
 
   @impl true
   def handle_call({:generate_code_review, base_branch, head_branch}, from, state) do
+    handle_call({:generate_code_review, base_branch, head_branch, []}, from, state)
+  end
+
+  @impl true
+  def handle_call({:generate_code_review, base_branch, head_branch, opts}, from, state) do
     case Yoke.Git.diff_branches(base_branch, head_branch, state.cwd) do
       {:ok, data} ->
+        peer_comments = Keyword.get(opts, :peer_comments, [])
+        peer_comments_section = Yoke.PRReview.format_peer_comments_for_prompt(peer_comments)
+
         prompt = """
         Perform a thorough, expert production Code Review comparing base branch '#{data.base}' against head branch '#{data.head}'.
 
@@ -678,7 +686,7 @@ defmodule Yoke.Brain.Session do
         4. **Actionable Recommendations**: Specific code refactoring snippets & improvements.
         5. **Test & Verification Coverage**: Assessment of missing test cases.
         6. **GitHub PR Review Formatted Block**: A ready-to-post Markdown comment block formatted for GitHub Pull Request review.
-        #{Yoke.PRReview.prompt_instructions(cwd: state.cwd)}
+        #{peer_comments_section}#{Yoke.PRReview.prompt_instructions(cwd: state.cwd)}
         """
 
         rules_preamble = Yoke.Rules.build_preamble("cr", state.cwd)
