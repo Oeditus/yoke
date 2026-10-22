@@ -1577,9 +1577,7 @@ defmodule Yoke.CLI.Repl do
     detected = Yoke.Practices.detect_languages()
 
     IO.puts(
-      Formatter.format_success(
-        "Reset project languages to auto-detection: #{inspect(detected)}"
-      )
+      Formatter.format_success("Reset project languages to auto-detection: #{inspect(detected)}")
     )
 
     :continue

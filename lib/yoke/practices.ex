@@ -160,10 +160,10 @@ defmodule Yoke.Practices do
             has_source_with_ext?(cwd, root_files, ".js") or
               has_source_with_ext?(cwd, root_files, ".jsx")
 
-          if not has_js_sources? do
-            Enum.reject(detected, &(&1 == "javascript"))
-          else
+          if has_js_sources? do
             detected
+          else
+            Enum.reject(detected, &(&1 == "javascript"))
           end
         else
           detected
@@ -175,10 +175,10 @@ defmodule Yoke.Practices do
     # Disambiguate c/cpp if both detected
     detected =
       if "c" in detected and "cpp" in detected do
-        if not has_source_with_ext?(cwd, root_files, ".c") do
-          Enum.reject(detected, &(&1 == "c"))
-        else
+        if has_source_with_ext?(cwd, root_files, ".c") do
           detected
+        else
+          Enum.reject(detected, &(&1 == "c"))
         end
       else
         detected
@@ -644,7 +644,12 @@ defmodule Yoke.Practices do
         else
           IO.puts(Formatter.format_info("Generating baseline good practices for '#{lang}'…"))
 
-          save_practices(lang, default_practices_for(lang), Keyword.merge(opts, sources: ["default_baseline"]), cwd)
+          save_practices(
+            lang,
+            default_practices_for(lang),
+            Keyword.merge(opts, sources: ["default_baseline"]),
+            cwd
+          )
         end
 
         g_p = global_practice_path(lang, opts)
