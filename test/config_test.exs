@@ -213,9 +213,9 @@ defmodule Yoke.ConfigTest do
   end
 
   describe "reasoning_color/1" do
-    test "defaults to yellow" do
-      assert Config.reasoning_color() == "yellow"
-      assert Config.load_config()["reasoning_color"] == "yellow"
+    test "defaults to gray" do
+      assert Config.reasoning_color() == "gray"
+      assert Config.load_config()["reasoning_color"] == "gray"
     end
 
     test "allows workspace config file override" do

@@ -99,11 +99,11 @@ defmodule Yoke.FormatterTest do
   end
 
   describe "format_reasoning/2" do
-    test "formats reasoning in yellow using Marcli, starting lines at column 0 with CRLF" do
+    test "formats reasoning in gray using Marcli, starting lines at column 0 with CRLF" do
       reasoning = "Analyzing request.\n\nNeed to search files.\n\nFound 2 files."
       formatted = Formatter.format_reasoning(reasoning)
 
-      assert formatted =~ IO.ANSI.yellow()
+      assert formatted =~ IO.ANSI.gray()
       assert formatted =~ "● [DeepSeek-R1 Reasoning]"
       assert formatted =~ "Analyzing request."
       assert formatted =~ "Found 2 files."
@@ -125,7 +125,7 @@ defmodule Yoke.FormatterTest do
     test "allows configuring reasoning color via options" do
       cyan = Formatter.format_reasoning("Thinking in cyan...", color: "cyan")
       assert cyan =~ IO.ANSI.cyan()
-      refute cyan =~ IO.ANSI.yellow()
+      refute cyan =~ IO.ANSI.gray()
 
       magenta = Formatter.format_reasoning("Thinking in magenta...", color: "magenta")
       assert magenta =~ IO.ANSI.magenta()
@@ -144,7 +144,7 @@ defmodule Yoke.FormatterTest do
       assert formatted =~ "Just one thought."
       refute formatted =~ "“"
       refute formatted =~ "”"
-      assert formatted =~ IO.ANSI.yellow()
+      assert formatted =~ IO.ANSI.gray()
     end
 
     test "extracts existing header title if present in string" do
@@ -157,7 +157,7 @@ defmodule Yoke.FormatterTest do
       refute formatted =~ "”"
     end
 
-    test "formats markdown in reasoning using Marcli while keeping yellow as default text color" do
+    test "formats markdown in reasoning using Marcli while keeping gray as default text color" do
       markdown_reasoning = """
       I need to investigate:
       - Check **critical** file
@@ -170,14 +170,14 @@ defmodule Yoke.FormatterTest do
 
       formatted = Formatter.format_reasoning(markdown_reasoning)
 
-      assert formatted =~ IO.ANSI.yellow()
+      assert formatted =~ IO.ANSI.gray()
       # Markdown bullet list
       assert formatted =~ "▸ Check"
       # Inline code from Marcli
       assert formatted =~ "\e[32mmix test\e[0m"
       # Code block border
       assert formatted =~ "┌─ elixir"
-      # Restores yellow after reset
+      # Restores gray after reset
       assert formatted =~ "\e[0m\e[33m"
       refute formatted =~ "“"
       refute formatted =~ "”"

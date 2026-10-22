@@ -62,7 +62,7 @@ defmodule Yoke.CLI.LogFormatterTest do
     assert LogFormatter.format(event3, %{}) == ""
   end
 
-  test "formats reasoning log event with yellow styling using Marcli without stair-stepping" do
+  test "formats reasoning log event with gray styling using Marcli without stair-stepping" do
     event = %{
       level: :info,
       msg: "[DeepSeek-R1 Reasoning]\nNow I have an understanding.\n\nLet me run some tools."
@@ -70,7 +70,7 @@ defmodule Yoke.CLI.LogFormatterTest do
 
     formatted = LogFormatter.format(event, %{})
 
-    assert formatted =~ IO.ANSI.yellow()
+    assert formatted =~ IO.ANSI.gray()
     assert formatted =~ "● [DeepSeek-R1 Reasoning]"
     assert formatted =~ "Now I have an understanding."
     assert formatted =~ "Let me run some tools."
