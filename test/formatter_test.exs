@@ -99,14 +99,16 @@ defmodule Yoke.FormatterTest do
   end
 
   describe "format_reasoning/2" do
-    test "formats reasoning in yellow, starting lines at column 0 with CRLF and quotes" do
-      reasoning = "Analyzing request.\nNeed to search files.\nFound 2 files."
+    test "formats reasoning in yellow using Marcli, starting lines at column 0 with CRLF" do
+      reasoning = "Analyzing request.\n\nNeed to search files.\n\nFound 2 files."
       formatted = Formatter.format_reasoning(reasoning)
 
       assert formatted =~ IO.ANSI.yellow()
       assert formatted =~ "● [DeepSeek-R1 Reasoning]"
-      assert formatted =~ "“ Analyzing request."
-      assert formatted =~ "Found 2 files. ”"
+      assert formatted =~ "Analyzing request."
+      assert formatted =~ "Found 2 files."
+      refute formatted =~ "“"
+      refute formatted =~ "”"
       # Every newline must be CRLF so in raw terminal mode lines start at beginning of line
       assert formatted =~ "\r\n"
       refute formatted =~ ~r/[^\r]\n/
@@ -139,7 +141,9 @@ defmodule Yoke.FormatterTest do
 
     test "handles single line reasoning" do
       formatted = Formatter.format_reasoning("Just one thought.")
-      assert formatted =~ "“ Just one thought. ”"
+      assert formatted =~ "Just one thought."
+      refute formatted =~ "“"
+      refute formatted =~ "”"
       assert formatted =~ IO.ANSI.yellow()
     end
 
@@ -147,15 +151,45 @@ defmodule Yoke.FormatterTest do
       input = "[DeepSeek-R1 Reasoning]\nNow I understand."
       formatted = Formatter.format_reasoning(input)
       assert formatted =~ "● [DeepSeek-R1 Reasoning]"
-      assert formatted =~ "“ Now I understand. ”"
+      assert formatted =~ "Now I understand."
       refute formatted =~ "[[DeepSeek-R1 Reasoning]]"
+      refute formatted =~ "“"
+      refute formatted =~ "”"
+    end
+
+    test "formats markdown in reasoning using Marcli while keeping yellow as default text color" do
+      markdown_reasoning = """
+      I need to investigate:
+      - Check **critical** file
+      - Run `mix test`
+
+      ```elixir
+      def ok, do: :yes
+      ```
+      """
+
+      formatted = Formatter.format_reasoning(markdown_reasoning)
+
+      assert formatted =~ IO.ANSI.yellow()
+      # Markdown bullet list
+      assert formatted =~ "▸ Check"
+      # Inline code from Marcli
+      assert formatted =~ "\e[32mmix test\e[0m"
+      # Code block border
+      assert formatted =~ "┌─ elixir"
+      # Restores yellow after reset
+      assert formatted =~ "\e[0m\e[33m"
+      refute formatted =~ "“"
+      refute formatted =~ "”"
     end
 
     test "format_agent_response formats reasoning if response map contains reasoning_content" do
       resp = %{content: "Here is the result.", reasoning_content: "Thought process here."}
       rendered = Formatter.format_agent_response(resp)
       assert rendered =~ "● [DeepSeek-R1 Reasoning]"
-      assert rendered =~ "“ Thought process here. ”"
+      assert rendered =~ "Thought process here."
+      refute rendered =~ "“"
+      refute rendered =~ "”"
       assert rendered =~ "DeepSeek >"
       assert rendered =~ "Here is the result."
     end

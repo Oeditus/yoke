@@ -22,6 +22,52 @@ defmodule Yoke.DeepSeekAPITest do
     assert is_binary(reasoning)
   end
 
+  test "does not extract reasoning content for default deepseek-flash model in offline mode" do
+    messages = [%{"role" => "user", "content" => "Explain quantum physics"}]
+
+    assert {:ok, %{content: content, reasoning_content: nil}} =
+             DeepSeekAPI.chat_completion(messages, [], model: "deepseek-flash")
+
+    assert is_binary(content)
+  end
+
+  describe "reasoning_model?/1" do
+    test "identifies reasoning models" do
+      assert DeepSeekAPI.reasoning_model?("deepseek-reasoner")
+      assert DeepSeekAPI.reasoning_model?("deepseek-r1")
+      assert DeepSeekAPI.reasoning_model?("o1-mini")
+      assert DeepSeekAPI.reasoning_model?("o3-mini")
+
+      refute DeepSeekAPI.reasoning_model?("deepseek-flash")
+      refute DeepSeekAPI.reasoning_model?("deepseek-chat")
+      refute DeepSeekAPI.reasoning_model?("deepseek-coder")
+      refute DeepSeekAPI.reasoning_model?("deepseek-v4-pro")
+    end
+  end
+
+  describe "build_config/1 reasoning and thinking configuration" do
+    test "disables thinking and sets reasoning_effort to none for non-reasoning models by default" do
+      cfg = DeepSeekAPI.build_config(model: "deepseek-flash")
+      assert cfg.thinking == %{"type" => "disabled"}
+      assert cfg.reasoning_effort == "none"
+    end
+
+    test "keeps thinking and reasoning_effort nil for reasoning models" do
+      cfg = DeepSeekAPI.build_config(model: "deepseek-reasoner")
+      assert cfg.thinking == nil
+      assert cfg.reasoning_effort == nil
+    end
+
+    test "respects explicit reasoning: true or thinking opts" do
+      cfg = DeepSeekAPI.build_config(model: "deepseek-flash", reasoning: true)
+      assert cfg.thinking == %{"type" => "enabled"}
+      assert cfg.reasoning_effort == nil
+
+      cfg2 = DeepSeekAPI.build_config(model: "deepseek-flash", reasoning_effort: "low")
+      assert cfg2.reasoning_effort == "low"
+    end
+  end
+
   describe "build_config/1 max_tokens handling" do
     test "defaults max_tokens to nil when not provided" do
       cfg = DeepSeekAPI.build_config([])

@@ -24,7 +24,10 @@ defmodule Yoke.Client.DeepSeekAPI do
               mock: false,
               # Stable session identifier attached as `x-opencode-session` header
               # for OpenCode Go and other session-routed providers.
-              session_id: nil
+              session_id: nil,
+              # Reasoning / thinking control for hybrid models
+              thinking: nil,
+              reasoning_effort: nil
   end
 
   @doc """
@@ -144,28 +147,33 @@ defmodule Yoke.Client.DeepSeekAPI do
     end
   end
 
+  if Mix.env() == :test do
+    defp enable_real_api_tests?,
+      do: System.get_env("ENABLE_REAL_API_TESTS") in ["true", "1", "yes"]
+  else
+    defp enable_real_api_tests?, do: false
+  end
+
   @doc "Builds a structured ClientConfig struct from keyword options."
+  # credo:disable-for-lines:109
   def build_config(opts) when is_list(opts) do
     mock_default =
-      cond do
-        Keyword.has_key?(opts, :mock) ->
-          opts[:mock]
-
-        function_exported?(Mix, :env, 0) and Mix.env() == :test and
-            System.get_env("ENABLE_REAL_API_TESTS") != "true" ->
-          true
-
-        true ->
-          false
-      end
+      if Keyword.has_key?(opts, :mock),
+        do: Keyword.get(opts, :mock),
+        else: enable_real_api_tests?()
 
     raw_endpoint =
-      opts[:endpoint] ||
-        System.get_env("DEEPSEEK_ENDPOINT") ||
-        System.get_env("OPENROUTER_BASE_URL") ||
-        System.get_env("OPENCODE_BASE_URL") ||
-        System.get_env("OLLAMA_HOST") ||
-        @default_endpoint
+      Enum.find(
+        [
+          opts[:endpoint],
+          System.get_env("DEEPSEEK_ENDPOINT"),
+          System.get_env("OPENROUTER_BASE_URL"),
+          System.get_env("OPENCODE_BASE_URL"),
+          System.get_env("OLLAMA_HOST")
+        ],
+        @default_endpoint,
+        &is_binary/1
+      )
 
     normalized_endpoint = normalize_endpoint(raw_endpoint)
 
@@ -204,10 +212,59 @@ defmodule Yoke.Client.DeepSeekAPI do
           nil
       end
 
+    cfg = Yoke.Config.load_config(opts[:cwd] || ".")
+
     configured_model =
       opts[:model] ||
         System.get_env("DEEPSEEK_MODEL") ||
-        Map.get(Yoke.Config.load_config(opts[:cwd] || "."), "model", @default_model)
+        Map.get(cfg, "model", @default_model)
+
+    is_reasoning = reasoning_model?(configured_model)
+
+    config_reasoning =
+      case Map.get(cfg, "reasoning") do
+        nil -> Map.get(cfg, "enable_reasoning")
+        val -> val
+      end
+
+    thinking =
+      cond do
+        opts[:thinking] ->
+          opts[:thinking]
+
+        opts[:reasoning] == false or config_reasoning == false ->
+          %{"type" => "disabled"}
+
+        opts[:reasoning] == true or config_reasoning == true ->
+          %{"type" => "enabled"}
+
+        is_reasoning ->
+          nil
+
+        true ->
+          %{"type" => "disabled"}
+      end
+
+    reasoning_effort =
+      cond do
+        opts[:reasoning_effort] ->
+          opts[:reasoning_effort]
+
+        Map.get(cfg, "reasoning_effort") ->
+          Map.get(cfg, "reasoning_effort")
+
+        opts[:reasoning] == false or config_reasoning == false ->
+          "none"
+
+        opts[:reasoning] == true or config_reasoning == true ->
+          nil
+
+        is_reasoning ->
+          nil
+
+        true ->
+          "none"
+      end
 
     %ClientConfig{
       model: configured_model,
@@ -218,7 +275,9 @@ defmodule Yoke.Client.DeepSeekAPI do
       stream: opts[:stream] || false,
       stream_fun: opts[:stream_fun],
       mock: mock_default,
-      session_id: session_id
+      session_id: session_id,
+      thinking: thinking,
+      reasoning_effort: reasoning_effort
     }
   end
 
@@ -282,6 +341,20 @@ defmodule Yoke.Client.DeepSeekAPI do
         body
       else
         Map.put(body, "tools", formatted_tools)
+      end
+
+    body =
+      if config.thinking != nil do
+        Map.put(body, "thinking", config.thinking)
+      else
+        body
+      end
+
+    body =
+      if config.reasoning_effort != nil do
+        Map.put(body, "reasoning_effort", config.reasoning_effort)
+      else
+        body
       end
 
     headers = build_headers(config, true)
@@ -468,6 +541,18 @@ defmodule Yoke.Client.DeepSeekAPI do
 
   def local_endpoint?(_), do: false
 
+  @doc "Returns true if the model identifier indicates a reasoning/thinking model (such as deepseek-reasoner or R1)."
+  def reasoning_model?(model) when is_binary(model) do
+    down = String.downcase(model)
+
+    String.contains?(down, "reasoner") or
+      String.contains?(down, "r1") or
+      String.contains?(down, "o1") or
+      String.contains?(down, "o3")
+  end
+
+  def reasoning_model?(_), do: false
+
   defp extract_thinking_tags(content) when is_binary(content) do
     case Regex.run(~r/<think>(.*?)<\/think>/s, content) do
       [full_match, think_body] ->
@@ -492,6 +577,8 @@ defmodule Yoke.Client.DeepSeekAPI do
   ]
 
   defp mock_response(messages, _tools, model) do
+    is_reasoning = reasoning_model?(model)
+
     last_user_msg =
       messages
       |> Enum.reverse()
@@ -505,14 +592,17 @@ defmodule Yoke.Client.DeepSeekAPI do
         |> Enum.filter(fn m -> m["role"] == "tool" end)
         |> Enum.map_join("\n", fn m -> message_content_text(m["content"]) end)
 
-      prefix = if model == "deepseek-reasoner", do: "[DeepSeek-R1 Reasoning Mode] ", else: ""
+      prefix = if is_reasoning, do: "[DeepSeek-R1 Reasoning Mode] ", else: ""
+
+      reasoning =
+        if is_reasoning, do: "Processed tool results and formulated response.", else: nil
 
       {:ok,
        %{
          role: "assistant",
          content:
            "#{prefix}Examined workspace directory:\n\n#{tool_results}\n\n(Running in offline/mock mode. Set DEEPSEEK_API_KEY to connect live to DeepSeek API).",
-         reasoning_content: "Processed tool results and formulated response.",
+         reasoning_content: reasoning,
          tool_calls: [],
          usage: %{prompt_tokens: 60, completion_tokens: 30, total_tokens: 90}
        }}
@@ -521,11 +611,13 @@ defmodule Yoke.Client.DeepSeekAPI do
 
       case match_mock_handler(content_str) do
         {:ok, tool_name, args, text, reasoning} ->
+          reasoning_content = if is_reasoning, do: reasoning, else: nil
+
           {:ok,
            %{
              role: "assistant",
              content: text,
-             reasoning_content: reasoning,
+             reasoning_content: reasoning_content,
              tool_calls: [
                %{
                  id: "call_mock_#{System.unique_integer([:positive])}",
@@ -537,15 +629,18 @@ defmodule Yoke.Client.DeepSeekAPI do
            }}
 
         :no_match ->
-          prefix = if model == "deepseek-reasoner", do: "[DeepSeek-R1 Reasoning Mode] ", else: ""
+          prefix = if is_reasoning, do: "[DeepSeek-R1 Reasoning Mode] ", else: ""
           vision_note = if vision_model?(model), do: "[Vision] ", else: ""
+
+          reasoning_content =
+            if is_reasoning, do: "Analyzed request using spatiotemporal actor context.", else: nil
 
           {:ok,
            %{
              role: "assistant",
              content:
                "#{prefix}#{vision_note}Received prompt: \"#{content_str}\". (Running in offline/mock mode. Set DEEPSEEK_API_KEY to connect live to DeepSeek API).",
-             reasoning_content: "Analyzed request using spatiotemporal actor context.",
+             reasoning_content: reasoning_content,
              tool_calls: [],
              usage: %{prompt_tokens: 30, completion_tokens: 20, total_tokens: 50}
            }}

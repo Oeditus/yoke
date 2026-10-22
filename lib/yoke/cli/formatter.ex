@@ -349,8 +349,9 @@ defmodule Yoke.CLI.Formatter do
   end
 
   @doc """
-  Formats reasoning / chain-of-thought model output in a fancy yellow block
-  with quotation markers, ensuring all lines start at the beginning of the line.
+  Formats reasoning / chain-of-thought model output as Marcli-rendered Markdown,
+  with yellow default text (or configured reasoning color), ensuring all lines
+  start at the beginning of the line with CRLF.
   """
   def format_reasoning(content, opts \\ [])
 
@@ -379,14 +380,7 @@ defmodule Yoke.CLI.Formatter do
 
         header = "#{color}#{bold()}● [#{title}]#{reset()}"
 
-        max_width = max(terminal_columns() - 2, 40)
-
-        lines =
-          clean_body
-          |> String.split(~r/\r?\n/)
-          |> Enum.flat_map(&wrap_reasoning_line(&1, max_width))
-
-        formatted_body = format_reasoning_lines(lines, color)
+        formatted_body = render_reasoning_markdown(clean_body, color)
 
         header <> "\r\n" <> formatted_body
       end
@@ -399,6 +393,26 @@ defmodule Yoke.CLI.Formatter do
     format_reasoning(to_string(content), opts)
   rescue
     _ -> inspect(content)
+  end
+
+  defp render_reasoning_markdown(clean_body, color) do
+    theme = %Marcli.Theme{Marcli.Theme.default() | reset: reset() <> color}
+
+    rendered =
+      clean_body
+      |> Marcli.render(theme: theme, newline: "\r\n")
+      |> String.replace(~r/(?<!\r)\n/, "\r\n")
+      |> String.trim_trailing("\r\n")
+
+    color <> rendered <> reset()
+  rescue
+    _ ->
+      safe = sanitize_utf8(clean_body) |> String.replace(~r/(?<!\r)\n/, "\r\n")
+      color <> safe <> reset()
+  catch
+    _kind, _reason ->
+      safe = sanitize_utf8(clean_body) |> String.replace(~r/(?<!\r)\n/, "\r\n")
+      color <> safe <> reset()
   end
 
   defp extract_reasoning_title_and_body(clean_raw, opts) do
@@ -441,67 +455,6 @@ defmodule Yoke.CLI.Formatter do
   end
 
   defp default_reasoning_title(_), do: "DeepSeek-R1 Reasoning"
-
-  defp wrap_reasoning_line(line, max_width) do
-    trimmed = String.trim_trailing(line)
-
-    cond do
-      trimmed == "" ->
-        [""]
-
-      display_width(trimmed) <= max_width ->
-        [trimmed]
-
-      true ->
-        words = String.split(trimmed, ~r/\s+/)
-        wrap_words_to_lines(words, max_width)
-    end
-  end
-
-  defp wrap_words_to_lines([], _max_width), do: [""]
-
-  defp wrap_words_to_lines(words, max_width) do
-    {lines, current} =
-      Enum.reduce(words, {[], ""}, fn word, {acc, current} ->
-        cond do
-          current == "" ->
-            {acc, word}
-
-          display_width(current) + 1 + display_width(word) <= max_width ->
-            {acc, current <> " " <> word}
-
-          true ->
-            {acc ++ [current], word}
-        end
-      end)
-
-    if current != "", do: lines ++ [current], else: lines
-  end
-
-  defp format_reasoning_lines([single], color) do
-    "#{color}“ #{single} ”#{reset()}"
-  end
-
-  defp format_reasoning_lines([first | rest], color) do
-    {middles, [last]} = Enum.split(rest, length(rest) - 1)
-
-    first_line = "#{color}“ #{first}#{reset()}"
-
-    middle_lines =
-      Enum.map(middles, fn line ->
-        if line == "" do
-          ""
-        else
-          "#{color}#{line}#{reset()}"
-        end
-      end)
-
-    last_line = "#{color}#{last} ”#{reset()}"
-
-    Enum.join([first_line | middle_lines] ++ [last_line], "\r\n")
-  end
-
-  defp format_reasoning_lines([], _color), do: ""
 
   @doc """
   Resolves a color name string or atom into its ANSI escape sequence.
