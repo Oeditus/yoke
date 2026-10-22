@@ -18,6 +18,7 @@ Derived from **José Valim's architectural framework** for process-isolated AI a
 
 ## Table of Contents
 - [Architectural Foundation](#architectural-foundation-josé-valims-vision--deepseek-model-integration)
+- [Reasoning Mode vs. “Silent” Mode](#3-reasoning-mode-vs-silent-mode-chain-of-thought-control)
 - [Key Features & Capabilities](#key-features--capabilities)
 - [Installation & Setup](#installation--setup)
 - [Getting Started & Customization Guide](#getting-started--customization-guide)
@@ -49,11 +50,88 @@ Yoke supports the full suite of official DeepSeek models, local open-weights mod
 
 | Model | ID / Alias in Yoke | Best Used For | Strengths & Characteristics |
 | :--- | :--- | :--- | :--- |
-| **DeepSeek-V3** | `deepseek-chat`<br>`/model chat` | **Agentic workflows & multi-tool tasks** *(Default)* | 671B MoE model. Offers high general reasoning and **highest tool-calling precision** across multi-turn agent loops. |
+| **DeepSeek-Flash** | `deepseek-flash`<br>`/model flash`<br>*(aliases: `chat`, `v3`)* | **Agentic workflows & multi-tool tasks** *(Default)* | Fast, high general intelligence and **highest tool-calling precision** across multi-turn agent loops. Runs in silent mode by default. |
 | **DeepSeek-Coder-V2.5** | `deepseek-coder`<br>`/model coder` | **Direct code generation, syntax completion & refactoring** | Trained specifically on **338+ programming languages**. Produces idiomatic Elixir/C++/Rust code with high precision on syntax and language conventions. |
-| **DeepSeek-R1** | `deepseek-reasoner`<br>`/model reasoner` | **Complex debugging & architectural design** | Reinforcement Learning (RL) reasoning model. Yoke captures and streams `[DeepSeek-R1 Reasoning]` Chain-of-Thought output live before tool execution. |
+| **DeepSeek-R1** | `deepseek-reasoner`<br>`/model reasoner`<br>*(alias: `r1`)* | **Complex debugging & architectural design** | Reinforcement Learning (RL) reasoning model. Yoke captures and streams `[DeepSeek-R1 Reasoning]` Chain-of-Thought output live before tool execution. |
 
-### 3. OpenRouter, OpenCode Go & Local Model Integration (SGLang, Ollama, LM Studio, vLLM)
+### 3. Reasoning Mode vs. “Silent” Mode (Chain-of-Thought Control)
+
+Yoke provides flexible control over model Chain-of-Thought (CoT) generation, allowing you to toggle between **Reasoning Mode** and **“Silent” Mode**:
+
+- **Reasoning Mode**:
+  - **What it does**: Captures the model's inner reasoning/thinking process and streams it live to the terminal prior to executing tool calls or outputting final responses.
+  - **Terminal formatting**: Rendered as syntax-highlighted Markdown via [Marcli](https://hex.pm/packages/marcli) in yellow default text (or your configured `reasoning_color`) under a `● [<Model> Reasoning]` header block. Code blocks, lists, headings, and tables within reasoning are fully rendered.
+  - **Best for**: Deep architectural analysis, diagnosing complex stack traces, algorithm design, and root-cause debugging.
+- **“Silent” Mode**:
+  - **What it does**: Completely suppresses chain-of-thought/thinking tokens by sending `{"type": "disabled"}` for `thinking` and `"none"` for `reasoning_effort` in API completion requests. The model outputs only the direct response and tool invocations without intermediate deliberation monologue.
+  - **Best for**: Fast, token-efficient agentic workflows, multi-tool automated task loops, routine edits, and quick refactoring passes.
+
+#### How to Switch Between Reasoning and Silent Modes
+
+##### 1. Model Switching (Automatic Detection)
+Yoke automatically identifies reasoning models (e.g. `deepseek-reasoner`, R1, o1, o3) vs. standard models:
+- **Switch to Reasoning Mode**:
+  - Interactive REPL:
+    ```text
+    /model reasoner
+    # or
+    /model r1
+    ```
+  - CLI flag at launch:
+    ```bash
+    yoke --model deepseek-reasoner
+    # or
+    yoke -m reasoner
+    ```
+- **Switch to Silent Mode**:
+  - Interactive REPL:
+    ```text
+    /model flash
+    # or aliases:
+    /model chat
+    /model coder
+    ```
+  - CLI flag at launch:
+    ```bash
+    yoke --model deepseek-flash
+    # or
+    yoke -m flash
+    ```
+
+##### 2. Workspace & Global Configuration (`.yoke/config.json`)
+You can force reasoning or silent mode for hybrid models and thinking-capable endpoints in `~/.yoke/config.json` (global) or `.yoke/config.json` (per-workspace):
+
+- **Enable Reasoning Mode explicitly**:
+  ```json
+  {
+    "reasoning": true,
+    "reasoning_effort": "medium",
+    "reasoning_color": "yellow"
+  }
+  ```
+- **Enforce Silent Mode explicitly**:
+  ```json
+  {
+    "reasoning": false,
+    "reasoning_effort": "none"
+  }
+  ```
+
+Supported configuration keys:
+- `reasoning` (or `enable_reasoning`): `true` to enable thinking traces (`thinking: {"type": "enabled"}`), `false` to disable (`thinking: {"type": "disabled"}`). If omitted, automatically determined by model name.
+- `reasoning_effort`: Set reasoning effort constraint (e.g. `"none"`, `"low"`, `"medium"`, `"high"`). Defaults to `"none"` in silent mode.
+- `reasoning_color`: ANSI color for Marcli Markdown reasoning output blocks (`"yellow"`, `"cyan"`, `"magenta"`, `"green"`, `"blue"`, `"white"`). Defaults to `"yellow"`.
+
+##### 3. Dynamic In-REPL Toggling
+Toggle reasoning on/off live during an active session using `/config toggle`:
+```text
+/config toggle reasoning
+```
+*(or `/config toggle enable_reasoning`)*
+
+You can view current config state at any time with `/config`.
+
+### 4. OpenRouter, OpenCode Go & Local Model Integration (SGLang, Ollama, LM Studio, vLLM)
 
 While `yoke` defaults to the official remote **DeepSeek API** (`https://api.deepseek.com/chat/completions` with `deepseek-chat`), it provides native support for **OpenRouter**, **OpenCode Go (Console Go)**, and local inference engines (**SGLang**, **Ollama**, **LM Studio**, **vLLM**).
 
@@ -396,7 +474,7 @@ The full reference lives in [`docs/cheat_sheet.md`](docs/cheat_sheet.md); the es
 #### Model, Execution & Rules
 | Command | Action |
 | :--- | :--- |
-| `/model [chat\|coder\|reasoner\|openrouter-free\|ollama-qwen]` | Switch active model (`deepseek-chat`, `deepseek-coder`, `deepseek-reasoner`, OpenRouter/Ollama shortcuts, or custom model string) |
+| `/model [flash|reasoner|coder|chat|r1|openrouter-free|ollama-qwen]` | Switch active model & reasoning/silent mode (`deepseek-flash`, `deepseek-reasoner`, `deepseek-coder`, etc.) |
 | `/endpoint [url\|default\|openrouter\|opencode\|ollama\|lmstudio]` | Switch API base endpoint URL dynamically |
 | `/mode [local\|remote\|docker]` | Set Hands execution target |
 | `/sandbox [on\|off]` | Restrict file references & tools to the workspace directory |
@@ -434,6 +512,9 @@ The full reference lives in [`docs/cheat_sheet.md`](docs/cheat_sheet.md); the es
 | Key | Default | Purpose |
 | :--- | :--- | :--- |
 | `model` | `"deepseek-flash"` | Default LLM model identifier |
+| `reasoning` | `nil` (auto) | Enable/disable thinking & reasoning traces (`true` or `false`) |
+| `reasoning_effort` | `nil` (or `"none"`) | Reasoning effort constraint (`"none"`, `"low"`, `"medium"`, `"high"`) |
+| `reasoning_color` | `"yellow"` | ANSI color for Marcli Markdown reasoning output blocks |
 | `endpoint` | `"https://api.deepseek.com/chat/completions"` | LLM API base endpoint URL (DeepSeek, OpenRouter, Ollama, etc.) |
 | `prompt_style` | `"starship"` | Prompt layout: `starship`, `extended`, `compact`, or `minimal` |
 | `permission_mode` | `"ask_confirm"` | Tool execution safety mode (`ask_confirm` or `auto_approve`) |
