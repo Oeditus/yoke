@@ -103,7 +103,7 @@ defmodule Yoke.FormatterTest do
       reasoning = "Analyzing request.\n\nNeed to search files.\n\nFound 2 files."
       formatted = Formatter.format_reasoning(reasoning)
 
-      assert formatted =~ IO.ANSI.gray()
+      assert formatted =~ IO.ANSI.light_black()
       assert formatted =~ "● [DeepSeek-R1 Reasoning]"
       assert formatted =~ "Analyzing request."
       assert formatted =~ "Found 2 files."
@@ -125,7 +125,7 @@ defmodule Yoke.FormatterTest do
     test "allows configuring reasoning color via options" do
       cyan = Formatter.format_reasoning("Thinking in cyan...", color: "cyan")
       assert cyan =~ IO.ANSI.cyan()
-      refute cyan =~ IO.ANSI.gray()
+      refute cyan =~ IO.ANSI.light_black()
 
       magenta = Formatter.format_reasoning("Thinking in magenta...", color: "magenta")
       assert magenta =~ IO.ANSI.magenta()
@@ -144,7 +144,7 @@ defmodule Yoke.FormatterTest do
       assert formatted =~ "Just one thought."
       refute formatted =~ "“"
       refute formatted =~ "”"
-      assert formatted =~ IO.ANSI.gray()
+      assert formatted =~ IO.ANSI.light_black()
     end
 
     test "extracts existing header title if present in string" do
@@ -170,7 +170,7 @@ defmodule Yoke.FormatterTest do
 
       formatted = Formatter.format_reasoning(markdown_reasoning)
 
-      assert formatted =~ IO.ANSI.gray()
+      assert formatted =~ IO.ANSI.light_black()
       # Markdown bullet list
       assert formatted =~ "▸ Check"
       # Inline code from Marcli

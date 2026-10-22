@@ -70,7 +70,7 @@ defmodule Yoke.CLI.LogFormatterTest do
 
     formatted = LogFormatter.format(event, %{})
 
-    assert formatted =~ IO.ANSI.gray()
+    assert formatted =~ IO.ANSI.light_black()
     assert formatted =~ "● [DeepSeek-R1 Reasoning]"
     assert formatted =~ "Now I have an understanding."
     assert formatted =~ "Let me run some tools."
