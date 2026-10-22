@@ -656,6 +656,7 @@ defmodule Yoke.CLI.Formatter do
         with right-side diff inline comments and committable ```suggestion blocks in a single call.
       • #{bold()}Self-Critique:#{reset()} 10-point checklist filtering false flags, bikeshedding, and linters.
       • #{bold()}Typography:#{reset()} Enforces real em dashes (—) and proper typographic quotes (“ ” and ‘ ’).
+      • #{bold()}Praise & Kudos:#{reset()} Commends outstandingly good, clean, nifty, or clever codepieces with a heart (❤) or thumbs-up emoji (:+1:).
     """
   end
 end

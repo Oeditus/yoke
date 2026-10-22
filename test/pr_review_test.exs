@@ -380,6 +380,9 @@ defmodule Yoke.PRReviewTest do
       assert String.contains?(prompt, "Markdown formatting for GitHub PR comments")
       assert String.contains?(prompt, "Backticks for code pieces")
       assert String.contains?(prompt, "Code fences for multiline snippets")
+      assert String.contains?(prompt, "Praise outstanding code")
+      assert String.contains?(prompt, "❤")
+      assert String.contains?(prompt, ":+1:")
     end
   end
 

@@ -48,7 +48,7 @@ defmodule Yoke.PRReview do
       }
     ]
     ```
-    (severity can be "high", "medium", "low", or "info"). If no actionable issues are found, output an empty array `[]`.
+    (severity can be "high", "medium", "low", or "info"). For codepieces that are outstandingly good, clean, nifty, or clever, you may also include a comment with a heart (❤) or thumbs-up emoji (:+1:) (with severity "info" and an empty fix_suggestion). If no actionable issues are found, output an empty array `[]`.
 
     ### 8. Self-Critique Checklist (Drop the suggestion if any apply):
     1. Another PR in the branch stack already addresses it.
@@ -64,6 +64,7 @@ defmodule Yoke.PRReview do
 
     ### 9. Tone & Comment Phrasing Rules:
     - **Technical issues only**: Never raise process, organizational, or interpersonal concerns.
+    - **Praise outstanding code**: For codepieces that are outstandingly good, clean, nifty, or clever, please also add a comment with a heart (❤) or thumbs-up emoji (:+1:) highlighting and appreciating the clean, clever craftsmanship.
     - **Markdown formatting for GitHub PR comments**:
       - Findings payload fields (`title`, `description`, `fix_suggestion`) are posted directly as GitHub Pull Request inline review comments and summary items. They MUST be formatted in rich GitHub-flavored Markdown, NEVER plain text.
       - **Backticks for code pieces**: Enclose all short code pieces—function/macro calls and arities (e.g. `mark_read/2`), expressions (e.g. `send(self(), ...)`), module/type names (e.g. `LiveView`), atoms/keys (e.g. `:comment_event`), variables/assigns (e.g. `socket.assigns.view`), and file paths (e.g. `config/dev.exs`)—in single backticks (`...`).
