@@ -1570,6 +1570,68 @@ defmodule Yoke.CLI.Repl do
     handle_input("/config assistant_name", session_pid, session_id)
   end
 
+  def handle_input("/config languages auto", _session_pid, _session_id) do
+    cfg = Yoke.Config.load_config()
+    updated = Map.put(cfg, "languages", nil)
+    Yoke.Config.save_config(updated)
+    detected = Yoke.Practices.detect_languages()
+
+    IO.puts(
+      Formatter.format_success(
+        "Reset project languages to auto-detection: #{inspect(detected)}"
+      )
+    )
+
+    :continue
+  end
+
+  def handle_input("/config languages " <> langs_str, _session_pid, _session_id) do
+    langs =
+      langs_str
+      |> String.split(~r/[,;\s]+/, trim: true)
+      |> Enum.map(&Yoke.Practices.sanitize_language/1)
+      |> Enum.reject(&(&1 == ""))
+
+    if langs == [] do
+      IO.puts(
+        Formatter.format_error(
+          "Usage: /config languages <lang1,lang2...> or /config languages auto"
+        )
+      )
+    else
+      cfg = Yoke.Config.load_config()
+      updated = Map.put(cfg, "languages", langs)
+      Yoke.Config.save_config(updated)
+      IO.puts(Formatter.format_success("Configured project languages: #{inspect(langs)}"))
+    end
+
+    :continue
+  end
+
+  def handle_input("/config languages", _session_pid, _session_id) do
+    cfg = Yoke.Config.load_config()
+
+    case Map.get(cfg, "languages") do
+      nil ->
+        detected = Yoke.Practices.detect_languages()
+
+        IO.puts(
+          Formatter.format_info(
+            "Languages (auto-detected): #{inspect(detected)}\nTo override, run `/config languages <lang1,lang2...>` or `/config languages auto`"
+          )
+        )
+
+      langs ->
+        IO.puts(
+          Formatter.format_info(
+            "Languages (configured): #{inspect(langs)}\nTo reset to auto-detection, run `/config languages auto`"
+          )
+        )
+    end
+
+    :continue
+  end
+
   def handle_input("/config toggle", _session_pid, _session_id) do
     IO.puts(
       Formatter.format_error(
@@ -1594,6 +1656,7 @@ defmodule Yoke.CLI.Repl do
 
     **Usage:**
     - `/config assistant_name <name>` — Set assistant name (default: "Robby Ott")
+    - `/config languages <lang1,lang2...>` — Explicitly specify languages used in project (or `auto` to auto-detect)
     - `/config style <starship|extended|compact|minimal>` — Switch prompt visual layout style
     - `/config prompt <template>` — Set custom prompt template (placeholders: `{session}`, `{model}`, `{mode}`, `{tasks}`)
     - `/config toggle <setting_key>` — Toggle feature on/off (e.g. `enable_autosuggestions`, `enable_syntax_highlighting`, `enable_context_gauge`, `compact_status_bar`)
@@ -1705,7 +1768,7 @@ defmodule Yoke.CLI.Repl do
   end
 
   def handle_input("/practices add " <> rest, _session_pid, _session_id) do
-    langs = Yoke.Practices.detect_languages()
+    langs = Yoke.Practices.project_languages()
     lang = Enum.at(langs, 0) || "elixir"
 
     case Yoke.Practices.add_practice(lang, rest) do
@@ -1736,7 +1799,7 @@ defmodule Yoke.CLI.Repl do
     do: handle_practices_delete()
 
   def handle_input("/practices edit", _session_pid, _session_id) do
-    langs = Yoke.Practices.detect_languages()
+    langs = Yoke.Practices.project_languages()
     lang = Enum.at(langs, 0) || "elixir"
     path = Yoke.Practices.local_practice_path(lang)
     g_path = Yoke.Practices.global_practice_path(lang)
@@ -1748,7 +1811,7 @@ defmodule Yoke.CLI.Repl do
   end
 
   def handle_input("/practices", _session_pid, _session_id) do
-    langs = Yoke.Practices.detect_languages()
+    langs = Yoke.Practices.project_languages()
 
     if Enum.empty?(langs) do
       IO.puts(
@@ -3259,7 +3322,7 @@ defmodule Yoke.CLI.Repl do
         Formatter.format_error("Usage: /practices learn <path_to_exemplary_project1> [path2...]")
       )
     else
-      langs = Yoke.Practices.detect_languages()
+      langs = Yoke.Practices.project_languages()
       lang = Enum.at(langs, 0) || "elixir"
       Yoke.Practices.squeeze_practices(lang, paths)
 
@@ -3274,7 +3337,7 @@ defmodule Yoke.CLI.Repl do
   end
 
   defp handle_practices_delete do
-    langs = Yoke.Practices.detect_languages()
+    langs = Yoke.Practices.project_languages()
     lang = Enum.at(langs, 0) || "elixir"
     p = Yoke.Practices.load_practices(lang)
 

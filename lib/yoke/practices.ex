@@ -21,8 +21,8 @@ defmodule Yoke.Practices do
     "typescript" => ["tsconfig.json", "*.ts", "*.tsx"],
     "javascript" => ["package.json", "*.js", "*.jsx"],
     "go" => ["go.mod", "*.go"],
-    "c" => ["CMakeLists.txt", "Makefile", "*.c", "*.h"],
-    "cpp" => ["CMakeLists.txt", "Makefile", "*.cpp", "*.hpp", "*.cc", "*.cxx"],
+    "c" => ["*.c", "*.h"],
+    "cpp" => ["*.cpp", "*.hpp", "*.cc", "*.cxx", "*.hxx", "*.c++"],
     "java" => ["pom.xml", "build.gradle", "*.java"],
     "kotlin" => ["build.gradle.kts", "*.kt"],
     "ruby" => ["Gemfile", "*.rb"],
@@ -102,6 +102,30 @@ defmodule Yoke.Practices do
 
   def sanitize_language(lang), do: to_string(lang) |> sanitize_language()
 
+  @doc """
+  Returns the list of languages used in the current project.
+  Checks CLI flag overrides, then "languages" in .yoke/config.json,
+  falling back to detecting languages present in `cwd`.
+  """
+  def project_languages(cwd \\ ".") do
+    case Application.get_env(:yoke, :project_languages) do
+      langs when is_list(langs) and langs != [] ->
+        langs
+
+      _ ->
+        case Yoke.Config.languages(cwd) do
+          langs when is_list(langs) and langs != [] ->
+            langs
+            |> Enum.map(&sanitize_language/1)
+            |> Enum.reject(&(&1 == ""))
+            |> Enum.uniq()
+
+          _ ->
+            detect_languages(cwd)
+        end
+    end
+  end
+
   @doc "Detects project language(s) by inspecting files in `cwd`."
   def detect_languages(cwd \\ ".") do
     root_files =
@@ -116,12 +140,7 @@ defmodule Yoke.Practices do
           Enum.any?(indicators, fn ind ->
             if String.contains?(ind, "*") do
               ext = String.replace(ind, "*", "")
-
-              Enum.any?(root_files, fn f ->
-                String.ends_with?(f, ext) or
-                  (File.dir?(Path.join(cwd, f)) and not hidden_or_build_dir?(f) and
-                     has_extension_in_dir?(Path.join(cwd, f), ext))
-              end)
+              has_source_with_ext?(cwd, root_files, ext)
             else
               ind in root_files
             end
@@ -132,32 +151,94 @@ defmodule Yoke.Practices do
       |> Enum.reverse()
 
     # Disambiguate typescript/javascript if both detected
-    cond do
-      "typescript" in detected and "javascript" in detected ->
-        if File.exists?(Path.join(cwd, "tsconfig.json")) do
-          Enum.reject(detected, &(&1 == "javascript"))
+    detected =
+      if "typescript" in detected and "javascript" in detected do
+        if File.exists?(Path.join(cwd, "tsconfig.json")) or
+             has_source_with_ext?(cwd, root_files, ".ts") or
+             has_source_with_ext?(cwd, root_files, ".tsx") do
+          has_js_sources? =
+            has_source_with_ext?(cwd, root_files, ".js") or
+              has_source_with_ext?(cwd, root_files, ".jsx")
+
+          if not has_js_sources? do
+            Enum.reject(detected, &(&1 == "javascript"))
+          else
+            detected
+          end
         else
           detected
         end
-
-      detected == [] ->
-        # Default fallback if no known indicator matches
-        []
-
-      true ->
+      else
         detected
-    end
+      end
+
+    # Disambiguate c/cpp if both detected
+    detected =
+      if "c" in detected and "cpp" in detected do
+        if not has_source_with_ext?(cwd, root_files, ".c") do
+          Enum.reject(detected, &(&1 == "c"))
+        else
+          detected
+        end
+      else
+        detected
+      end
+
+    detected
+  end
+
+  defp has_source_with_ext?(cwd, root_files, ext) do
+    Enum.any?(root_files, fn f ->
+      String.ends_with?(f, ext) or
+        (File.dir?(Path.join(cwd, f)) and not hidden_or_build_dir?(f) and
+           has_extension_in_tree?(Path.join(cwd, f), ext))
+    end)
   end
 
   defp hidden_or_build_dir?(name) do
     String.starts_with?(name, ".") or
-      name in ["_build", "deps", "node_modules", "target", "vendor", "dist", "build"]
+      name in [
+        "_build",
+        "deps",
+        "node_modules",
+        "target",
+        "vendor",
+        "dist",
+        "build",
+        "venv",
+        ".venv",
+        "env",
+        "tmp",
+        "cache",
+        ".cache",
+        "coverage"
+      ]
   end
 
-  defp has_extension_in_dir?(dir_path, ext) do
-    case File.ls(dir_path) do
-      {:ok, files} -> Enum.any?(files, &String.ends_with?(&1, ext))
-      _ -> false
+  defp has_extension_in_tree?(dir_path, ext, depth \\ 0, max_depth \\ 3) do
+    if depth > max_depth do
+      false
+    else
+      case File.ls(dir_path) do
+        {:ok, files} ->
+          Enum.any?(files, fn f ->
+            full_path = Path.join(dir_path, f)
+
+            cond do
+              String.ends_with?(f, ext) ->
+                true
+
+              File.dir?(full_path) and not hidden_or_build_dir?(f) ->
+                has_extension_in_tree?(full_path, ext, depth + 1, max_depth)
+
+              true ->
+                false
+            end
+          end)
+
+        _ ->
+          false
+      end
     end
   end
 
@@ -527,11 +608,11 @@ defmodule Yoke.Practices do
     - Saves practices to global and project-local .yoke directories.
   """
   def ensure_practices_for_workspace(cwd \\ ".", opts \\ []) do
-    languages = detect_languages(cwd)
+    languages = Keyword.get(opts, :languages) || project_languages(cwd)
     interactive? = Keyword.get(opts, :interactive, true) and tty_interactive?()
 
     Enum.each(languages, fn lang ->
-      unless has_practices?(lang, cwd) do
+      unless has_practices?(lang, cwd, opts) do
         paths =
           if interactive? and not Yoke.Config.god_mode?() do
             question =
@@ -559,14 +640,14 @@ defmodule Yoke.Practices do
           end
 
         if paths != [] do
-          squeeze_practices(lang, paths, cwd: cwd)
+          squeeze_practices(lang, paths, Keyword.merge(opts, cwd: cwd))
         else
           IO.puts(Formatter.format_info("Generating baseline good practices for '#{lang}'…"))
 
-          save_practices(lang, default_practices_for(lang), [sources: ["default_baseline"]], cwd)
+          save_practices(lang, default_practices_for(lang), Keyword.merge(opts, sources: ["default_baseline"]), cwd)
         end
 
-        g_p = global_practice_path(lang)
+        g_p = global_practice_path(lang, opts)
         l_p = local_practice_path(lang, cwd)
 
         IO.puts(
@@ -592,12 +673,12 @@ defmodule Yoke.Practices do
   end
 
   @doc "Builds prompt preamble text containing language good practices for `cwd`."
-  def build_preamble(cwd \\ ".") do
-    languages = detect_languages(cwd)
+  def build_preamble(cwd \\ ".", opts \\ []) do
+    languages = Keyword.get(opts, :languages) || project_languages(cwd)
 
     practices_blocks =
       languages
-      |> Enum.map(&load_practices(&1, cwd))
+      |> Enum.map(&load_practices(&1, cwd, opts))
       |> Enum.reject(fn p -> Enum.empty?(p.items) end)
 
     if Enum.empty?(practices_blocks) do

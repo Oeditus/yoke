@@ -38,6 +38,7 @@ defmodule Yoke.CLI.Main do
           node: :string,
           connect: :string,
           plugin: :string,
+          languages: :string,
           update: :boolean,
           doctor: :boolean,
           help: :boolean
@@ -48,11 +49,22 @@ defmodule Yoke.CLI.Main do
           e: :endpoint,
           c: :conversation,
           r: :resume,
+          l: :languages,
           u: :update,
           d: :doctor,
           h: :help
         ]
       )
+
+    if opts[:languages] do
+      langs =
+        opts[:languages]
+        |> String.split(~r/[,;\s]+/, trim: true)
+        |> Enum.map(&Yoke.Practices.sanitize_language/1)
+        |> Enum.reject(&(&1 == ""))
+
+      Application.put_env(:yoke, :project_languages, langs)
+    end
 
     cond do
       opts[:help] ->

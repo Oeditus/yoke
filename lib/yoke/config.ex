@@ -61,8 +61,31 @@ defmodule Yoke.Config do
     # automatically answered without user interaction. Default: false.
     "god_mode" => false,
     # Reasoning output ANSI color ("yellow", "cyan", "green", "magenta", "blue", "red", "gray", "white", etc.)
-    "reasoning_color" => "yellow"
+    "reasoning_color" => "gray",
+    # Explicit list of programming languages used in the project (e.g. ["elixir"]).
+    # When set (non-empty list or string), only practices for these languages are exposed to the model as constraints.
+    # When nil or empty, languages are automatically detected from workspace files.
+    "languages" => nil
   }
+
+  @doc "Returns the configured project languages list or nil if auto-detection should be used."
+  def languages(cwd \\ ".") do
+    cfg = load_config(cwd)
+
+    case Map.get(cfg, "languages") do
+      langs when is_list(langs) ->
+        langs
+        |> Enum.map(&to_string/1)
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
+
+      lang when is_binary(lang) and lang != "" ->
+        [String.trim(lang)]
+
+      _ ->
+        nil
+    end
+  end
 
   @doc "Returns the configured assistant name, defaulting to 'Robby Ott'."
   def assistant_name(cwd \\ ".") do
@@ -112,7 +135,7 @@ defmodule Yoke.Config do
 
       _ ->
         cfg = load_config(cwd)
-        Map.get(cfg, "reasoning_color") || Map.get(cfg, "reasoning_colour") || "yellow"
+        Map.get(cfg, "reasoning_color") || Map.get(cfg, "reasoning_colour") || "gray"
     end
   end
 
