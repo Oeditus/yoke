@@ -178,7 +178,7 @@ defmodule Yoke.FormatterTest do
       # Code block border
       assert formatted =~ "┌─ elixir"
       # Restores gray after reset
-      assert formatted =~ "\e[0m\e[33m"
+      assert formatted =~ "└─\e[0m\e[90m\e[0m"
       refute formatted =~ "“"
       refute formatted =~ "”"
     end
