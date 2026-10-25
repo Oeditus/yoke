@@ -63,6 +63,13 @@ defmodule Yoke.CLI.LogFormatterTest do
   end
 
   test "formats reasoning log event with gray styling using Marcli without stair-stepping" do
+    # `LogFormatter` delegates to `Formatter.format_reasoning/1`, which resolves
+    # the colour from `Yoke.Config.reasoning_color/1`. Pin it here so the test
+    # does not depend on the developer's `~/.yoke/config.json` or this repo's
+    # own `.yoke/config.json`.
+    Application.put_env(:yoke, :reasoning_color, "gray")
+    on_exit(fn -> Application.delete_env(:yoke, :reasoning_color) end)
+
     event = %{
       level: :info,
       msg: "[DeepSeek-R1 Reasoning]\nNow I have an understanding.\n\nLet me run some tools."

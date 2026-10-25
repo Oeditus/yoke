@@ -41,14 +41,21 @@ defmodule Yoke.CLI.ConfigExplorer do
   # Data Loading & Scanning
   # ---------------------------------------------------------------------
 
-  @doc "Scans local and global .yoke directory tree and returns structured summary map."
-  def scan_directory_tree(cwd \\ ".") do
+  @doc """
+  Scans local and global .yoke directory tree and returns structured summary map.
+
+  Options:
+
+    * `:include_global?` - when `false`, only the workspace `.yoke` directory is
+      scanned for sessions. Defaults to `true`.
+  """
+  def scan_directory_tree(cwd \\ ".", opts \\ []) do
     local_dir = Path.join(cwd, ".yoke")
     global_dir = Path.expand("~/.yoke")
 
     config = Config.load_config(cwd)
     rules = Rules.load_rules(cwd)
-    sessions = list_session_files(cwd)
+    sessions = list_session_files(cwd, opts)
     practices = list_practice_files(cwd)
     jobs = list_job_files(cwd)
     skills = list_skill_files(cwd)
@@ -71,11 +78,22 @@ defmodule Yoke.CLI.ConfigExplorer do
     }
   end
 
-  def list_session_files(cwd \\ ".") do
-    dirs = [
-      Path.join(cwd, ".yoke/sessions"),
-      Path.expand("~/.yoke/sessions")
-    ]
+  @doc """
+  Lists session files from the workspace `.yoke/sessions` directory and the
+  global `~/.yoke/sessions` directory, newest first.
+
+  Pass `include_global?: false` to scan only the workspace directory. Tests
+  use this to stay hermetic: the global directory lives in the developer's
+  real `$HOME`, so including it makes results depend on unrelated local
+  state.
+  """
+  def list_session_files(cwd \\ ".", opts \\ []) do
+    dirs =
+      if Keyword.get(opts, :include_global?, true) do
+        [Path.join(cwd, ".yoke/sessions"), Path.expand("~/.yoke/sessions")]
+      else
+        [Path.join(cwd, ".yoke/sessions")]
+      end
 
     dirs
     |> Enum.flat_map(fn dir ->

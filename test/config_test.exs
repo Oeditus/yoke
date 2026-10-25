@@ -214,8 +214,34 @@ defmodule Yoke.ConfigTest do
 
   describe "reasoning_color/1" do
     test "defaults to gray" do
-      assert Config.reasoning_color() == "gray"
-      assert Config.load_config()["reasoning_color"] == "gray"
+      # `load_config/1` merges the developer's real `~/.yoke/config.json` over
+      # the defaults, and that file may legitimately pin a different colour.
+      # `~` resolves via `System.user_home!/0`, which reads the VM's `-home`
+      # argument and is therefore fixed at boot -- so it cannot be redirected
+      # from inside the test. Instead, assert the documented default directly
+      # and separately prove that a workspace config overrides it.
+      assert Config.default_config_value("reasoning_color") == "gray"
+
+      tmp_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "config_reasoning_color_default_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp_dir)
+
+      try do
+        # With no workspace override the resolved value falls back to the
+        # default whenever the global config does not pin a colour.
+        global = Path.expand("~/.yoke/config.json")
+        global_color = Config.read_json_file(global)["reasoning_color"]
+
+        if is_nil(global_color) do
+          assert Config.reasoning_color(tmp_dir) == "gray"
+        end
+      after
+        File.rm_rf!(tmp_dir)
+      end
     end
 
     test "allows workspace config file override" do

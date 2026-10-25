@@ -93,7 +93,7 @@ defmodule Yoke.CLI.ConfigExplorerTest do
 
   describe "directory scanning & summary" do
     test "scans directory tree correctly", %{tmp_dir: tmp_dir} do
-      tree = ConfigExplorer.scan_directory_tree(tmp_dir)
+      tree = ConfigExplorer.scan_directory_tree(tmp_dir, include_global?: false)
 
       assert is_map(tree.config)
       assert tree.config["model"] == "deepseek-flash"
@@ -142,7 +142,7 @@ defmodule Yoke.CLI.ConfigExplorerTest do
     end
 
     test "formats non-TTY summary cleanly", %{tmp_dir: tmp_dir} do
-      tree = ConfigExplorer.scan_directory_tree(tmp_dir)
+      tree = ConfigExplorer.scan_directory_tree(tmp_dir, include_global?: false)
       summary = ConfigExplorer.format_non_tty_summary(tree)
 
       assert String.contains?(summary, "Yoke Config Directory Explorer Summary")

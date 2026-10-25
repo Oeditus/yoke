@@ -1,5 +1,8 @@
 defmodule Yoke.FormatterTest do
-  use ExUnit.Case, async: true
+  # Not async: "loads reasoning color from Yoke.Config" mutates the global
+  # `:yoke, :reasoning_color` application env, which every other test in this
+  # module (and any other module resolving the reasoning colour) reads.
+  use ExUnit.Case, async: false
 
   alias Yoke.CLI.Formatter
 
@@ -101,7 +104,11 @@ defmodule Yoke.FormatterTest do
   describe "format_reasoning/2" do
     test "formats reasoning in gray using Marcli, starting lines at column 0 with CRLF" do
       reasoning = "Analyzing request.\n\nNeed to search files.\n\nFound 2 files."
-      formatted = Formatter.format_reasoning(reasoning)
+      # Pass the colour explicitly: `format_reasoning/2` otherwise resolves it
+      # from `Yoke.Config.reasoning_color/1`, which merges the developer's
+      # `~/.yoke/config.json` and this repo's `.yoke/config.json` and is
+      # therefore not a stable value to assert against.
+      formatted = Formatter.format_reasoning(reasoning, color: "gray")
 
       assert formatted =~ IO.ANSI.light_black()
       assert formatted =~ "● [DeepSeek-R1 Reasoning]"
@@ -140,7 +147,7 @@ defmodule Yoke.FormatterTest do
     end
 
     test "handles single line reasoning" do
-      formatted = Formatter.format_reasoning("Just one thought.")
+      formatted = Formatter.format_reasoning("Just one thought.", color: "gray")
       assert formatted =~ "Just one thought."
       refute formatted =~ "“"
       refute formatted =~ "”"
@@ -168,7 +175,7 @@ defmodule Yoke.FormatterTest do
       ```
       """
 
-      formatted = Formatter.format_reasoning(markdown_reasoning)
+      formatted = Formatter.format_reasoning(markdown_reasoning, color: "gray")
 
       assert formatted =~ IO.ANSI.light_black()
       # Markdown bullet list

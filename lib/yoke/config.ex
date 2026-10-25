@@ -139,6 +139,12 @@ defmodule Yoke.Config do
     end
   end
 
+  @doc "Returns the built-in default value for a configuration key."
+  def default_config_value(key), do: Map.get(@default_config, key)
+
+  @doc "Reads and decodes a JSON config file, returning `%{}` when absent or malformed."
+  def read_json_file(path), do: read_json_config(path)
+
   @doc "Loads combined configuration (global + workspace override)."
   def load_config(cwd \\ ".") do
     global_path = Path.expand("~/.yoke/config.json")
