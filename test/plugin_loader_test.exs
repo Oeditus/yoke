@@ -235,4 +235,51 @@ defmodule Yoke.PluginLoaderTest do
 
     assert res_elixir =~ "decoy_999_target.ex:2: def special_hidden_function, do: :found"
   end
+
+  test "grep_search handles glob patterns and relative paths correctly in elixir fallback" do
+    tmp_dir =
+      Path.join(System.tmp_dir!(), "yoke_grep_glob_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(tmp_dir, "scripts"))
+    on_exit(fn -> File.rm_rf(tmp_dir) end)
+
+    script_file = Path.join(tmp_dir, "scripts/bundle.sh")
+    File.write!(script_file, "#!/usr/bin/env bash\necho 'bundled'\n")
+
+    root_file = Path.join(tmp_dir, "mix.exs")
+    File.write!(root_file, "defmodule Sample do\n  def hello, do: :world\nend\n")
+
+    # 1. Search with scripts/* glob in elixir engine
+    {:ok, res1} =
+      PluginLoader.execute_tool("grep_search", %{
+        "path" => tmp_dir,
+        "path_pattern" => "scripts/*",
+        "query" => "bundled",
+        "engine" => "elixir"
+      })
+
+    assert res1 =~ "scripts/bundle.sh:2: echo 'bundled'"
+
+    # 2. Search with **/*.sh glob
+    {:ok, res2} =
+      PluginLoader.execute_tool("grep_search", %{
+        "path" => tmp_dir,
+        "path_pattern" => "**/*.sh",
+        "query" => "bundled",
+        "engine" => "elixir"
+      })
+
+    assert res2 =~ "scripts/bundle.sh:2: echo 'bundled'"
+
+    # 3. Search with **/*.exs glob matching root file
+    {:ok, res3} =
+      PluginLoader.execute_tool("grep_search", %{
+        "path" => tmp_dir,
+        "path_pattern" => "**/*.exs",
+        "query" => "Sample",
+        "engine" => "elixir"
+      })
+
+    assert res3 =~ "mix.exs:1: defmodule Sample do"
+  end
 end

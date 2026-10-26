@@ -652,8 +652,13 @@ defmodule Yoke.Plugin.DefaultTools do
       Enum.find(
         [
           Path.expand("~/.cargo/bin/rg"),
+          Path.expand("~/.local/share/mise/shims/rg"),
+          Path.expand("~/.asdf/shims/rg"),
+          Path.expand("~/.local/bin/rg"),
+          "/opt/homebrew/bin/rg",
           "/usr/local/bin/rg",
-          "/usr/bin/rg"
+          "/usr/bin/rg",
+          "/bin/rg"
         ],
         &File.exists?/1
       )
@@ -776,12 +781,12 @@ defmodule Yoke.Plugin.DefaultTools do
 
       File.dir?(dir) ->
         walk_grep_dir(dir)
-        |> filter_by_path_pattern(path_pattern)
+        |> filter_by_path_pattern(dir, path_pattern)
 
       String.contains?(dir, ["*", "?"]) ->
         Path.wildcard(dir)
         |> Stream.filter(&File.regular?/1)
-        |> filter_by_path_pattern(path_pattern)
+        |> filter_by_path_pattern(dir, path_pattern)
 
       true ->
         []
@@ -830,22 +835,34 @@ defmodule Yoke.Plugin.DefaultTools do
     )
   end
 
-  defp filter_by_path_pattern(stream, nil), do: stream
-  defp filter_by_path_pattern(stream, ""), do: stream
-  defp filter_by_path_pattern(stream, "**/*"), do: stream
+  defp filter_by_path_pattern(stream, _dir, nil), do: stream
+  defp filter_by_path_pattern(stream, _dir, ""), do: stream
+  defp filter_by_path_pattern(stream, _dir, "**/*"), do: stream
 
-  defp filter_by_path_pattern(stream, pattern) do
+  defp filter_by_path_pattern(stream, dir, pattern) do
     glob_regex = glob_to_regex(pattern)
 
     Stream.filter(stream, fn path ->
-      Regex.match?(glob_regex, path) or Regex.match?(glob_regex, Path.basename(path))
+      clean_path = String.replace_prefix(path, "./", "")
+      rel_to_dir = Path.relative_to(path, dir)
+      rel_to_cwd = Path.relative_to_cwd(path)
+
+      Regex.match?(glob_regex, path) or
+        Regex.match?(glob_regex, clean_path) or
+        Regex.match?(glob_regex, rel_to_dir) or
+        Regex.match?(glob_regex, rel_to_cwd) or
+        Regex.match?(glob_regex, Path.basename(path))
     end)
   end
 
   defp glob_to_regex(pattern) do
+    pattern = String.replace_prefix(pattern, "./", "")
+
     regex_str =
       pattern
       |> Regex.escape()
+      |> String.replace("\\*\\*/", "(?:.*/)?")
+      |> String.replace("/\\*\\*", "(?:/.*)?")
       |> String.replace("\\*\\*", ".*")
       |> String.replace("\\*", "[^/]*")
       |> String.replace("\\?", ".")
