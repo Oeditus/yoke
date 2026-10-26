@@ -299,7 +299,7 @@ defmodule Yoke.TaskEngine.JobManager do
 
   # Automatically injects user toolchain paths into PATH / env if present
   def prepare_environment(command) do
-    user_home = System.user_home() || System.get_env("HOME") || "/home/am"
+    user_home = Yoke.Hands.Environment.user_home()
 
     asdf_shims = Path.join(user_home, ".asdf/shims")
     asdf_bin = Path.join(user_home, ".asdf/bin")

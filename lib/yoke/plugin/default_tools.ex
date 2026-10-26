@@ -2,6 +2,9 @@ defmodule Yoke.Plugin.DefaultTools do
   @moduledoc false
   @behaviour Yoke.Plugin.Behaviour
 
+  @grep_ignored_dirs ~w(node_modules _build deps .git .elixir_ls .yoke .ragex .cache dist)
+  @grep_binary_exts ~w(.beam .png .jpg .jpeg .gif .ico .svg .woff .woff2 .ttf .eot .zip .tar .gz .redb .dump .so .dylib .exe .dll)
+
   @impl true
   def name, do: "DefaultTools"
 
@@ -620,64 +623,19 @@ defmodule Yoke.Plugin.DefaultTools do
           Map.get(args, :file) ||
           "."
 
-      raw_pattern =
+      path_pattern =
         Map.get(args, "path_pattern") ||
           Map.get(args, :path_pattern) ||
           Map.get(args, "glob") ||
-          Map.get(args, :glob) ||
-          "**/*"
+          Map.get(args, :glob)
 
-      path_pattern =
-        if raw_pattern != "**/*" and not String.contains?(raw_pattern, "/") and
-             not String.starts_with?(raw_pattern, "**") do
-          "**/" <> raw_pattern
-        else
-          raw_pattern
-        end
+      engine = Map.get(args, "engine") || Map.get(args, :engine)
+      rg = if engine in ["elixir", :elixir], do: nil, else: find_rg()
 
-      target_pattern =
-        if File.dir?(dir) do
-          Path.join(dir, path_pattern)
-        else
-          dir
-        end
-
-      files =
-        if File.regular?(dir) do
-          [dir]
-        else
-          Path.wildcard(target_pattern)
-          |> Enum.filter(&File.regular?/1)
-        end
-
-      case Regex.compile(query, [:caseless]) do
-        {:ok, regex} ->
-          matches =
-            files
-            |> Enum.take(200)
-            |> Enum.flat_map(fn file ->
-              case File.read(file) do
-                {:ok, content} ->
-                  content
-                  |> String.split(~r/\r?\n/)
-                  |> Enum.with_index(1)
-                  |> Enum.filter(fn {line, _num} -> Regex.match?(regex, line) end)
-                  |> Enum.map(fn {line, num} -> "#{file}:#{num}: #{String.trim(line)}" end)
-
-                _ ->
-                  []
-              end
-            end)
-            |> Enum.take(100)
-
-          if matches == [] do
-            {:ok, "No matches found for '#{query}'."}
-          else
-            {:ok, "Found #{length(matches)} matches:\n" <> Enum.join(matches, "\n")}
-          end
-
-        {:error, reason} ->
-          {:error, "Invalid regex pattern '#{query}': #{inspect(reason)}"}
+      if is_binary(rg) and (File.dir?(dir) or File.regular?(dir)) do
+        run_rg_grep(rg, query, dir, path_pattern)
+      else
+        run_elixir_grep(query, dir, path_pattern)
       end
     else
       {:error, "Invalid arguments for grep_search. Expected 'query' or 'pattern' string."}
@@ -687,6 +645,212 @@ defmodule Yoke.Plugin.DefaultTools do
   def grep_search_tool(_args) do
     {:error,
      "Invalid arguments for grep_search. Expected a map with 'query' or 'pattern' string."}
+  end
+
+  defp find_rg do
+    System.find_executable("rg") ||
+      Enum.find(
+        [
+          Path.expand("~/.cargo/bin/rg"),
+          "/usr/local/bin/rg",
+          "/usr/bin/rg"
+        ],
+        &File.exists?/1
+      )
+  end
+
+  defp run_rg_grep(rg, query, dir, path_pattern) do
+    base_args = [
+      "--no-heading",
+      "--line-number",
+      "--color",
+      "never",
+      "-i",
+      "--max-count",
+      "100",
+      "--max-filesize",
+      "2M",
+      "--glob",
+      "!node_modules",
+      "--glob",
+      "!_build",
+      "--glob",
+      "!deps",
+      "--glob",
+      "!.git",
+      "--glob",
+      "!.elixir_ls",
+      "--glob",
+      "!.yoke",
+      "--glob",
+      "!.ragex"
+    ]
+
+    glob_args =
+      if is_binary(path_pattern) and path_pattern != "" and path_pattern != "**/*" do
+        ["--glob", path_pattern]
+      else
+        []
+      end
+
+    args = base_args ++ glob_args ++ ["-e", query, "--", dir]
+
+    case System.cmd(rg, args, stderr_to_stdout: false) do
+      {out, 0} ->
+        matches =
+          out
+          |> String.split(~r/\r?\n/, trim: true)
+          |> Enum.take(100)
+          |> Enum.map(fn line ->
+            case String.split(line, ":", parts: 3) do
+              [file, num, text] -> "#{file}:#{num}: #{String.trim(text)}"
+              _ -> line
+            end
+          end)
+
+        if matches == [] do
+          {:ok, "No matches found for '#{query}'."}
+        else
+          {:ok, "Found #{length(matches)} matches:\n" <> Enum.join(matches, "\n")}
+        end
+
+      {_, 1} ->
+        {:ok, "No matches found for '#{query}'."}
+
+      _other ->
+        run_elixir_grep(query, dir, path_pattern)
+    end
+  rescue
+    _ -> run_elixir_grep(query, dir, path_pattern)
+  end
+
+  defp run_elixir_grep(query, dir, path_pattern) do
+    case compile_query_regex(query) do
+      {:ok, regex} ->
+        files_stream = build_grep_files_stream(dir, path_pattern)
+
+        matches =
+          files_stream
+          |> Stream.flat_map(fn file ->
+            case File.read(file) do
+              {:ok, content} ->
+                if byte_size(content) <= 2_000_000 and String.valid?(content) and
+                     not String.contains?(content, <<0>>) do
+                  content
+                  |> String.split(~r/\r?\n/)
+                  |> Enum.with_index(1)
+                  |> Enum.filter(fn {line, _num} -> Regex.match?(regex, line) end)
+                  |> Enum.map(fn {line, num} -> "#{file}:#{num}: #{String.trim(line)}" end)
+                else
+                  []
+                end
+
+              _ ->
+                []
+            end
+          end)
+          |> Enum.take(100)
+
+        if matches == [] do
+          {:ok, "No matches found for '#{query}'."}
+        else
+          {:ok, "Found #{length(matches)} matches:\n" <> Enum.join(matches, "\n")}
+        end
+
+      {:error, reason} ->
+        {:error, "Invalid regex pattern '#{query}': #{inspect(reason)}"}
+    end
+  end
+
+  defp compile_query_regex(query) do
+    case Regex.compile(query, [:caseless]) do
+      {:ok, regex} -> {:ok, regex}
+      _ -> Regex.compile(Regex.escape(query), [:caseless])
+    end
+  end
+
+  defp build_grep_files_stream(dir, path_pattern) do
+    cond do
+      File.regular?(dir) ->
+        [dir]
+
+      File.dir?(dir) ->
+        walk_grep_dir(dir)
+        |> filter_by_path_pattern(path_pattern)
+
+      String.contains?(dir, ["*", "?"]) ->
+        Path.wildcard(dir)
+        |> Stream.filter(&File.regular?/1)
+        |> filter_by_path_pattern(path_pattern)
+
+      true ->
+        []
+    end
+  end
+
+  defp walk_grep_dir(root) do
+    Stream.resource(
+      fn -> [root] end,
+      fn
+        [] ->
+          {:halt, []}
+
+        [current | rest] ->
+          cond do
+            File.regular?(current) ->
+              ext = Path.extname(current) |> String.downcase()
+
+              if ext in @grep_binary_exts do
+                {[], rest}
+              else
+                {[current], rest}
+              end
+
+            File.dir?(current) ->
+              base = Path.basename(current)
+
+              if base in @grep_ignored_dirs and current != root do
+                {[], rest}
+              else
+                case File.ls(current) do
+                  {:ok, entries} ->
+                    children = Enum.map(entries, &Path.join(current, &1))
+                    {[], children ++ rest}
+
+                  _ ->
+                    {[], rest}
+                end
+              end
+
+            true ->
+              {[], rest}
+          end
+      end,
+      fn _ -> :ok end
+    )
+  end
+
+  defp filter_by_path_pattern(stream, nil), do: stream
+  defp filter_by_path_pattern(stream, ""), do: stream
+  defp filter_by_path_pattern(stream, "**/*"), do: stream
+
+  defp filter_by_path_pattern(stream, pattern) do
+    glob_regex = glob_to_regex(pattern)
+
+    Stream.filter(stream, fn path ->
+      Regex.match?(glob_regex, path) or Regex.match?(glob_regex, Path.basename(path))
+    end)
+  end
+
+  defp glob_to_regex(pattern) do
+    regex_str =
+      pattern
+      |> Regex.escape()
+      |> String.replace("\\*\\*", ".*")
+      |> String.replace("\\*", "[^/]*")
+      |> String.replace("\\?", ".")
+
+    ~r/^#{regex_str}$/i
   end
 
   def evaluate_elixir(%{"code" => code}) do

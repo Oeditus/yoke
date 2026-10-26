@@ -182,4 +182,57 @@ defmodule Yoke.PluginLoaderTest do
 
     assert res7 =~ "repl.ex:1"
   end
+
+  test "grep_search traverses deep directories with >200 files without premature truncation" do
+    tmp_dir =
+      Path.join(System.tmp_dir!(), "yoke_grep_deep_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(tmp_dir)
+    on_exit(fn -> File.rm_rf(tmp_dir) end)
+
+    apps_dir = Path.join(tmp_dir, "apps/sub_app/lib")
+    File.mkdir_p!(apps_dir)
+
+    # Create 220 decoy files
+    for i <- 1..220 do
+      file = Path.join(apps_dir, "decoy_#{String.pad_leading(to_string(i), 3, "0")}.ex")
+      File.write!(file, "defmodule Decoy#{i} do\n  def noop, do: :ok\nend\n")
+    end
+
+    # Target file placed at the end (> 200 files)
+    target_file = Path.join(apps_dir, "decoy_999_target.ex")
+
+    File.write!(
+      target_file,
+      "defmodule TargetApp do\n  def special_hidden_function, do: :found\nend\n"
+    )
+
+    # 1. Search pointing at "apps" directory directly
+    {:ok, res} =
+      PluginLoader.execute_tool("grep_search", %{
+        "path" => Path.join(tmp_dir, "apps"),
+        "query" => "special_hidden_function"
+      })
+
+    assert res =~ "decoy_999_target.ex:2: def special_hidden_function, do: :found"
+
+    # 2. Search via mcp_ragex_grep alias pointing at "apps"
+    {:ok, res_mcp} =
+      PluginLoader.execute_tool("mcp_ragex_grep", %{
+        "path" => Path.join(tmp_dir, "apps"),
+        "pattern" => "special_hidden_function"
+      })
+
+    assert res_mcp =~ "decoy_999_target.ex:2: def special_hidden_function, do: :found"
+
+    # 3. Search via pure Elixir engine fallback (engine: "elixir")
+    {:ok, res_elixir} =
+      PluginLoader.execute_tool("grep_search", %{
+        "path" => Path.join(tmp_dir, "apps"),
+        "query" => "special_hidden_function",
+        "engine" => "elixir"
+      })
+
+    assert res_elixir =~ "decoy_999_target.ex:2: def special_hidden_function, do: :found"
+  end
 end

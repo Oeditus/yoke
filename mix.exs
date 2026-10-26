@@ -62,7 +62,7 @@ defmodule Yoke.MixProject do
     [
       {:req, "~> 0.7"},
       {:marcli, "~> 0.3"},
-      {:md, "~> 0.13", override: true},
+      {:md, "~> 0.13.0", override: true},
       {:lmml, "~> 0.2"},
       {:makeup_elixir, ">= 0.0.0", optional: true},
       {:makeup_erlang, ">= 0.0.0", optional: true},

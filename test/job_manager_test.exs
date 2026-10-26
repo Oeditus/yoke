@@ -185,7 +185,7 @@ defmodule Yoke.TaskEngine.JobManagerTest do
     assert is_binary(env_map["PATH"])
     assert env_map["VIPS_UNBLOCK"] == "svgload,svgload_buffer,svgload_stream"
 
-    user_home = System.user_home() || System.get_env("HOME") || "/home/am"
+    user_home = Yoke.Hands.Environment.user_home()
     asdf_shims = Path.join(user_home, ".asdf/shims")
 
     if File.dir?(asdf_shims) do
