@@ -41,6 +41,9 @@ defmodule Yoke.CLI.Formatter do
     [
       "Use !command to execute shell commands directly (e.g. !git status)",
       "Use !! to flip into pure console mode -- a plain shell passthrough with no #{name}/tooling in between -- and !! again to flip back",
+      "Use /alias [list|show|add|rm|run] or /<alias> to run prepared command sequences in your session",
+      "Use /finish [files] [--commit-only] or /pr to format, commit with 5-section rationale, and open a PR",
+      "Use /commit-structured [files] or /cpr to create a structured commit without opening a PR",
       "Use /help to view available slash commands and shortcuts",
       "Use /model or /models to list available models dynamically from DeepSeek API, or /model <name> to switch",
       "Use /mode [local|remote|docker] to set Hands execution target",
@@ -79,7 +82,7 @@ defmodule Yoke.CLI.Formatter do
 
     #{color}#{bold()}╭──────────────────────────────────────────────────────────────────────────────╮
     │#{title_line}│
-    │  #{dim()}Actors • Hot-Code Reloading • Distributed Brain/Hands • Temporal Snapshots#{reset()}#{color}  │
+    │  #{dim()}Actors • Hot-Code Reloading • Distributed Brain/Hands • Aliases • Snapshots#{reset()}#{color}  │
     ╰──────────────────────────────────────────────────────────────────────────────╯#{reset()}
     """
   end
@@ -111,16 +114,19 @@ defmodule Yoke.CLI.Formatter do
     #{dim()}─────────────────────────────────────────────────────────────────────────────#{reset()}
       #{cyan()}!command#{reset()}                 Execute shell command directly (e.g. !ls -la or !git status)
       #{cyan()}!!#{reset()}                      Flip into/out of pure console mode (plain shell passthrough, no #{name}/tooling)
+      #{cyan()}/alias [list|show|add|rm|run]#{reset()} Manage or execute custom session command aliases (or /<alias>)
       #{cyan()}/bash [stats|export|clear]#{reset()} View bash command calls, counts, frequencies & export Ragex tool analogs
       #{cyan()}/cb#{reset()} or #{cyan()}/clipboard#{reset()}       Copy latest #{name} response to system clipboard (Markdown)
       #{cyan()}/checkpoint [label]#{reset()}     Create a temporal state snapshot
       #{cyan()}/clear#{reset()}                  Clear terminal output
       #{cyan()}/commit <message>#{reset()}       Auto-commit staged workspace changes to git
+      #{cyan()}/commit-structured [files]#{reset()} or #{cyan()}/cpr#{reset()} Commit staged changes with 5 PR sections (no PR)
       #{cyan()}/compact#{reset()}                Compress conversation context to save tokens
       #{cyan()}/cost#{reset()}                   Display token usage and session cost statistics
       #{cyan()}/diff#{reset()}                   Show colorized git diff of workspace changes
       #{cyan()}/exit#{reset()} or #{cyan()}/quit#{reset()}            Exit Yoke
       #{cyan()}/explorer#{reset()}               Launch interactive TUI for exploring & managing .yoke configs, rules, skills, jobs & analytics
+      #{cyan()}/finish [files] [--commit-only]#{reset()} or #{cyan()}/pr#{reset()} Format, structured commit (5 sections) & PR
       #{cyan()}/god [on|off|status]#{reset()}    Toggle God mode (auto-answer all model questions/confirmations)
       #{cyan()}/guide#{reset()} or #{cyan()}/docs#{reset()}        Display Getting Started & Customization Guide summary
       #{cyan()}/help#{reset()}                   Show this help menu

@@ -39,11 +39,15 @@ defmodule Yoke.FormatterTest do
     assert String.contains?(banner, "YOKE RAGE")
     assert String.contains?(banner, "Yoke Agentic CLI")
     assert String.contains?(banner, "v#{Yoke.version()}")
+    assert String.contains?(banner, "Aliases")
   end
 
   test "renders help menu with all slash commands" do
     menu = Formatter.help_menu()
     assert String.contains?(menu, "/help")
+    assert String.contains?(menu, "/alias")
+    assert String.contains?(menu, "/finish")
+    assert String.contains?(menu, "/commit-structured")
     assert String.contains?(menu, "/guide")
     assert String.contains?(menu, "/mcp")
     assert String.contains?(menu, "/review")

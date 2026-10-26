@@ -28,6 +28,8 @@ defmodule Yoke.CLI.LineEditor do
   alias Yoke.TaskEngine.PackageTracker
 
   @slash_commands [
+    "/alias",
+    "/aliases",
     "/bash",
     "/cb",
     "/checkpoint",
@@ -787,6 +789,7 @@ defmodule Yoke.CLI.LineEditor do
   @export_subcommands ["/export json", "/export lmml", "/export lmmlz", "/export markdown"]
   @skills_subcommands ["/skills show", "/skills path", "/skills edit", "/skills new"]
   @jobs_subcommands ["/jobs kill", "/jobs kill all"]
+  @alias_subcommands ["/alias list", "/alias show", "/alias add", "/alias rm", "/alias run"]
 
   @ignored_completion_dirs [
     ".git",
@@ -874,8 +877,21 @@ defmodule Yoke.CLI.LineEditor do
       String.starts_with?(input, "/jobs ") ->
         complete_candidates(input, @jobs_subcommands)
 
+      String.starts_with?(input, "/alias ") or String.starts_with?(input, "/aliases ") ->
+        complete_alias_subcommands(input, cwd)
+
       String.starts_with?(input, "/") ->
-        complete_candidates(input, @slash_commands)
+        alias_commands =
+          try do
+            Yoke.Aliases.list_alias_names(cwd) |> Enum.map(&("/" <> &1))
+          rescue
+            _ -> []
+          catch
+            _, _ -> []
+          end
+
+        candidates = Enum.uniq(@slash_commands ++ alias_commands)
+        complete_candidates(input, candidates)
 
       true ->
         :none
@@ -907,6 +923,46 @@ defmodule Yoke.CLI.LineEditor do
           _ ->
             :none
         end
+    end
+  end
+
+  defp complete_alias_subcommands(input, cwd) do
+    prefix = if String.starts_with?(input, "/aliases"), do: "/aliases ", else: "/alias "
+
+    cond do
+      String.starts_with?(input, prefix <> "show ") or
+        String.starts_with?(input, prefix <> "rm ") or
+        String.starts_with?(input, prefix <> "delete ") or
+          String.starts_with?(input, prefix <> "run ") ->
+        action =
+          cond do
+            String.starts_with?(input, prefix <> "show ") -> "show "
+            String.starts_with?(input, prefix <> "rm ") -> "rm "
+            String.starts_with?(input, prefix <> "delete ") -> "delete "
+            true -> "run "
+          end
+
+        alias_names =
+          try do
+            Yoke.Aliases.list_alias_names(cwd)
+          rescue
+            _ -> []
+          catch
+            _, _ -> []
+          end
+
+        candidates = Enum.map(alias_names, &(prefix <> action <> &1))
+        complete_candidates(input, candidates)
+
+      true ->
+        candidates =
+          if prefix == "/alias " do
+            @alias_subcommands
+          else
+            Enum.map(@alias_subcommands, &String.replace(&1, "/alias ", "/aliases "))
+          end
+
+        complete_candidates(input, candidates)
     end
   end
 

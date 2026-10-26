@@ -135,6 +135,18 @@ yoke --help
 /commit "feat: add user auth"  # Stage all modified files and commit
 /git status             # Execute git subcommand via helper
 
+# Structured PRs & Session Aliases
+/finish                 # Format, 5-part structured commit & create PR
+/finish [files]         # Stage files, format, 5-part commit & create PR
+/finish --commit-only   # Format & 5-part commit only (no PR)
+/pr                     # Alias for /finish
+/commit-structured      # Structured 5-section commit only (alias: /cpr)
+/alias                  # List all declared session aliases
+/alias show <name>      # Show alias steps & details
+/alias add <name> <cmd> # Define custom alias in .yoke/aliases.json
+/alias rm <name>        # Remove alias
+/<alias> [args]         # Execute alias directly with Tab-completion
+
 # Native Elixir Linters
 /linter credo           # Run Credo static analysis on project
 /linter oeditus_credo   # Run Oeditus strict rules

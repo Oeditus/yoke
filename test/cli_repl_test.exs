@@ -377,6 +377,94 @@ defmodule Yoke.CLIReplTest do
     assert :continue = Repl.handle_input("/review_conversation " <> id, pid, id)
   end
 
+  describe "/alias command surface" do
+    test "lists, shows, adds, runs and removes aliases", %{session_pid: pid, session_id: id} do
+      out_list =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/alias", pid, id)
+        end)
+
+      assert out_list =~ "Declared Session Aliases"
+      assert out_list =~ "/finish"
+      assert out_list =~ "/commit-structured"
+
+      out_show =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/alias show finish", pid, id)
+        end)
+
+      assert out_show =~ "Alias: /finish"
+      assert out_show =~ "The PR reason"
+
+      # Add a custom alias
+      out_add =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue =
+                   Repl.handle_input("/alias add my-custom-test !echo 'alias_ran_ok'", pid, id)
+        end)
+
+      assert out_add =~ "Saved alias '/my-custom-test'"
+
+      # Execute directly as slash command
+      out_run =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/my-custom-test", pid, id)
+        end)
+
+      assert out_run =~ "Running alias '/my-custom-test'"
+      assert out_run =~ "alias_ran_ok"
+
+      # Execute via /alias run
+      out_alias_run =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/alias run my-custom-test", pid, id)
+        end)
+
+      assert out_alias_run =~ "Running alias '/my-custom-test'"
+      assert out_alias_run =~ "alias_ran_ok"
+
+      # Delete custom alias
+      out_rm =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/alias rm my-custom-test", pid, id)
+        end)
+
+      assert out_rm =~ "Deleted alias '/my-custom-test'"
+
+      # Verify deletion
+      out_after =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/my-custom-test", pid, id)
+        end)
+
+      assert out_after =~ "Unknown command '/my-custom-test'"
+    end
+
+    test "guards against infinite recursive alias loops", %{session_pid: pid, session_id: id} do
+      Yoke.Aliases.save_alias(%{
+        "name" => "loop-a",
+        "commands" => ["/loop-b"]
+      })
+
+      Yoke.Aliases.save_alias(%{
+        "name" => "loop-b",
+        "commands" => ["/loop-a"]
+      })
+
+      on_exit(fn ->
+        Yoke.Aliases.delete_alias("loop-a")
+        Yoke.Aliases.delete_alias("loop-b")
+      end)
+
+      out =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/loop-a", pid, id)
+        end)
+
+      assert out =~ "exceeded maximum recursion depth"
+    end
+  end
+
   test "survives handle_input errors and stores error in .lmml session file", %{
     session_pid: pid,
     session_id: id

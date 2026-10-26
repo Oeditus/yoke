@@ -53,7 +53,7 @@ defmodule Yoke.CLI.Repl do
 
     IO.puts(
       Formatter.format_info(
-        "Type /help for command menu, !command for direct shell execution, or !! for pure console mode."
+        "Type /help for command menu, /alias for session aliases (e.g. /finish, /pr), !command for direct shell execution, or !! for pure console mode."
       )
     )
 
@@ -2585,15 +2585,38 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
-  # Catch any unknown slash command to avoid sending accidental mistyped commands to LLM
-  def handle_input("/" <> command, _session_pid, _session_id) do
-    IO.puts(
-      Formatter.format_error(
-        "Unknown command '/#{command}'. Type /help for available slash commands."
-      )
-    )
+  def handle_input("/alias " <> args, session_pid, session_id) do
+    handle_alias_command(String.trim(args), session_pid, session_id)
+  end
 
-    :continue
+  def handle_input("/alias", session_pid, session_id) do
+    handle_alias_command("list", session_pid, session_id)
+  end
+
+  def handle_input("/aliases " <> args, session_pid, session_id) do
+    handle_alias_command(String.trim(args), session_pid, session_id)
+  end
+
+  def handle_input("/aliases", session_pid, session_id) do
+    handle_alias_command("list", session_pid, session_id)
+  end
+
+  # Catch any unknown slash command to check if it matches a declared alias,
+  # or warn to avoid sending accidental mistyped commands to LLM
+  def handle_input("/" <> command, session_pid, session_id) do
+    case check_and_run_alias(command, session_pid, session_id) do
+      {:ok, result} ->
+        result
+
+      :not_found ->
+        IO.puts(
+          Formatter.format_error(
+            "Unknown command '/#{command}'. Type /help for available slash commands."
+          )
+        )
+
+        :continue
+    end
   end
 
   def handle_input(user_prompt, session_pid, _session_id) do
@@ -3624,6 +3647,354 @@ defmodule Yoke.CLI.Repl do
       {:error, reason} ->
         IO.puts(Formatter.format_error("Failed to read image from clipboard: #{reason}"))
         :continue
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Aliases Helpers
+  # ---------------------------------------------------------------------------
+
+  defp handle_alias_command("list", _session_pid, _session_id) do
+    render_aliases_list()
+    :continue
+  end
+
+  defp handle_alias_command("", session_pid, session_id) do
+    handle_alias_command("list", session_pid, session_id)
+  end
+
+  defp handle_alias_command("show " <> name, _session_pid, _session_id) do
+    render_alias_detail(String.trim(name))
+    :continue
+  end
+
+  defp handle_alias_command("show", _session_pid, _session_id) do
+    IO.puts(Formatter.format_error("Usage: /alias show <name>"))
+    :continue
+  end
+
+  defp handle_alias_command("add " <> rest, _session_pid, _session_id) do
+    case String.split(String.trim(rest), ~r/\s+/, parts: 2) do
+      [name, cmd] when name != "" and cmd != "" ->
+        clean_name = String.trim_leading(name, "/")
+
+        alias_def = %{
+          "name" => clean_name,
+          "description" => "Custom alias #{clean_name}",
+          "commands" => [cmd],
+          "scope" => "project"
+        }
+
+        case Yoke.Aliases.save_alias(alias_def) do
+          {:ok, path} ->
+            IO.puts(Formatter.format_success("Saved alias '/#{clean_name}' to #{path}"))
+
+          {:error, reason} ->
+            IO.puts(Formatter.format_error("Failed to save alias: #{reason}"))
+        end
+
+      _ ->
+        IO.puts(Formatter.format_error("Usage: /alias add <name> <command>"))
+    end
+
+    :continue
+  end
+
+  defp handle_alias_command("add", _session_pid, _session_id) do
+    IO.puts(Formatter.format_error("Usage: /alias add <name> <command>"))
+    :continue
+  end
+
+  defp handle_alias_command("rm " <> name, _session_pid, _session_id) do
+    handle_alias_delete(String.trim(name))
+  end
+
+  defp handle_alias_command("rm", _session_pid, _session_id) do
+    IO.puts(Formatter.format_error("Usage: /alias rm <name>"))
+    :continue
+  end
+
+  defp handle_alias_command("delete " <> name, _session_pid, _session_id) do
+    handle_alias_delete(String.trim(name))
+  end
+
+  defp handle_alias_command("delete", _session_pid, _session_id) do
+    IO.puts(Formatter.format_error("Usage: /alias delete <name>"))
+    :continue
+  end
+
+  defp handle_alias_command("run " <> rest, session_pid, session_id) do
+    case String.split(String.trim(rest), ~r/\s+/, parts: 2) do
+      [name] ->
+        run_alias_by_name(String.trim_leading(name, "/"), "", session_pid, session_id)
+
+      [name, args] ->
+        run_alias_by_name(
+          String.trim_leading(name, "/"),
+          String.trim(args),
+          session_pid,
+          session_id
+        )
+
+      _ ->
+        IO.puts(Formatter.format_error("Usage: /alias run <name> [args]"))
+        :continue
+    end
+  end
+
+  defp handle_alias_command("run", _session_pid, _session_id) do
+    IO.puts(Formatter.format_error("Usage: /alias run <name> [args]"))
+    :continue
+  end
+
+  defp handle_alias_command("help", _session_pid, _session_id) do
+    print_alias_help()
+    :continue
+  end
+
+  defp handle_alias_command(other, session_pid, session_id) do
+    case String.split(other, ~r/\s+/, parts: 2) do
+      [candidate_name] ->
+        clean_name = String.trim_leading(candidate_name, "/")
+
+        case Yoke.Aliases.get_alias(clean_name) do
+          {:ok, alias_def} ->
+            run_alias_definition(alias_def, "", session_pid, session_id)
+
+          :error ->
+            IO.puts(
+              Formatter.format_error("Unknown alias subcommand or alias '#{candidate_name}'.")
+            )
+
+            print_alias_help()
+            :continue
+        end
+
+      [candidate_name, args] ->
+        clean_name = String.trim_leading(candidate_name, "/")
+
+        case Yoke.Aliases.get_alias(clean_name) do
+          {:ok, alias_def} ->
+            run_alias_definition(alias_def, String.trim(args), session_pid, session_id)
+
+          :error ->
+            IO.puts(
+              Formatter.format_error("Unknown alias subcommand or alias '#{candidate_name}'.")
+            )
+
+            print_alias_help()
+            :continue
+        end
+    end
+  end
+
+  defp handle_alias_delete(name) do
+    clean_name = String.trim_leading(name, "/")
+
+    case Yoke.Aliases.delete_alias(clean_name) do
+      {:ok, _} ->
+        IO.puts(Formatter.format_success("Deleted alias '/#{clean_name}'."))
+
+      {:error, reason} ->
+        IO.puts(Formatter.format_error(reason))
+    end
+
+    :continue
+  end
+
+  defp print_alias_help do
+    IO.puts("""
+    #{Formatter.bold()}#{Formatter.cyan()}Yoke Session Aliases#{Formatter.reset()}
+    #{Formatter.dim()}─────────────────────────────────────────────────────────────────────────────#{Formatter.reset()}
+      #{Formatter.cyan()}/alias#{Formatter.reset()} or #{Formatter.cyan()}/alias list#{Formatter.reset()}      List all declared aliases
+      #{Formatter.cyan()}/alias show <name>#{Formatter.reset()}       Display alias definition and commands
+      #{Formatter.cyan()}/alias add <name> <cmd>#{Formatter.reset()}  Quickly define a single-command alias
+      #{Formatter.cyan()}/alias rm <name>#{Formatter.reset()}         Remove an alias from .yoke/aliases.json
+      #{Formatter.cyan()}/alias run <name> [args]#{Formatter.reset()} Execute an alias
+      #{Formatter.cyan()}/<alias-name> [args]#{Formatter.reset()}     Directly execute alias as a slash command
+    """)
+  end
+
+  defp render_aliases_list do
+    aliases = Yoke.Aliases.load_aliases()
+
+    if map_size(aliases) == 0 do
+      IO.puts(
+        Formatter.format_info(
+          "No aliases declared. Declare them in .yoke/aliases.json or using /alias add <name> <cmd>."
+        )
+      )
+    else
+      IO.puts(
+        "\n#{Formatter.bold()}#{Formatter.cyan()}Declared Session Aliases (#{map_size(aliases)}):#{Formatter.reset()}"
+      )
+
+      IO.puts(
+        Formatter.dim() <>
+          "─────────────────────────────────────────────────────────────────────────────" <>
+          Formatter.reset()
+      )
+
+      aliases
+      |> Enum.sort_by(fn {name, _} -> name end)
+      |> Enum.each(fn {name, defn} ->
+        cmd_count =
+          cond do
+            is_list(defn["commands"]) -> length(defn["commands"])
+            is_binary(defn["command"]) -> 1
+            true -> 0
+          end
+
+        desc = defn["description"] || "Alias for #{name}"
+        scope = defn["scope"] || "project"
+
+        IO.puts(
+          "  #{Formatter.cyan()}/#{String.pad_trailing(name, 18)}#{Formatter.reset()} #{Formatter.dim()}[#{cmd_count} step(s), #{scope}]#{Formatter.reset()} #{desc}"
+        )
+      end)
+
+      IO.puts(
+        Formatter.dim() <>
+          "─────────────────────────────────────────────────────────────────────────────" <>
+          Formatter.reset()
+      )
+
+      IO.puts(
+        "Run with #{Formatter.cyan()}/<name> [args]#{Formatter.reset()} or #{Formatter.cyan()}/alias run <name> [args]#{Formatter.reset()}.\n"
+      )
+    end
+  end
+
+  defp render_alias_detail(name) do
+    clean_name = String.trim_leading(name, "/")
+
+    case Yoke.Aliases.get_alias(clean_name) do
+      {:ok, defn} ->
+        desc = defn["description"] || "Alias for #{clean_name}"
+        scope = defn["scope"] || "project"
+
+        commands =
+          cond do
+            is_list(defn["commands"]) -> defn["commands"]
+            is_binary(defn["command"]) -> [defn["command"]]
+            true -> []
+          end
+
+        IO.puts(
+          "\n#{Formatter.bold()}#{Formatter.cyan()}Alias: /#{clean_name}#{Formatter.reset()} #{Formatter.dim()}(#{scope})#{Formatter.reset()}"
+        )
+
+        IO.puts("Description: #{desc}")
+        IO.puts("Commands (#{length(commands)}):")
+
+        commands
+        |> Enum.with_index(1)
+        |> Enum.each(fn {cmd, idx} ->
+          trimmed = String.trim(cmd)
+          IO.puts("  #{Formatter.cyan()}#{idx}.#{Formatter.reset()} #{trimmed}")
+        end)
+
+        IO.puts("")
+
+      :error ->
+        IO.puts(
+          Formatter.format_error(
+            "Alias '#{clean_name}' not found. Type /alias to view declared aliases."
+          )
+        )
+    end
+  end
+
+  defp check_and_run_alias(command_line, session_pid, session_id) do
+    {name, args} =
+      case String.split(command_line, ~r/\s+/, parts: 2) do
+        [n] -> {n, ""}
+        [n, a] -> {n, String.trim(a)}
+      end
+
+    clean_name = String.trim_leading(name, "/")
+
+    case Yoke.Aliases.get_alias(clean_name) do
+      {:ok, alias_def} ->
+        {:ok, run_alias_definition(alias_def, args, session_pid, session_id)}
+
+      :error ->
+        :not_found
+    end
+  end
+
+  defp run_alias_by_name(name, args, session_pid, session_id) do
+    clean_name = String.trim_leading(name, "/")
+
+    case Yoke.Aliases.get_alias(clean_name) do
+      {:ok, alias_def} ->
+        run_alias_definition(alias_def, args, session_pid, session_id)
+
+      :error ->
+        IO.puts(
+          Formatter.format_error(
+            "Alias '#{clean_name}' not found. Type /alias list to see available aliases."
+          )
+        )
+
+        :continue
+    end
+  end
+
+  defp run_alias_definition(alias_def, raw_args, session_pid, session_id) do
+    depth = Process.get(:yoke_alias_depth, 0)
+    name = alias_def["name"] || "alias"
+
+    if depth >= 5 do
+      IO.puts(Formatter.format_error("Alias '#{name}' exceeded maximum recursion depth (5)."))
+      :continue
+    else
+      Process.put(:yoke_alias_depth, depth + 1)
+
+      try do
+        case Yoke.Aliases.expand_alias(alias_def, raw_args) do
+          {:ok, []} ->
+            IO.puts(Formatter.format_info("Alias '#{name}' produced no executable commands."))
+            :continue
+
+          {:ok, commands} ->
+            desc = alias_def["description"] || name
+            step_count = length(commands)
+
+            IO.puts(
+              Formatter.format_info(
+                "▶ Running alias '/#{name}' (#{desc}) [#{step_count} step(s)]…"
+              )
+            )
+
+            execute_alias_steps(commands, 1, step_count, session_pid, session_id)
+        end
+      after
+        Process.put(:yoke_alias_depth, depth)
+      end
+    end
+  end
+
+  defp execute_alias_steps([], _idx, _total, _session_pid, _session_id), do: :continue
+
+  defp execute_alias_steps([cmd | rest], idx, total, session_pid, session_id) do
+    short_preview =
+      if String.length(cmd) > 80 do
+        String.slice(cmd, 0, 77) <> "..."
+      else
+        cmd
+      end
+
+    Formatter.safe_puts(
+      Formatter.dim() <> "  ↳ [step #{idx}/#{total}] #{short_preview}" <> Formatter.reset()
+    )
+
+    case handle_input(cmd, session_pid, session_id) do
+      :continue ->
+        execute_alias_steps(rest, idx + 1, total, session_pid, session_id)
+
+      other ->
+        other
     end
   end
 end

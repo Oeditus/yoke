@@ -65,7 +65,9 @@ defmodule Yoke.Config do
     # Explicit list of programming languages used in the project (e.g. ["elixir"]).
     # When set (non-empty list or string), only practices for these languages are exposed to the model as constraints.
     # When nil or empty, languages are automatically detected from workspace files.
-    "languages" => nil
+    "languages" => nil,
+    # Reusable session command aliases (name => command | commands | definition)
+    "aliases" => %{}
   }
 
   @doc "Returns the configured project languages list or nil if auto-detection should be used."

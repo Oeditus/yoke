@@ -271,6 +271,14 @@ Run `yoke` completely offline against local LLM servers without requiring API ke
 - **Socratic & Adversarial Sparring (`/spar [soc|adv] <topic>`)**: Pressure-tests new feature designs turn-by-turn with Socratic requirement probing and blunt Adversarial counter-arguments.
 - **Structured Memory Architecture**: Transient scratch notes (`/scrap`), operational lessons learned (`/lessons`), and automated close-out gates.
 
+### 13. Session Command Aliases (`/alias`, `/<name>`)
+- Declare custom command sequences (slash commands, shell commands `!cmd`, or LLM agent prompts) that execute sequentially within the current active session.
+- Stored in `.yoke/aliases.json` (workspace), `~/.yoke/aliases.json` (global), or under `"aliases"` in `.yoke/config.json`.
+- Supports parameter placeholders (`{{args}}`, `$@`, `$1`), auto-appended arguments, and conditionals (`{{#if_args}}...{{/if_args}}`, `{{#if_commit_only}}...{{/if_commit_only}}`).
+- Built-in default aliases out-of-the-box:
+  - `/finish [files] [--commit-only]` (alias: `/pr`): Runs `mix format`, creates a comprehensive commit explicitly documenting **The PR reason**, **Implementation**, **How to verify**, **Risk & rollout**, and **Reviewer guidance**, and opens a GitHub pull request. Supports `--commit-only` (or `-c`) to commit without creating a PR, and stages optional files or commits manually added files.
+  - `/commit-structured [files]` (alias: `/cpr`): Creates a commit with the comprehensive 5-section format without opening a PR.
+
 ---
 
 <p align="center">
@@ -469,6 +477,8 @@ The full reference lives in [`docs/cheat_sheet.md`](docs/cheat_sheet.md); the es
 | `/review help` | Display comprehensive in-terminal review guide |
 | `/diff [branch]` | Display colorized git diff of workspace or against target branch |
 | `/commit <message>` | Auto-stage and commit workspace changes |
+| `/finish [files] [--commit-only]` \| `/pr` | Complete work: auto-format, write 5-section structured commit, and create GitHub PR (or commit only with `--commit-only`) |
+| `/commit-structured [files]` \| `/cpr` | Commit staged changes with the 5 structured PR sections without creating a PR |
 | `/linter <tool> [project\|diff\|cr]` | Run `oeditus_credo`, `propwise`, `credo`, or `dialyzer` (alias: `/lint`) |
 
 #### Model, Execution & Rules
@@ -485,6 +495,7 @@ The full reference lives in [`docs/cheat_sheet.md`](docs/cheat_sheet.md); the es
 #### Tooling & Extensibility
 | Command | Action |
 | :--- | :--- |
+| `/alias [list\|show\|add\|rm\|run\|<name>]` \| `/<name>` | Declare, inspect, manage, and execute reusable session command aliases |
 | `/plugins [reload\|info]` | List tools or hot-reload plugins live without dropping state |
 | `/mcp [list\|add\|load]` | Manage Model Context Protocol (MCP) servers and tools |
 | `/ragex [stats\|reindex\|export]` | Mount and drive the first-class Ragex code analysis & refactoring MCP server |
@@ -533,6 +544,7 @@ Manage most of these live from the REPL with `/config style <name>`, `/config pr
 ## Documentation
 
 - [`docs/GETTING_STARTED_GUIDE.md`](docs/GETTING_STARTED_GUIDE.md) — Comprehensive Onboarding & Customization Guide (Practices, Workflows, Plugins, Rules, Skills & Ragex).
+- [`docs/SESSION_ALIASES.md`](docs/SESSION_ALIASES.md) — Session Command Aliases Reference (`/alias`, `/<name>`).
 - [`docs/WORKFLOW_ENGINE.md`](docs/WORKFLOW_ENGINE.md) — Multi-step Workflow Engine Reference (`/workflow`).
 - [`docs/cheat_sheet.md`](docs/cheat_sheet.md) — Full Slash Command & Shortcuts Cheatsheet.
 

@@ -114,6 +114,10 @@ my_app deepseek-chat >
 | `/ragex` | Mount Ragex MCP server for AST refactoring & SCIP semantic search | `/ragex` |
 | `/skills [name]` | List available skills or execute a skill instruction file | `/skills` |
 | `/update` | Refresh production OTP release in background (`yoke --update`) | `/update` |
+| `/alias [list\|show\|add\|rm\|run]` | Manage and run reusable session command aliases (or `/<alias>`) | `/alias list` |
+| `/finish [files] [--commit-only]` | Complete work: format, structured commit (5 sections) & create PR | `/finish lib/app.ex` |
+| `/pr [files] [--commit-only]` | Alias for `/finish` (supports `--commit-only` / `-c`) | `/pr --commit-only` |
+| `/commit-structured [files]` | Staged commit with 5 PR sections without creating a PR (alias: `/cpr`) | `/commit-structured` |
 | `/commit <msg>` | Auto-stage all modified workspace files and create git commit | `/commit "feat: add user login"` |
 | `/cost` \| `/tokens` | Display token usage breakdown and cumulative session cost | `/cost` |
 | `/permissions` | Set tool execution safety mode (`auto` or `ask`) | `/permissions ask` |
@@ -219,6 +223,32 @@ Maintains an evolving codebase memory in `.yoke/review_patterns.md`:
 Stages all workspace modifications and creates a git commit:
 ```bash
 /commit "fix(cli): resolve terminal cursor offset on emoji rendering"
+```
+
+### 4. Structured Commits & Pull Requests (`/finish`, `/pr`, `/commit-structured`, `/cpr`)
+Automate task completion with a comprehensive 5-section rationale (The PR reason, Implementation, How to verify, Risk & rollout, Reviewer guidance):
+```bash
+# Formats code, commits staged files, and creates GitHub PR via gh
+/finish
+
+# Optionally stage specific files before commit
+/finish lib/yoke/aliases.ex lib/yoke/cli/repl.ex
+
+# Create structured commit only without opening a PR
+/finish --commit-only
+/finish -c lib/app.ex
+/commit-structured lib/app.ex
+/cpr
+```
+
+### 5. Session Command Aliases (`/alias`, `/<name>`)
+Declare and execute prepared command sequences in the active session:
+```bash
+/alias list                     # List declared aliases
+/alias show finish              # Display steps of an alias
+/alias add test !mix test       # Define a new quick alias
+/alias rm test                  # Remove an alias
+/<alias_name> [args]            # Execute alias directly
 ```
 
 ---

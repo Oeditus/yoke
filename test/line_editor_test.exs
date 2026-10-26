@@ -407,6 +407,14 @@ defmodule Yoke.LineEditorTest do
       assert {:ok, "/jobs kill"} = LineEditor.tab_complete("/jobs k")
     end
 
+    test "completes /alias and its subcommands" do
+      assert {:ok, "/alias list"} = LineEditor.tab_complete("/alias li")
+      assert {:ok, "/alias show"} = LineEditor.tab_complete("/alias sh")
+      assert {:ok, "/alias add"} = LineEditor.tab_complete("/alias ad")
+      assert {:ambiguous, ["/alias rm", "/alias run"]} = LineEditor.tab_complete("/alias r")
+      assert {:ok, "/alias run"} = LineEditor.tab_complete("/alias ru")
+    end
+
     test "completes file path when inside backticks and inserts as plain text" do
       tmp_dir = Path.join(System.tmp_dir!(), "yoke_test_bt_#{System.unique_integer([:positive])}")
       File.mkdir_p!(Path.join(tmp_dir, "lib/sub"))
