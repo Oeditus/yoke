@@ -929,40 +929,38 @@ defmodule Yoke.CLI.LineEditor do
   defp complete_alias_subcommands(input, cwd) do
     prefix = if String.starts_with?(input, "/aliases"), do: "/aliases ", else: "/alias "
 
-    cond do
-      String.starts_with?(input, prefix <> "show ") or
-        String.starts_with?(input, prefix <> "rm ") or
-        String.starts_with?(input, prefix <> "delete ") or
-          String.starts_with?(input, prefix <> "run ") ->
-        action =
-          cond do
-            String.starts_with?(input, prefix <> "show ") -> "show "
-            String.starts_with?(input, prefix <> "rm ") -> "rm "
-            String.starts_with?(input, prefix <> "delete ") -> "delete "
-            true -> "run "
-          end
+    if String.starts_with?(input, prefix <> "show ") or
+         String.starts_with?(input, prefix <> "rm ") or
+         String.starts_with?(input, prefix <> "delete ") or
+         String.starts_with?(input, prefix <> "run ") do
+      action =
+        cond do
+          String.starts_with?(input, prefix <> "show ") -> "show "
+          String.starts_with?(input, prefix <> "rm ") -> "rm "
+          String.starts_with?(input, prefix <> "delete ") -> "delete "
+          true -> "run "
+        end
 
-        alias_names =
-          try do
-            Yoke.Aliases.list_alias_names(cwd)
-          rescue
-            _ -> []
-          catch
-            _, _ -> []
-          end
+      alias_names =
+        try do
+          Yoke.Aliases.list_alias_names(cwd)
+        rescue
+          _ -> []
+        catch
+          _, _ -> []
+        end
 
-        candidates = Enum.map(alias_names, &(prefix <> action <> &1))
-        complete_candidates(input, candidates)
+      candidates = Enum.map(alias_names, &(prefix <> action <> &1))
+      complete_candidates(input, candidates)
+    else
+      candidates =
+        if prefix == "/alias " do
+          @alias_subcommands
+        else
+          Enum.map(@alias_subcommands, &String.replace(&1, "/alias ", "/aliases "))
+        end
 
-      true ->
-        candidates =
-          if prefix == "/alias " do
-            @alias_subcommands
-          else
-            Enum.map(@alias_subcommands, &String.replace(&1, "/alias ", "/aliases "))
-          end
-
-        complete_candidates(input, candidates)
+      complete_candidates(input, candidates)
     end
   end
 
