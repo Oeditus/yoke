@@ -59,6 +59,7 @@ end
 if config_env() == :test do
   config :yoke, auto_start_ragex: false
   config :dllb, enabled: false
+  config :ragex, store_backend: :ets
   config :nx, :default_backend, Nx.BinaryBackend
   config :exla, start_log_sink: false
   config :logger, level: :warning

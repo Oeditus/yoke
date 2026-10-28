@@ -274,93 +274,100 @@ defmodule Yoke.MCP.ServerManager do
 
   defp do_start_ragex(target_dir, opts) do
     if Code.ensure_loaded?(MCPTools) do
-      orig_level = Logger.level()
-      Logger.configure(level: :warning)
-
-      try do
-        configure_ragex_store(target_dir)
-
-        if Code.ensure_loaded?(Ragex.Graph.Store) do
-          Ragex.Graph.Store.load_project(target_dir)
-        end
-      after
-        Logger.configure(level: orig_level)
+      with :ok <- load_ragex_store(target_dir) do
+        initialize_ragex_tools(target_dir, opts)
       end
-
-      existing_nodes = count_existing_nodes(target_dir)
-
-      if existing_nodes > 0 do
-        Logger.info("󱐋🔌 Ragex Knowledge Graph loaded from store (#{existing_nodes} nodes ready).")
-      end
-
-      # Always re-analyze the target directory on every run (even when cached
-      # nodes already exist in the store) because Yoke may be restarted on a
-      # different git branch in the same directory. Ragex's directory analyzer
-      # uses FileTracker content hashes for incremental updates while we also
-      # prune any stale entities from files deleted or modified across branches.
-      Yoke.CLI.Spinner.run(
-        fn ->
-          orig_level = Logger.level()
-          Logger.configure(level: :warning)
-
-          try do
-            if Code.ensure_loaded?(Ragex.Graph.Store) do
-              Ragex.Graph.Store.load_project(target_dir)
-            end
-
-            stale_snapshot = snapshot_stale_tracking()
-
-            case analyze_ragex_directory(target_dir, opts) do
-              {:ok, stats} ->
-                prune_stale_tracked_entities(target_dir, stale_snapshot)
-                Logger.configure(level: orig_level)
-
-                Logger.info(
-                  "󱐋🔌 Ragex indexing complete! Indexed #{stats.success} files into Knowledge Graph."
-                )
-
-              {:error, reason} ->
-                Logger.configure(level: orig_level)
-                Logger.warning("󱐋🔌 Ragex indexing notice: #{inspect(reason)}")
-            end
-          after
-            Logger.configure(level: orig_level)
-          end
-        end,
-        title: "Indexing Ragex Knowledge Graph…",
-        tip: false
-      )
-
-      raw_tools = MCPTools.list_tools()
-      tools_list = Map.get(raw_tools, :tools, [])
-
-      built =
-        Enum.map(tools_list, fn t ->
-          t_name = Map.get(t, "name") || Map.get(t, :name)
-          t_desc = Map.get(t, "description") || Map.get(t, :description) || "Ragex tool #{t_name}"
-
-          input_schema =
-            Map.get(t, "inputSchema") || Map.get(t, :inputSchema) ||
-              %{"type" => "object", "properties" => %{}}
-
-          {t_desc, input_schema} = reinforce_old_content(t_name, t_desc, input_schema)
-
-          tool_name = "mcp_ragex_#{t_name}"
-
-          dynamic_mod_name = build_mcp_ragex_tool_module(tool_name, t_name, t_desc, input_schema)
-          {tool_name, dynamic_mod_name}
-        end)
-
-      # Register every dynamically generated module in a single batch call so
-      # sessions receive one "tools reloaded" notification instead of one per tool.
-      PluginLoader.register_plugins(Enum.map(built, fn {_tool_name, mod} -> mod end))
-      registered_names = Enum.map(built, fn {tool_name, _mod} -> tool_name end)
-
-      Logger.info("● Yoke initialization complete! System is ready.")
-      {:ok, target_dir, registered_names}
     else
       start_ragex_external(target_dir, opts)
     end
+  end
+
+  defp load_ragex_store(target_dir) do
+    orig_level = Logger.level()
+    Logger.configure(level: :warning)
+
+    try do
+      configure_ragex_store(target_dir)
+
+      if Code.ensure_loaded?(Ragex.Graph.Store) do
+        Ragex.Graph.Store.load_project(target_dir)
+      else
+        :ok
+      end
+    after
+      Logger.configure(level: orig_level)
+    end
+  end
+
+  defp initialize_ragex_tools(target_dir, opts) do
+    existing_nodes = count_existing_nodes(target_dir)
+
+    if existing_nodes > 0 do
+      Logger.info("󱐋🔌 Ragex Knowledge Graph loaded from store (#{existing_nodes} nodes ready).")
+    end
+
+    # Always re-analyze the target directory on every run (even when cached
+    # nodes already exist in the store) because Yoke may be restarted on a
+    # different git branch in the same directory. Ragex's directory analyzer
+    # uses FileTracker content hashes for incremental updates while we also
+    # prune any stale entities from files deleted or modified across branches.
+    Yoke.CLI.Spinner.run(
+      fn ->
+        orig_level = Logger.level()
+        Logger.configure(level: :warning)
+
+        try do
+          stale_snapshot = snapshot_stale_tracking()
+
+          case analyze_ragex_directory(target_dir, opts) do
+            {:ok, stats} ->
+              prune_stale_tracked_entities(target_dir, stale_snapshot)
+              Logger.configure(level: orig_level)
+
+              Logger.info(
+                "Ragex indexing complete: #{stats.success} indexed, " <>
+                  "#{stats.skipped} unchanged, #{stats.errors} failed."
+              )
+
+            {:error, reason} ->
+              Logger.configure(level: orig_level)
+              Logger.warning("󱐋🔌 Ragex indexing notice: #{inspect(reason)}")
+          end
+        after
+          Logger.configure(level: orig_level)
+        end
+      end,
+      title: "Indexing Ragex Knowledge Graph…",
+      tip: false
+    )
+
+    raw_tools = MCPTools.list_tools()
+    tools_list = Map.get(raw_tools, :tools, [])
+
+    built =
+      Enum.map(tools_list, fn t ->
+        t_name = Map.get(t, "name") || Map.get(t, :name)
+        t_desc = Map.get(t, "description") || Map.get(t, :description) || "Ragex tool #{t_name}"
+
+        input_schema =
+          Map.get(t, "inputSchema") || Map.get(t, :inputSchema) ||
+            %{"type" => "object", "properties" => %{}}
+
+        {t_desc, input_schema} = reinforce_old_content(t_name, t_desc, input_schema)
+
+        tool_name = "mcp_ragex_#{t_name}"
+
+        dynamic_mod_name = build_mcp_ragex_tool_module(tool_name, t_name, t_desc, input_schema)
+        {tool_name, dynamic_mod_name}
+      end)
+
+    # Register every dynamically generated module in a single batch call so
+    # sessions receive one "tools reloaded" notification instead of one per tool.
+    PluginLoader.register_plugins(Enum.map(built, fn {_tool_name, mod} -> mod end))
+    registered_names = Enum.map(built, fn {tool_name, _mod} -> tool_name end)
+
+    Logger.info("● Yoke initialization complete! System is ready.")
+    {:ok, target_dir, registered_names}
   end
 
   defp analyze_ragex_directory(target_dir, opts) when is_list(opts) do
@@ -373,19 +380,18 @@ defmodule Yoke.MCP.ServerManager do
         :notify,
         :timeout,
         :max_concurrency,
-        :load_project,
         :watch
       ])
 
-    if analyze_opts == [] do
-      Ragex.Analyzers.Directory.analyze_directory(target_dir)
-    else
-      Ragex.Analyzers.Directory.analyze_directory(target_dir, analyze_opts)
-    end
+    # The store is already loaded before taking the stale-entity snapshot.
+    Ragex.Analyzers.Directory.analyze_directory(
+      target_dir,
+      Keyword.put(analyze_opts, :load_project, false)
+    )
   end
 
   defp analyze_ragex_directory(target_dir, _opts) do
-    Ragex.Analyzers.Directory.analyze_directory(target_dir)
+    Ragex.Analyzers.Directory.analyze_directory(target_dir, load_project: false)
   end
 
   defp snapshot_stale_tracking do
@@ -661,7 +667,7 @@ defmodule Yoke.MCP.ServerManager do
       end
 
       # Fast check: skip schema bootstrapping if ast_node table already exists
-      if Process.whereis(Dllb.Pool) != nil or dllb_mode == :per_project do
+      if dllb_mode != :per_project and Process.whereis(Dllb.Pool) != nil do
         already_bootstrapped? =
           try do
             case DllbStore.query("SELECT * FROM ast_node LIMIT 1;") do

@@ -42,6 +42,13 @@ defmodule Yoke.MCPServerManagerTest do
     shared_file = Path.join(lib_dir, "shared.ex")
     branch_a_file = Path.join(lib_dir, "branch_a_only.ex")
     branch_b_file = Path.join(lib_dir, "branch_b_only.ex")
+    unchanged_file = Path.join(lib_dir, "unchanged.ex")
+
+    File.write!(unchanged_file, """
+    defmodule YokeRagexTest.Unchanged do
+      def stable, do: :stable
+    end
+    """)
 
     # Simulate Run 1 on Branch A
     File.write!(shared_file, """
@@ -58,7 +65,7 @@ defmodule Yoke.MCPServerManagerTest do
     """)
 
     assert {:ok, ^tmp_dir, tools} =
-             MCPServerManager.start_ragex(target_dir: tmp_dir, watch: false, notify: false)
+             start_ragex_once(target_dir: tmp_dir, watch: false, notify: false)
 
     assert is_list(tools) and tools != []
     Ragex.Graph.Store.sync()
@@ -69,6 +76,16 @@ defmodule Yoke.MCPServerManagerTest do
     assert Ragex.Graph.Store.get_module(YokeRagexTest.BranchAOnly) != nil
     assert Ragex.Graph.Store.get_function(YokeRagexTest.BranchAOnly, :only_a, 0) != nil
     assert Ragex.Graph.Store.get_module(YokeRagexTest.BranchBOnly) == nil
+
+    # A warm restart must neither reload the project twice nor reanalyze files.
+    tracked_before = Ragex.Embeddings.FileTracker.export()
+
+    assert {:ok, ^tmp_dir, _tools} =
+             start_ragex_once(target_dir: tmp_dir, watch: false, notify: false)
+
+    assert Ragex.Embeddings.FileTracker.export() == tracked_before
+    unchanged_id = Ragex.Embeddings.FileTracker.normalize_file_id(unchanged_file)
+    unchanged_metadata = tracked_before.tracked_files[unchanged_id]
 
     # Simulate switching to Branch B in the same directory and restarting Ragex (Run 2):
     # - shared.ex is modified (branch_a_fn removed, branch_b_fn added)
@@ -93,7 +110,7 @@ defmodule Yoke.MCPServerManagerTest do
     assert Ragex.Graph.Store.stats().nodes > 0
 
     assert {:ok, ^tmp_dir, _tools} =
-             MCPServerManager.start_ragex(target_dir: tmp_dir, watch: false, notify: false)
+             start_ragex_once(target_dir: tmp_dir, watch: false, notify: false)
 
     Ragex.Graph.Store.sync()
 
@@ -108,6 +125,31 @@ defmodule Yoke.MCPServerManagerTest do
     assert Ragex.Graph.Store.get_function(YokeRagexTest.Shared, :branch_a_fn, 0) == nil
     assert Ragex.Graph.Store.get_module(YokeRagexTest.BranchAOnly) == nil
     assert Ragex.Graph.Store.get_function(YokeRagexTest.BranchAOnly, :only_a, 0) == nil
+    assert Ragex.Embeddings.FileTracker.export().tracked_files[unchanged_id] == unchanged_metadata
+  end
+
+  defp start_ragex_once(opts) do
+    store = Process.whereis(Ragex.Graph.Store)
+    pattern = [{[{:load_project, :_}, :_, :_], [], []}]
+    :erlang.trace_pattern({Ragex.Graph.Store, :handle_call, 3}, pattern, [:local])
+    :erlang.trace(store, true, [:call])
+
+    try do
+      result = MCPServerManager.start_ragex(opts)
+      delivery = :erlang.trace_delivered(store)
+      assert_receive {:trace_delivered, ^store, ^delivery}
+
+      assert_receive {:trace, ^store, :call,
+                      {Ragex.Graph.Store, :handle_call, [{:load_project, _}, _, _]}}
+
+      refute_received {:trace, ^store, :call,
+                       {Ragex.Graph.Store, :handle_call, [{:load_project, _}, _, _]}}
+
+      result
+    after
+      :erlang.trace(store, false, [:call])
+      :erlang.trace_pattern({Ragex.Graph.Store, :handle_call, 3}, false, [:local])
+    end
   end
 
   test "formats validation errors with dynamic language (JS/TS support)" do

@@ -334,6 +334,12 @@ mix deps.get
 mix yoke.install
 ```
 
+#### Testing local Ragex changes
+
+Set `LOCAL_RAGEX` to an absolute Ragex checkout path to use unpublished source changes instead of the Hex dependency. For example, run `LOCAL_RAGEX=/path/to/ragex mix test` from this checkout. The same override applies when building a release with `LOCAL_RAGEX=/path/to/ragex MIX_ENV=prod mix release --overwrite`.
+
+Rebuild the sibling Dllb server with `cargo build --release -p dllb-server` from its checkout when changing database index behavior. Existing running processes retain their old code; restart Yoke normally after rebuilding. Do not delete `.ragex` or the fingerprint cache to apply startup fixes.
+
 #### Adding `~/.local/bin` to Your System `$PATH`
 
 After installation, ensure `~/.local/bin` is included in your shell path so you can run `yoke` from any terminal directory:

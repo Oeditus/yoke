@@ -74,7 +74,7 @@ defmodule Yoke.MixProject do
       {:makeup_rust, ">= 0.0.0", optional: true},
       {:makeup_html, ">= 0.0.0", optional: true},
       {:owl, "~> 0.13"},
-      {:ragex, "~> 0.30"},
+      ragex_dep(),
       {:dllb, "~> 0.9"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
@@ -84,6 +84,14 @@ defmodule Yoke.MixProject do
       # Scans mix.lock for known security vulnerabilities (`mix deps.audit`)
       {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false}
     ] ++ embeddings_deps()
+  end
+
+  # Opt-in source override for validating changes before a Ragex Hex release.
+  defp ragex_dep do
+    case System.get_env("LOCAL_RAGEX") do
+      nil -> {:ragex, "~> 0.38.1"}
+      path -> {:ragex, path: Path.expand(path), override: true}
+    end
   end
 
   # `ragex`'s Bumblebee-based embeddings/vector search and Image processing
