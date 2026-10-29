@@ -380,6 +380,7 @@ defmodule Yoke.MCP.ServerManager do
         :notify,
         :timeout,
         :max_concurrency,
+        :generate_embeddings,
         :watch
       ])
 

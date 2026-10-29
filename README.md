@@ -340,6 +340,10 @@ Set `LOCAL_RAGEX` to an absolute Ragex checkout path to use unpublished source c
 
 Rebuild the sibling Dllb server with `cargo build --release -p dllb-server` from its checkout when changing database index behavior. Existing running processes retain their old code; restart Yoke normally after rebuilding. Do not delete `.ragex` or the fingerprint cache to apply startup fixes.
 
+For unpublished Ragex startup fixes, launch with `LOCAL_RAGEX=/path/to/ragex YOKE_REBUILD=1 yoke` to rebuild the OTP release against that checkout. `LOCAL_RAGEX` must also be set for subsequent builds until the fix is published; the default dependency still comes from Hex.
+
+Incremental graph indexing should not wait for the embedding model to download or initialize. Ragex readiness checks must remain nonblocking, and unchanged directory scans should not rewrite the graph and fingerprint caches. Switching branches still scans for added, changed and deleted files; an existing graph is not a reason to skip that validation.
+
 #### Adding `~/.local/bin` to Your System `$PATH`
 
 After installation, ensure `~/.local/bin` is included in your shell path so you can run `yoke` from any terminal directory:

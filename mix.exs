@@ -62,7 +62,7 @@ defmodule Yoke.MixProject do
     [
       {:req, "~> 0.7"},
       {:marcli, "~> 0.3"},
-      {:md, "~> 0.13.0", override: true},
+      {:md, "~> 0.13", override: true},
       {:lmml, "~> 0.2"},
       {:makeup_elixir, ">= 0.0.0", optional: true},
       {:makeup_erlang, ">= 0.0.0", optional: true},
@@ -109,8 +109,8 @@ defmodule Yoke.MixProject do
     else
       [
         {:bumblebee, "~> 0.5"},
-        {:nx, "~> 0.12"},
-        {:exla, "~> 0.9"},
+        {:nx, "~> 1.0", override: true},
+        {:exla, "~> 1.0", override: true},
         {:image, "~> 0.54"}
       ]
     end

@@ -126,6 +126,47 @@ defmodule Yoke.MCPServerManagerTest do
     assert Ragex.Graph.Store.get_module(YokeRagexTest.BranchAOnly) == nil
     assert Ragex.Graph.Store.get_function(YokeRagexTest.BranchAOnly, :only_a, 0) == nil
     assert Ragex.Embeddings.FileTracker.export().tracked_files[unchanged_id] == unchanged_metadata
+
+    # A deletion-only branch change must still be pruned even when no files are analyzed.
+    File.rm!(branch_b_file)
+
+    assert {:ok, ^tmp_dir, _tools} =
+             start_ragex_once(target_dir: tmp_dir, watch: false, notify: false)
+
+    Ragex.Graph.Store.sync()
+    assert Ragex.Graph.Store.get_module(YokeRagexTest.BranchBOnly) == nil
+    assert Ragex.Graph.Store.get_function(YokeRagexTest.BranchBOnly, :only_b, 0) == nil
+    assert {:new, nil} = Ragex.Embeddings.FileTracker.has_changed?(branch_b_file)
+    assert Ragex.Embeddings.FileTracker.export().tracked_files[unchanged_id] == unchanged_metadata
+  end
+
+  test "forwards embedding controls to Ragex startup analysis" do
+    tmp_dir =
+      Path.join(System.tmp_dir!(), "yoke_ragex_options_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(tmp_dir)
+    on_exit(fn -> File.rm_rf(tmp_dir) end)
+    :erlang.trace_pattern({Ragex.Analyzers.Directory, :analyze_directory, 2}, true, [:local])
+    :erlang.trace(:all, true, [:call, :set_on_spawn])
+
+    try do
+      assert {:ok, ^tmp_dir, _tools} =
+               MCPServerManager.start_ragex(
+                 target_dir: tmp_dir,
+                 watch: false,
+                 notify: false,
+                 generate_embeddings: false
+               )
+
+      assert_receive {:trace, _, :call,
+                      {Ragex.Analyzers.Directory, :analyze_directory, [^tmp_dir, opts]}}
+
+      assert opts[:generate_embeddings] == false
+      assert opts[:load_project] == false
+    after
+      :erlang.trace(:all, false, [:call, :set_on_spawn])
+      :erlang.trace_pattern({Ragex.Analyzers.Directory, :analyze_directory, 2}, false, [:local])
+    end
   end
 
   defp start_ragex_once(opts) do
