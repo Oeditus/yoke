@@ -344,6 +344,14 @@ For unpublished Ragex startup fixes, launch with `LOCAL_RAGEX=/path/to/ragex YOK
 
 Incremental graph indexing should not wait for the embedding model to download or initialize. Ragex readiness checks must remain nonblocking, and unchanged directory scans should not rewrite the graph and fingerprint caches. Switching branches still scans for added, changed and deleted files; an existing graph is not a reason to skip that validation.
 
+Ragex source discovery must honor nested `.gitignore` files, particularly in umbrella applications where generated bundles live under an app's `priv/static/assets/`. Otherwise an unchanged restart can repeatedly attempt to parse large ignored bundles that never acquired successful fingerprints. Git-aware discovery includes tracked and non-ignored untracked source files, while retaining explicit build-directory exclusions and depth limits. `Ragex.Analyzers.Directory.discover_files/2` provides a read-only way to inspect the selected files without re-indexing the graph.
+
+#### Testing local Markdown changes
+
+Set `LOCAL_MD` to the Markdown parser checkout to validate unpublished `md` fixes, for example `LOCAL_MD=/path/to/md mix quality.ci`. It can be combined with `LOCAL_RAGEX`; without an override, the normal Hex dependency is used.
+
+When Dialyzer reports LMML constructors as error-only despite successful runtime round trips, check the upstream parser contracts. Parser finalization passes a list of AST nodes to `Md.Deferred.apply/2`, and `Md.Engine.flatten/1` handles both scalar nodes and lists. Excluding those supported inputs from their specs can make Dialyzer infer that every generated parser is non-returning, propagating impossible-success warnings throughout session persistence. Correct the dependency contracts rather than suppressing the callers or deleting valid success branches.
+
 #### Adding `~/.local/bin` to Your System `$PATH`
 
 After installation, ensure `~/.local/bin` is included in your shell path so you can run `yoke` from any terminal directory:

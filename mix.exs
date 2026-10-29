@@ -62,7 +62,7 @@ defmodule Yoke.MixProject do
     [
       {:req, "~> 0.7"},
       {:marcli, "~> 0.3"},
-      {:md, "~> 0.13", override: true},
+      md_dep(),
       {:lmml, "~> 0.2"},
       {:makeup_elixir, ">= 0.0.0", optional: true},
       {:makeup_erlang, ">= 0.0.0", optional: true},
@@ -84,6 +84,14 @@ defmodule Yoke.MixProject do
       # Scans mix.lock for known security vulnerabilities (`mix deps.audit`)
       {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false}
     ] ++ embeddings_deps()
+  end
+
+  # Opt-in source override for validating fixes before an Md Hex release.
+  defp md_dep do
+    case System.get_env("LOCAL_MD") do
+      nil -> {:md, "~> 0.13", override: true}
+      path -> {:md, path: Path.expand(path), override: true}
+    end
   end
 
   # Opt-in source override for validating changes before a Ragex Hex release.

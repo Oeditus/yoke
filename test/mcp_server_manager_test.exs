@@ -169,6 +169,66 @@ defmodule Yoke.MCPServerManagerTest do
     end
   end
 
+  @tag skip:
+         if(
+           Code.ensure_loaded?(Ragex.Analyzers.Directory) and
+             function_exported?(Ragex.Analyzers.Directory, :discover_files, 2),
+           do: false,
+           else: "Requires Git-aware Ragex source discovery"
+         )
+  test "unchanged restarts never submit nested Git-ignored bundles for analysis" do
+    root =
+      Path.join(System.tmp_dir!(), "yoke_ragex_ignored_#{System.unique_integer([:positive])}")
+
+    source = Path.join(root, "apps/web/lib/source.ex")
+    bundle = Path.join(root, "apps/web/priv/static/assets/bundle.js")
+    old_cache_root = Application.get_env(:ragex, :cache_root)
+    Application.put_env(:ragex, :cache_root, Path.join(root, ".cache"))
+    File.mkdir_p!(Path.dirname(source))
+    File.mkdir_p!(Path.dirname(bundle))
+    File.write!(Path.join(root, "apps/web/.gitignore"), "/priv/static/assets/\n")
+    File.write!(source, "defmodule YokeIgnoredBundleTest do\n  def value, do: :ok\nend\n")
+    File.write!(bundle, "not valid JavaScript {{{")
+    {_output, 0} = System.cmd("git", ["init", "--quiet", root], stderr_to_stdout: true)
+
+    on_exit(fn ->
+      Ragex.Graph.Store.clear()
+      Ragex.Graph.Store.sync()
+      File.rm_rf!(root)
+
+      if old_cache_root do
+        Application.put_env(:ragex, :cache_root, old_cache_root)
+      else
+        Application.delete_env(:ragex, :cache_root)
+      end
+    end)
+
+    :erlang.trace_pattern({Ragex.Analyzers.Directory, :analyze_files, 2}, true, [:local])
+    :erlang.trace(:all, true, [:call, :set_on_spawn])
+
+    try do
+      for _ <- 1..2 do
+        assert {:ok, ^root, _tools} =
+                 MCPServerManager.start_ragex(
+                   target_dir: root,
+                   watch: false,
+                   notify: false,
+                   generate_embeddings: false
+                 )
+
+        assert_receive {:trace, _, :call,
+                        {Ragex.Analyzers.Directory, :analyze_files, [files, _opts]}}
+
+        assert [^source] = files
+        assert {:unchanged, _} = Ragex.Embeddings.FileTracker.has_changed?(source)
+        assert {:new, nil} = Ragex.Embeddings.FileTracker.has_changed?(bundle)
+      end
+    after
+      :erlang.trace(:all, false, [:call, :set_on_spawn])
+      :erlang.trace_pattern({Ragex.Analyzers.Directory, :analyze_files, 2}, false, [:local])
+    end
+  end
+
   defp start_ragex_once(opts) do
     store = Process.whereis(Ragex.Graph.Store)
     pattern = [{[{:load_project, :_}, :_, :_], [], []}]
