@@ -104,20 +104,35 @@ defmodule Yoke.TaskEngine.JobManagerTest do
     refute job_2 in running_after
   end
 
-  test "status line ruler updates and properly redraws showing 1 job less when a job finishes" do
+  @tag tmp_dir: true
+  test "status line ruler updates and properly redraws showing 1 job less when a job finishes", %{
+    tmp_dir: tmp_dir
+  } do
     alias Yoke.CLI.LineEditor
     alias Yoke.CLI.TerminalOwner
-
-    # Clean any leftover jobs
+    on_exit(fn -> TerminalOwner.clear() end)
     JobManager.kill_all_jobs()
 
-    # Start two jobs
-    assert {:ok, _job_1, _} = JobManager.start_job("sleep 0.2")
-    assert {:ok, job_2, _} = JobManager.start_job("sleep 10")
+    # Keep both jobs running until the test explicitly releases each FIFO.
+    gate_1 = Path.join(tmp_dir, "job_1.fifo")
+    gate_2 = Path.join(tmp_dir, "job_2.fifo")
+    assert {_, 0} = System.cmd("mkfifo", [gate_1, gate_2])
+
+    assert {:ok, job_1, _} =
+             JobManager.start_job("read line < #{inspect(gate_1)}",
+               notify_pid: self(),
+               cwd: tmp_dir
+             )
+
+    assert {:ok, job_2, _} =
+             JobManager.start_job("read line < #{inspect(gate_2)}",
+               notify_pid: self(),
+               cwd: tmp_dir
+             )
 
     # Verify ruler shows 2 running jobs
     ruler_2 = LineEditor.ruler_line()
-    assert ruler_2 =~ "2 running" or ruler_2 =~ "3 running"
+    assert ruler_2 =~ "2 running"
 
     # Register a mock foreground surface in TerminalOwner to track redrawing
     test_pid = self()
@@ -128,8 +143,8 @@ defmodule Yoke.TaskEngine.JobManagerTest do
       %{custom: :state}
     )
 
-    # Wait for job_1 to finish naturally
-    Process.sleep(350)
+    File.write!(gate_1, "finish\n")
+    assert_receive {:job_completed, ^job_1, _command, {:exited, 0}, _log_tail}, 2_000
 
     # Validate that TerminalOwner was triggered to redraw upon job completion
     assert_receive {:redrawn, %{custom: :state}, redrawn_ruler}, 2_000
@@ -141,14 +156,12 @@ defmodule Yoke.TaskEngine.JobManagerTest do
     assert ruler_1 =~ "1 running"
     refute ruler_1 =~ "2 running"
 
-    # Now kill the remaining job
-    assert {:ok, _} = JobManager.kill_job(job_2)
+    File.write!(gate_2, "finish\n")
+    assert_receive {:job_completed, ^job_2, _command, {:exited, 0}, _log_tail}, 2_000
 
     # Live ruler should now show 0 running jobs (idle status bar, no running badge)
     ruler_0 = LineEditor.ruler_line()
     refute ruler_0 =~ "running"
-
-    TerminalOwner.clear()
   end
 
   test "read_file supports start_line and end_line parameters" do

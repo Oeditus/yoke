@@ -82,10 +82,16 @@ defmodule Yoke.TaskEngine.PackageTracker do
   def derive_label(_), do: "task"
 
   defp strip_preamble(text) do
-    # Drop a leading "=== Prompt & Execution Rules ===" preamble if present.
-    case String.split(text, "===============================", parts: 2) do
-      [_preamble, rest] -> String.trim(rest)
-      _ -> text
+    # Drop leading execution rules, language practices, or system preambles if present.
+    case Yoke.Brain.SessionStore.clean_prompt_text(text) do
+      "" ->
+        case String.split(text, "===============================", parts: 2) do
+          [_preamble, rest] -> String.trim(rest)
+          _ -> text
+        end
+
+      cleaned ->
+        cleaned
     end
   end
 

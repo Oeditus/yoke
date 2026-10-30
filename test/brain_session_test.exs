@@ -1,13 +1,26 @@
 defmodule Yoke.BrainSessionTest do
   use ExUnit.Case, async: false
+  @moduletag tmp_dir: true
 
   alias Yoke.Brain.Session
   alias Yoke.Brain.SessionSupervisor
   alias Yoke.Plugin.Loader, as: PluginLoader
 
-  setup do
+  setup context do
     session_id = "test_session_#{System.unique_integer([:positive])}"
-    {:ok, pid} = SessionSupervisor.start_session(session_id: session_id, model: "deepseek-chat")
+
+    {:ok, pid} =
+      SessionSupervisor.start_session(
+        session_id: session_id,
+        model: "deepseek-chat",
+        cwd: context.tmp_dir
+      )
+
+    on_exit(fn ->
+      Session.cancel_current_turn(pid)
+      SessionSupervisor.stop_session(pid)
+    end)
+
     %{session_id: session_id, pid: pid}
   end
 
@@ -75,12 +88,60 @@ defmodule Yoke.BrainSessionTest do
     assert info.hands_target == "hands@127.0.0.1"
   end
 
-  test "spawns subagent actor and calculates token stats", %{pid: pid} do
+  test "spawns subagent actor asynchronously and waits for cleanup", %{pid: pid} do
+    # Force the child session into offline mode, regardless of local credentials.
+    env_keys = ~w(DEEPSEEK_API_KEY DEEPSEEK_ENDPOINT)
+    original_env = Map.new(env_keys, &{&1, System.get_env(&1)})
+
+    on_exit(fn ->
+      Enum.each(original_env, fn
+        {key, nil} -> System.delete_env(key)
+        {key, value} -> System.put_env(key, value)
+      end)
+    end)
+
+    System.put_env("DEEPSEEK_API_KEY", "")
+    System.put_env("DEEPSEEK_ENDPOINT", "https://api.deepseek.com/chat/completions")
     stats = Session.get_token_stats(pid)
     assert is_integer(stats.total_tokens)
+    # Observe the real worker and completion message without changing the public API.
+    :erlang.trace(pid, true, [:procs, :receive])
+    assert {:ok, result} = Session.spawn_subagent(pid, "Research quantum computing", async: true)
+    assert_receive {:trace, ^pid, :spawn, worker_pid, _mfa}, 1_000
 
-    assert {:ok, result} = Session.spawn_subagent(pid, "Research quantum computing")
-    assert is_binary(result)
+    on_exit(fn ->
+      ref = Process.monitor(worker_pid)
+      Process.exit(worker_pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^worker_pid, _reason}, 1_000
+
+      # Drain any start_child request issued before the worker was stopped.
+      DynamicSupervisor.which_children(SessionSupervisor)
+
+      case Regex.run(~r/Subagent '(sub_\d+)'/, result) do
+        [_, sub_id] ->
+          for {sub_pid, _} <- Registry.lookup(Yoke.Registry, "session_" <> sub_id) do
+            Session.cancel_current_turn(sub_pid)
+            SessionSupervisor.stop_session(sub_pid)
+          end
+
+        _ ->
+          :ok
+      end
+    end)
+
+    worker_ref = Process.monitor(worker_pid)
+    assert [_, sub_id] = Regex.run(~r/Subagent '(sub_\d+)' spawned asynchronously\./, result)
+
+    assert_receive {:trace, ^pid, :receive,
+                    {:subagent_completed, ^sub_id, {:ok, %{content: content}}}},
+                   5_000
+
+    assert is_binary(content)
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, reason}, 5_000
+    assert reason in [:normal, :noproc]
+    assert [] = Registry.lookup(Yoke.Registry, "session_" <> sub_id)
+    refute Enum.any?(Yoke.TaskEngine.PackageTracker.list(), &(&1.id == sub_id))
+    assert Session.pending_background_notice?(pid)
   end
 
   test "compresses context via session actor", %{pid: pid} do
@@ -377,7 +438,8 @@ defmodule Yoke.BrainSessionTest do
 
   test "records harness error into messages and persists to .lmml file", %{
     pid: pid,
-    session_id: session_id
+    session_id: session_id,
+    tmp_dir: tmp_dir
   } do
     err_text = "** (ArgumentError) argument error in test\n  io.erl:205"
     assert :ok = Session.record_error(pid, err_text)
@@ -389,7 +451,7 @@ defmodule Yoke.BrainSessionTest do
     assert error_msg["content"] =~ err_text
 
     # Verify on-disk .lmml persistence
-    lmml_path = Path.join(".yoke/sessions", "#{session_id}.lmml")
+    lmml_path = Path.join([tmp_dir, ".yoke/sessions", "#{session_id}.lmml"])
     assert File.exists?(lmml_path)
     lmml_content = File.read!(lmml_path)
     assert lmml_content =~ "[HARNESS ERROR]"

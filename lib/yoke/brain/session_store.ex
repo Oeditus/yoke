@@ -454,12 +454,7 @@ defmodule Yoke.Brain.SessionStore do
             String.ends_with?(f, ".lmmlz") or String.ends_with?(f, ".lmml") or
               String.ends_with?(f, ".json")
           end)
-          |> Enum.map(fn f ->
-            f
-            |> String.replace_suffix(".lmmlz", "")
-            |> String.replace_suffix(".lmml", "")
-            |> String.replace_suffix(".json", "")
-          end)
+          |> Enum.map(&session_id_from_filename/1)
           |> Enum.uniq()
 
         _ ->
@@ -468,6 +463,37 @@ defmodule Yoke.Brain.SessionStore do
     else
       []
     end
+  end
+
+  @doc "Returns the total number of distinct saved sessions in workspace."
+  def count_sessions(cwd \\ ".") do
+    dir = session_dir(cwd)
+
+    if File.dir?(dir) do
+      case File.ls(dir) do
+        {:ok, files} ->
+          files
+          |> Enum.filter(fn f ->
+            String.ends_with?(f, ".lmmlz") or String.ends_with?(f, ".lmml") or
+              String.ends_with?(f, ".json")
+          end)
+          |> Enum.map(&session_id_from_filename/1)
+          |> Enum.uniq()
+          |> length()
+
+        _ ->
+          0
+      end
+    else
+      0
+    end
+  end
+
+  defp session_id_from_filename(f) do
+    f
+    |> String.replace_suffix(".lmmlz", "")
+    |> String.replace_suffix(".lmml", "")
+    |> String.replace_suffix(".json", "")
   end
 
   @doc """
@@ -496,27 +522,67 @@ defmodule Yoke.Brain.SessionStore do
   end
 
   @doc """
-  Returns metadata about all persisted sessions in the workspace.
+  Returns metadata about persisted sessions in the workspace.
 
-  Each entry is a map with `session_id`, `model`, `updated_at`, `message_count`,
-  and `step_count`. Entries are sorted most-recently-updated first. Useful for
-  building `/session list` output and for auto-resume prompts.
+  Options:
+    * `:limit` - maximum number of sessions to return (integer or `:all`; default `:all`)
+    * `:offset` - number of sessions to skip (integer; default `0`)
+
+  Candidate session files are first sorted by filesystem modification time (`mtime`)
+  so only the requested page of session files needs to be read and decoded.
   """
-  def list_session_metadata(cwd \\ ".") do
+  def list_session_metadata(cwd_or_opts \\ ".", opts \\ []) do
+    {cwd, opts} =
+      if is_list(cwd_or_opts) do
+        {Keyword.get(cwd_or_opts, :cwd, "."), cwd_or_opts}
+      else
+        {cwd_or_opts, opts}
+      end
+
+    limit = Keyword.get(opts, :limit, :all)
+    offset = Keyword.get(opts, :offset, 0)
     dir = session_dir(cwd)
 
     if File.dir?(dir) do
       case File.ls(dir) do
         {:ok, files} ->
-          files
-          |> Enum.filter(fn f ->
-            String.ends_with?(f, ".lmmlz") or String.ends_with?(f, ".lmml") or
-              String.ends_with?(f, ".json")
-          end)
-          |> Enum.map(&Path.join(dir, &1))
-          |> Enum.map(&read_session_metadata/1)
+          candidates =
+            files
+            |> Enum.filter(fn f ->
+              String.ends_with?(f, ".lmmlz") or String.ends_with?(f, ".lmml") or
+                String.ends_with?(f, ".json")
+            end)
+            |> Enum.group_by(&session_id_from_filename/1)
+            |> Enum.map(fn {_id, flist} ->
+              best =
+                Enum.find(flist, &String.ends_with?(&1, ".lmmlz")) ||
+                  Enum.find(flist, &String.ends_with?(&1, ".lmml")) ||
+                  hd(flist)
+
+              Path.join(dir, best)
+            end)
+
+          candidates_with_mtime =
+            candidates
+            |> Enum.map(fn path ->
+              mtime =
+                case File.stat(path) do
+                  {:ok, %{mtime: mt}} -> mt
+                  _ -> {{1970, 1, 1}, {0, 0, 0}}
+                end
+
+              {path, mtime}
+            end)
+            |> Enum.sort_by(fn {_path, mtime} -> mtime end, :desc)
+
+          candidates_to_read =
+            candidates_with_mtime
+            |> Enum.drop(offset)
+            |> maybe_take(limit)
+
+          candidates_to_read
+          |> Enum.map(fn {path, _} -> read_session_metadata(path) end)
           |> Enum.reject(&is_nil/1)
-          |> Enum.uniq_by(& &1[:session_id])
           |> Enum.sort_by(& &1[:updated_at], {:desc, NaiveDateTime})
 
         _ ->
@@ -526,6 +592,10 @@ defmodule Yoke.Brain.SessionStore do
       []
     end
   end
+
+  defp maybe_take(list, :all), do: list
+  defp maybe_take(list, limit) when is_integer(limit) and limit >= 0, do: Enum.take(list, limit)
+  defp maybe_take(list, _), do: list
 
   @doc """
   Loads only the persisted session metadata (without the full message
@@ -583,33 +653,140 @@ defmodule Yoke.Brain.SessionStore do
     messages = Map.get(map, "messages", [])
     updated_at = parse_timestamp(map["updated_at"])
 
+    title =
+      case map["title"] do
+        t when is_binary(t) and byte_size(t) > 0 ->
+          cleaned = clean_prompt_text(t)
+
+          if cleaned != "" and not String.starts_with?(cleaned, "==="),
+            do: sanitize_title(cleaned),
+            else: extract_first_user_message(messages)
+
+        _ ->
+          extract_first_user_message(messages)
+      end
+
     %{
       session_id: map["session_id"],
       model: map["model"],
       updated_at: updated_at,
       message_count: length(messages),
       step_count: Map.get(map, "step_count", 0),
-      title: extract_first_user_message(messages)
+      title: title
     }
   end
 
-  @doc "Extracts and truncates the first user message content from session history."
+  @doc "Extracts and truncates the first user message content from session history, stripping preambles and instructions."
   def extract_first_user_message(messages) when is_list(messages) do
-    user_msg =
-      Enum.find(messages, fn
-        %{"role" => "user"} = msg -> get_message_text(msg["content"]) != ""
-        %{role: "user"} = msg -> get_message_text(msg[:content] || msg["content"]) != ""
+    user_msgs =
+      Enum.filter(messages, fn
+        %{"role" => "user"} = msg -> get_msg_raw_text(msg) != ""
+        %{role: "user"} = msg -> get_msg_raw_text(msg) != ""
         _ -> false
       end)
 
-    case user_msg do
-      %{"content" => content} -> sanitize_title(get_message_text(content))
-      %{content: content} -> sanitize_title(get_message_text(content))
-      _ -> nil
+    selected_msg =
+      Enum.find(user_msgs, fn msg ->
+        text = get_msg_raw_text(msg)
+        not internal_callback?(text)
+      end) || List.first(user_msgs)
+
+    case selected_msg do
+      nil ->
+        nil
+
+      msg ->
+        cleaned =
+          msg
+          |> get_msg_raw_text()
+          |> clean_prompt_text()
+
+        title_text =
+          if cleaned != "" do
+            cleaned
+          else
+            get_msg_raw_text(msg)
+          end
+
+        sanitize_title(title_text)
     end
   end
 
   def extract_first_user_message(_), do: nil
+
+  defp get_msg_raw_text(%{"content" => content}), do: get_message_text(content)
+  defp get_msg_raw_text(%{content: content}), do: get_message_text(content)
+  defp get_msg_raw_text(_), do: ""
+
+  defp internal_callback?(text) when is_binary(text) do
+    trimmed = String.trim_leading(text)
+
+    String.starts_with?(trimmed, "=== Async Background Job Finished") or
+      String.starts_with?(trimmed, "=== Async Subagent Result") or
+      String.starts_with?(trimmed, "=== Async Subagent Failure")
+  end
+
+  @doc "Strips system-injected preambles, execution rules, language practices, lessons learned, and skill wrappers."
+  def clean_prompt_text(text) when is_binary(text) do
+    text
+    |> strip_leading_preambles()
+    |> simplify_skill_prompt()
+    |> String.trim()
+  end
+
+  def clean_prompt_text(other), do: get_message_text(other)
+
+  defp strip_leading_preambles(text) do
+    Stream.iterate(text, fn current ->
+      trimmed = String.trim_leading(current)
+
+      cond do
+        # 1. Block bounded by === ... === and closed by ===+
+        Regex.match?(~r/^===[^\n]+===.*?\n={3,}\s*/s, trimmed) ->
+          Regex.replace(~r/^===[^\n]+===.*?\n={3,}\s*/s, trimmed, "")
+
+        # 2. Lessons learned block: "### Project Lessons Learned & Gotchas ..."
+        Regex.match?(
+          ~r/^###\s+(?:Project\s+)?Lessons Learned.*?(?=(?:\n\n(?!\s*[-*#>\d]))|\n={3,}|\z)/s,
+          trimmed
+        ) ->
+          Regex.replace(
+            ~r/^###\s+(?:Project\s+)?Lessons Learned.*?(?=(?:\n\n(?!\s*[-*#>\d]))|\n={3,}|\z)/s,
+            trimmed,
+            ""
+          )
+
+        # 3. Leading async callback header: "=== Async Subagent Result (...) ==="
+        Regex.match?(~r/^===\s*Async[^\n]+===\s*/s, trimmed) ->
+          Regex.replace(~r/^===\s*Async[^\n]+===\s*/s, trimmed, "")
+
+        # 4. Leading "=== System Instructions ===" or "=== Context ===" without a closing ===+ line:
+        Regex.match?(~r/^===[^\n]*(?:Instructions|Context|Rules|Skills)[^\n]*===\s*/si, trimmed) ->
+          Regex.replace(
+            ~r/^===[^\n]*(?:Instructions|Context|Rules|Skills)[^\n]*===\s*/si,
+            trimmed,
+            ""
+          )
+
+        true ->
+          trimmed
+      end
+    end)
+    |> Stream.chunk_every(2, 1)
+    |> Enum.find_value(fn [prev, curr] -> if prev == curr, do: curr end)
+  end
+
+  defp simplify_skill_prompt(text) do
+    case Regex.run(
+           ~r/^Execute skill\s+['"]([^'"]+)['"](?:\s+with arguments\s+['"]([^'"]*)['"])?:/s,
+           text
+         ) do
+      [_, name, ""] -> "/skills #{name}"
+      [_, name, args] -> "/skills #{name} #{args}"
+      [_, name] -> "/skills #{name}"
+      _ -> text
+    end
+  end
 
   defp get_message_text(content) when is_binary(content), do: content
 
@@ -631,6 +808,8 @@ defmodule Yoke.Brain.SessionStore do
       text
       |> String.replace(~r/[\r\n\t]+/, " ")
       |> String.replace(~r/\s+/, " ")
+      |> String.trim()
+      |> String.trim("\"")
       |> String.trim()
 
     if cleaned == "" do

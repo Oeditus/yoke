@@ -2012,28 +2012,31 @@ defmodule Yoke.CLI.Repl do
     handle_review_conversation(nil, session_pid, session_id)
   end
 
+  @resume_page_size 20
+
+  def handle_input("/session list " <> arg, _session_pid, _session_id) do
+    case String.trim(arg) do
+      all when all in ["all", "--all", "-a"] ->
+        do_session_list(:all)
+
+      num_str ->
+        case Integer.parse(num_str) do
+          {limit, ""} when limit > 0 -> do_session_list(limit)
+          _ -> do_session_list(@resume_page_size)
+        end
+    end
+  end
+
   def handle_input("/session list", _session_pid, _session_id) do
-    metas = Yoke.Brain.SessionStore.list_session_metadata()
-
-    rows =
-      if Enum.empty?(metas) do
-        "*No persisted sessions found in workspace.*"
-      else
-        Enum.map_join(metas, "\n", fn m ->
-          dt = m.updated_at |> NaiveDateTime.to_iso8601() |> String.slice(0, 19)
-          title_prefix = if m[:title], do: "**\"#{m.title}\"** ", else: ""
-
-          "- #{title_prefix}`#{m.session_id}` [#{m.model}]: #{m.message_count} msgs, step #{m.step_count} (Updated: `#{dt}`)"
-        end)
-      end
-
-    md = "### Persisted Workspace Sessions (#{length(metas)})\n\n#{rows}"
-    IO.puts("\n" <> Formatter.format_markdown(md) <> "\n")
-    :continue
+    do_session_list(@resume_page_size)
   end
 
   def handle_input("/session resume " <> target_id, session_pid, session_id) do
     handle_input("/session switch " <> target_id, session_pid, session_id)
+  end
+
+  def handle_input("/session resume", session_pid, session_id) do
+    handle_input("/resume", session_pid, session_id)
   end
 
   def handle_input("/resume " <> target_id, session_pid, session_id) do
@@ -2046,38 +2049,18 @@ defmodule Yoke.CLI.Repl do
   end
 
   def handle_input("/resume", session_pid, session_id) do
-    metas = Yoke.Brain.SessionStore.list_session_metadata()
+    total_count = Yoke.Brain.SessionStore.count_sessions()
 
-    if Enum.empty?(metas) do
+    if total_count == 0 do
       IO.puts(Formatter.format_info("No saved sessions available to resume."))
       :continue
     else
-      meta_map =
-        Enum.into(metas, %{}, fn m ->
-          {format_session_picker_label(m), m.session_id}
-        end)
-
-      opts = Enum.map(metas, &format_session_picker_label/1)
-
-      ans =
-        Yoke.CLI.Spinner.with_paused(fn ->
-          Yoke.CLI.QuestionPrompt.ask_single_question(
-            "Select conversation to resume:",
-            opts,
-            false,
-            false
-          )
-        end)
-
-      case ans do
-        %{selected: [sel]} ->
-          target_id = Map.get(meta_map, sel) || sel |> String.split(" ", parts: 2) |> List.first()
-          handle_input("/session switch " <> target_id, session_pid, session_id)
-
-        _ ->
-          :continue
-      end
+      prompt_resume_page(session_pid, session_id, 0, total_count)
     end
+  end
+
+  def handle_input("/session switch", session_pid, session_id) do
+    handle_input("/resume", session_pid, session_id)
   end
 
   def handle_input("/session switch " <> target_id, _session_pid, _session_id) do
@@ -3399,6 +3382,132 @@ defmodule Yoke.CLI.Repl do
     end
 
     :continue
+  end
+
+  defp do_session_list(limit) do
+    total_count = Yoke.Brain.SessionStore.count_sessions()
+
+    metas =
+      if limit == :all do
+        Yoke.Brain.SessionStore.list_session_metadata()
+      else
+        Yoke.Brain.SessionStore.list_session_metadata(".", limit: limit)
+      end
+
+    rows =
+      if Enum.empty?(metas) do
+        "*No persisted sessions found in workspace.*"
+      else
+        Enum.map_join(metas, "\n", fn m ->
+          dt = m.updated_at |> NaiveDateTime.to_iso8601() |> String.slice(0, 19)
+          title_prefix = if m[:title], do: "**\"#{m.title}\"** ", else: ""
+
+          "- #{title_prefix}`#{m.session_id}` [#{m.model}]: #{m.message_count} msgs, step #{m.step_count} (Updated: `#{dt}`)"
+        end)
+      end
+
+    footer =
+      if limit != :all and total_count > length(metas) do
+        "\n\n_Showing #{length(metas)} most recent sessions of #{total_count}. Use `/session list all` to see all._"
+      else
+        ""
+      end
+
+    md = "### Persisted Workspace Sessions (#{total_count})\n\n#{rows}#{footer}"
+    IO.puts("\n" <> Formatter.format_markdown(md) <> "\n")
+    :continue
+  end
+
+  defp prompt_resume_page(session_pid, session_id, offset, total_count) do
+    metas =
+      Yoke.Brain.SessionStore.list_session_metadata(".",
+        limit: @resume_page_size,
+        offset: offset
+      )
+
+    if Enum.empty?(metas) do
+      IO.puts(Formatter.format_info("No more saved sessions available."))
+      :continue
+    else
+      has_deeper? = offset + length(metas) < total_count
+      has_newer? = offset > 0
+
+      meta_map =
+        Enum.into(metas, %{}, fn m ->
+          {format_session_picker_label(m), m.session_id}
+        end)
+
+      opts = Enum.map(metas, &format_session_picker_label/1)
+
+      opts =
+        if has_deeper? do
+          opts ++ ["▶ Go deeper (load older sessions)..."]
+        else
+          opts
+        end
+
+      opts =
+        if has_newer? do
+          opts ++ ["◀ Previous page (newer sessions)..."]
+        else
+          opts
+        end
+
+      question_title =
+        if total_count > @resume_page_size do
+          from_idx = offset + 1
+          to_idx = offset + length(metas)
+          "Select conversation to resume (#{from_idx}-#{to_idx} of #{total_count}):"
+        else
+          "Select conversation to resume:"
+        end
+
+      ans =
+        Yoke.CLI.Spinner.with_paused(fn ->
+          Yoke.CLI.QuestionPrompt.ask_single_question(
+            question_title,
+            opts,
+            false,
+            false
+          )
+        end)
+
+      case ans do
+        %{selected: [raw_sel]} when is_binary(raw_sel) ->
+          sel =
+            raw_sel
+            |> String.replace(~r/\s+\(Recommended\)$/, "")
+            |> String.trim()
+
+          cond do
+            String.contains?(sel, "Go deeper") ->
+              prompt_resume_page(session_pid, session_id, offset + @resume_page_size, total_count)
+
+            String.contains?(sel, "Previous page") ->
+              prompt_resume_page(
+                session_pid,
+                session_id,
+                max(0, offset - @resume_page_size),
+                total_count
+              )
+
+            target_id = Map.get(meta_map, sel) ->
+              handle_input("/session switch " <> target_id, session_pid, session_id)
+
+            true ->
+              extracted_id =
+                case Regex.run(~r/\(([a-zA-Z0-9_\-\.]+)\)\s*\[/, sel) do
+                  [_, id] -> id
+                  _ -> sel |> String.split(" ", parts: 2) |> List.first()
+                end
+
+              handle_input("/session switch " <> extracted_id, session_pid, session_id)
+          end
+
+        _ ->
+          :continue
+      end
+    end
   end
 
   defp format_session_picker_label(m) do

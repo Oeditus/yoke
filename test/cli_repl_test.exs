@@ -330,6 +330,39 @@ defmodule Yoke.CLIReplTest do
              Repl.handle_input("/session resume " <> target_id, pid, id)
   end
 
+  test "handles /resume interactive picker and /session list pagination", %{
+    session_pid: pid,
+    session_id: id
+  } do
+    Repl.handle_input("/god on", pid, id)
+
+    on_exit(fn ->
+      Repl.handle_input("/god off", pid, id)
+    end)
+
+    case Repl.handle_input("/resume", pid, id) do
+      {:switch_session, target_id, new_pid} ->
+        assert is_binary(target_id)
+        assert is_pid(new_pid)
+
+      :continue ->
+        :ok
+    end
+
+    case Repl.handle_input("/session switch", pid, id) do
+      {:switch_session, target_id, new_pid} ->
+        assert is_binary(target_id)
+        assert is_pid(new_pid)
+
+      :continue ->
+        :ok
+    end
+
+    assert :continue = Repl.handle_input("/session list", pid, id)
+    assert :continue = Repl.handle_input("/session list all", pid, id)
+    assert :continue = Repl.handle_input("/session list 5", pid, id)
+  end
+
   test "handles /plan slash commands without writing to the repo config", %{
     session_pid: pid,
     session_id: id

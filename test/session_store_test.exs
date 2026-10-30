@@ -425,4 +425,116 @@ defmodule Yoke.Brain.SessionStoreTest do
     assert {:ok, loaded} = SessionStore.load_session("invalid_byte_session", tmp_dir)
     assert length(loaded["messages"]) == 3
   end
+
+  describe "clean_prompt_text/1 and extract_first_user_message/1" do
+    test "strips execution rules, practices, and lessons preambles to expose real user prompt" do
+      raw_prompt = """
+      === Prompt & Execution Rules ===
+
+      - typographic quotes “” mean the exact quote
+      - backticks mean a code quote
+      - ALWAYS call dedicated tools
+
+      ===============================
+
+      === Language Good Practices ===
+
+      ### Good Practices for Elixir
+      - Follow standard Mix project structure.
+
+      ===============================
+
+      ### Project Lessons Learned & Gotchas (project/lessons.md)
+      The following lessons were previously learned in this project. Adhere strictly to them to avoid regressions:
+
+      - Lesson 1
+
+      Please do this and that
+      """
+
+      assert SessionStore.clean_prompt_text(raw_prompt) == "Please do this and that"
+
+      messages = [
+        %{"role" => "system", "content" => "System instructions"},
+        %{"role" => "user", "content" => raw_prompt}
+      ]
+
+      assert SessionStore.extract_first_user_message(messages) == "Please do this and that"
+    end
+
+    test "simplifies skill invocation prompts" do
+      skill_prompt = """
+      Execute skill 'refactor_code' with arguments 'lib/my_mod.ex':
+
+      # Skill body instructions
+      Read the file and improve readability.
+      """
+
+      assert SessionStore.clean_prompt_text(skill_prompt) ==
+               "/skills refactor_code lib/my_mod.ex"
+
+      bare_skill = "Execute skill 'audit':\n\nRun security audit."
+      assert SessionStore.clean_prompt_text(bare_skill) == "/skills audit"
+    end
+
+    test "prefers real user prompts over async subagent or job notifications" do
+      messages = [
+        %{
+          "role" => "user",
+          "content" =>
+            "=== Async Background Job Finished (job_1) ===\nCommand: `mix test` Status: COMPLETED"
+        },
+        %{
+          "role" => "user",
+          "content" =>
+            "=== Prompt & Execution Rules ===\n- rule\n===============================\n\nPlease fix the test"
+        }
+      ]
+
+      assert SessionStore.extract_first_user_message(messages) == "Please fix the test"
+    end
+  end
+
+  describe "list_session_metadata/2 pagination and count_sessions/1" do
+    test "supports limit and offset pagination over candidate sessions", %{tmp_dir: tmp_dir} do
+      # Create 25 mock sessions
+      for i <- 1..25 do
+        session_state = %{
+          session_id: "paginated_sess_#{String.pad_leading(to_string(i), 2, "0")}",
+          model: "deepseek-chat",
+          updated_at: "2026-10-30T#{String.pad_leading(to_string(rem(i, 24)), 2, "0")}:00:00",
+          messages: [
+            %{"role" => "user", "content" => "Session prompt #{i}"}
+          ],
+          snapshots: []
+        }
+
+        {:ok, _} = SessionStore.save_session(session_state, tmp_dir)
+      end
+
+      assert SessionStore.count_sessions(tmp_dir) == 25
+
+      # Default returns all
+      all_metas = SessionStore.list_session_metadata(tmp_dir)
+      assert length(all_metas) == 25
+
+      # First page of 20
+      page1 = SessionStore.list_session_metadata(tmp_dir, limit: 20, offset: 0)
+      assert length(page1) == 20
+
+      # Second page of 5 (deeper)
+      page2 = SessionStore.list_session_metadata(tmp_dir, limit: 20, offset: 20)
+      assert length(page2) == 5
+
+      # Ensure no overlap between page 1 and page 2
+      page1_ids = MapSet.new(Enum.map(page1, & &1.session_id))
+      page2_ids = MapSet.new(Enum.map(page2, & &1.session_id))
+      assert MapSet.disjoint?(page1_ids, page2_ids)
+
+      # All titles correctly show user prompt
+      for m <- page1 do
+        assert String.starts_with?(m.title, "Session prompt")
+      end
+    end
+  end
 end
