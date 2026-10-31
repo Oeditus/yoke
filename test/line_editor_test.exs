@@ -946,10 +946,10 @@ defmodule Yoke.LineEditorTest do
     end
 
     test "detects triple double quotes and triple single quotes" do
-      refute LineEditor.unclosed_pair?("\"\"\"hello multiline\"\"\"")
-      assert LineEditor.unclosed_pair?("\"\"\"hello multiline")
-      refute LineEditor.unclosed_pair?("'''hello multiline'''")
-      assert LineEditor.unclosed_pair?("'''hello multiline")
+      refute LineEditor.unclosed_pair?(~S["hello multiline"])
+      assert LineEditor.unclosed_pair?(~S["hello multiline])
+      refute LineEditor.unclosed_pair?(~S['hello multiline'])
+      assert LineEditor.unclosed_pair?(~S['hello multiline])
     end
 
     test "detects unicode paired quotes and brackets" do
@@ -984,12 +984,22 @@ defmodule Yoke.LineEditorTest do
 
   describe "Carriage Return (‹CR› aka Enter) handling in command line" do
     test "handle_enter_key/1 submits when all pairs are closed" do
-      state = %{LineEditor.new_state("prompt> ") | buffer: String.graphemes("echo foo"), cursor: 8}
+      state = %{
+        LineEditor.new_state("prompt> ")
+        | buffer: String.graphemes("echo foo"),
+          cursor: 8
+      }
+
       assert {:submit, ^state} = LineEditor.handle_enter_key(state)
     end
 
     test "handle_enter_key/1 inserts a newline without submitting when inside unclosed parenthesis" do
-      state = %{LineEditor.new_state("prompt> ") | buffer: String.graphemes("def test(x"), cursor: 10}
+      state = %{
+        LineEditor.new_state("prompt> ")
+        | buffer: String.graphemes("def test(x"),
+          cursor: 10
+      }
+
       assert {:continue, new_state} = LineEditor.handle_enter_key(state)
 
       assert Enum.join(new_state.buffer) == "def test(x\n"

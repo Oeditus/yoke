@@ -1548,34 +1548,89 @@ defmodule Yoke.CLI.LineEditor do
           {:submit, st} -> handle_enter(st)
         end
 
-      :tab -> handle_tab(state)
-      :ctrl_c -> handle_interrupt(state, "^C")
-      :ctrl_q -> handle_interrupt(state, "^Q")
-      :ctrl_d -> handle_eof(state)
-      :up -> raw_loop(handle_vertical_move(state, :up))
-      :down -> raw_loop(handle_vertical_move(state, :down))
-      :left -> raw_loop(edit_unless_searching(state, &move_left/1))
-      :right -> raw_loop(edit_unless_searching(state, &accept_ghost_suggestion/1))
-      :home -> raw_loop(edit_unless_searching(state, &move_to_start/1))
-      :end -> raw_loop(edit_unless_searching(state, &accept_ghost_suggestion/1))
-      :ctrl_a -> raw_loop(edit_unless_searching(state, &move_to_start/1))
-      :ctrl_e -> raw_loop(edit_unless_searching(state, &accept_ghost_suggestion/1))
-      :ctrl_u -> raw_loop(edit_unless_searching(state, &kill_to_start/1))
-      :ctrl_k -> raw_loop(edit_unless_searching(state, &kill_to_end/1))
-      :ctrl_w -> raw_loop(edit_unless_searching(state, &delete_word_backward/1))
-      :ctrl_p -> raw_loop(edit_unless_searching(state, &toggle_permission_mode/1))
-      :ctrl_g -> raw_loop(edit_unless_searching(state, &toggle_sandbox_mode/1))
-      :ctrl_b -> raw_loop(edit_unless_searching(state, &toggle_status_bar_mode/1))
-      :ctrl_o -> raw_loop(edit_unless_searching(state, &toggle_expand_tool_calls/1))
-      :ctrl_r -> raw_loop(handle_ctrl_r(state))
-      :ctrl_v -> raw_loop(handle_clipboard_paste(state))
-      :newline -> raw_loop(edit_unless_searching(state, &insert_newline/1))
-      :backspace -> raw_loop(handle_backspace(state))
-      :delete -> raw_loop(edit_unless_searching(state, &delete_forward/1))
-      {:paste, text} -> raw_loop(handle_paste_or_clipboard_image(state, text))
-      {:char, 64} -> raw_loop(file_picker_modal(state))
-      {:char, char_code} -> raw_loop(handle_char(state, <<char_code::utf8>>))
-      _ -> raw_loop(state)
+      :tab ->
+        handle_tab(state)
+
+      :ctrl_c ->
+        handle_interrupt(state, "^C")
+
+      :ctrl_q ->
+        handle_interrupt(state, "^Q")
+
+      :ctrl_d ->
+        handle_eof(state)
+
+      :up ->
+        raw_loop(handle_vertical_move(state, :up))
+
+      :down ->
+        raw_loop(handle_vertical_move(state, :down))
+
+      :left ->
+        raw_loop(edit_unless_searching(state, &move_left/1))
+
+      :right ->
+        raw_loop(edit_unless_searching(state, &accept_ghost_suggestion/1))
+
+      :home ->
+        raw_loop(edit_unless_searching(state, &move_to_start/1))
+
+      :end ->
+        raw_loop(edit_unless_searching(state, &accept_ghost_suggestion/1))
+
+      :ctrl_a ->
+        raw_loop(edit_unless_searching(state, &move_to_start/1))
+
+      :ctrl_e ->
+        raw_loop(edit_unless_searching(state, &accept_ghost_suggestion/1))
+
+      :ctrl_u ->
+        raw_loop(edit_unless_searching(state, &kill_to_start/1))
+
+      :ctrl_k ->
+        raw_loop(edit_unless_searching(state, &kill_to_end/1))
+
+      :ctrl_w ->
+        raw_loop(edit_unless_searching(state, &delete_word_backward/1))
+
+      :ctrl_p ->
+        raw_loop(edit_unless_searching(state, &toggle_permission_mode/1))
+
+      :ctrl_g ->
+        raw_loop(edit_unless_searching(state, &toggle_sandbox_mode/1))
+
+      :ctrl_b ->
+        raw_loop(edit_unless_searching(state, &toggle_status_bar_mode/1))
+
+      :ctrl_o ->
+        raw_loop(edit_unless_searching(state, &toggle_expand_tool_calls/1))
+
+      :ctrl_r ->
+        raw_loop(handle_ctrl_r(state))
+
+      :ctrl_v ->
+        raw_loop(handle_clipboard_paste(state))
+
+      :newline ->
+        raw_loop(edit_unless_searching(state, &insert_newline/1))
+
+      :backspace ->
+        raw_loop(handle_backspace(state))
+
+      :delete ->
+        raw_loop(edit_unless_searching(state, &delete_forward/1))
+
+      {:paste, text} ->
+        raw_loop(handle_paste_or_clipboard_image(state, text))
+
+      {:char, 64} ->
+        raw_loop(file_picker_modal(state))
+
+      {:char, char_code} ->
+        raw_loop(handle_char(state, <<char_code::utf8>>))
+
+      _ ->
+        raw_loop(state)
     end
   end
 
