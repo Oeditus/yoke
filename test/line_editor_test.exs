@@ -899,4 +899,159 @@ defmodule Yoke.LineEditorTest do
       assert :ok == LineEditor.disable_flow_control()
     end
   end
+
+  describe "unclosed paired symbol detection (unclosed_pair?/1)" do
+    test "returns false for empty and plain text without pairs" do
+      refute LineEditor.unclosed_pair?("")
+      refute LineEditor.unclosed_pair?("hello world")
+      refute LineEditor.unclosed_pair?(LineEditor.new_state("prompt> "))
+    end
+
+    test "detects closed and unclosed parentheses" do
+      refute LineEditor.unclosed_pair?("foo(bar)")
+      assert LineEditor.unclosed_pair?("foo(bar")
+      refute LineEditor.unclosed_pair?("((a + b) * (c + d))")
+      assert LineEditor.unclosed_pair?("((a + b) * (c + d)")
+    end
+
+    test "detects closed and unclosed square brackets and curly braces" do
+      refute LineEditor.unclosed_pair?("[1, 2, 3]")
+      assert LineEditor.unclosed_pair?("[1, 2, 3")
+      refute LineEditor.unclosed_pair?("{:ok, [1, 2]}")
+      assert LineEditor.unclosed_pair?("{:ok, [1, 2")
+    end
+
+    test "detects closed and unclosed double and single quotes" do
+      refute LineEditor.unclosed_pair?("\"hello world\"")
+      assert LineEditor.unclosed_pair?("\"hello world")
+      refute LineEditor.unclosed_pair?("'hello world'")
+      assert LineEditor.unclosed_pair?("'hello world")
+      refute LineEditor.unclosed_pair?("\"hello \\\" world\"")
+      assert LineEditor.unclosed_pair?("\"hello \\\\\" world\"")
+    end
+
+    test "does not treat English word contractions as unclosed single quotes" do
+      refute LineEditor.unclosed_pair?("don't do that")
+      refute LineEditor.unclosed_pair?("it's working perfectly")
+      refute LineEditor.unclosed_pair?("let's check that user's input")
+      refute LineEditor.unclosed_pair?("don't say 'hello'")
+      assert LineEditor.unclosed_pair?("don't say 'hello")
+    end
+
+    test "detects inline backticks and fenced code blocks" do
+      refute LineEditor.unclosed_pair?("`inline code`")
+      assert LineEditor.unclosed_pair?("`inline code")
+      refute LineEditor.unclosed_pair?("```elixir\ndef test, do: :ok\n```")
+      assert LineEditor.unclosed_pair?("```elixir\ndef test, do: :ok")
+    end
+
+    test "detects triple double quotes and triple single quotes" do
+      refute LineEditor.unclosed_pair?("\"\"\"hello multiline\"\"\"")
+      assert LineEditor.unclosed_pair?("\"\"\"hello multiline")
+      refute LineEditor.unclosed_pair?("'''hello multiline'''")
+      assert LineEditor.unclosed_pair?("'''hello multiline")
+    end
+
+    test "detects unicode paired quotes and brackets" do
+      refute LineEditor.unclosed_pair?("‹CR›")
+      assert LineEditor.unclosed_pair?("‹CR")
+      refute LineEditor.unclosed_pair?("“inside”")
+      assert LineEditor.unclosed_pair?("“inside")
+      refute LineEditor.unclosed_pair?("«bonjour»")
+      assert LineEditor.unclosed_pair?("«bonjour")
+      refute LineEditor.unclosed_pair?("【important】")
+      assert LineEditor.unclosed_pair?("【important")
+      refute LineEditor.unclosed_pair?("⟨math⟩")
+      assert LineEditor.unclosed_pair?("⟨math")
+    end
+
+    test "ignores nested paired symbols inside closed quotes or code blocks" do
+      refute LineEditor.unclosed_pair?("\"function(x) { [a, b] }\"")
+      refute LineEditor.unclosed_pair?("`function(x) { [a, b] }`")
+      assert LineEditor.unclosed_pair?("\"function(x) { [a, b] }")
+    end
+
+    test "works with state maps and grapheme buffers" do
+      state_closed = %{LineEditor.new_state("prompt> ") | buffer: String.graphemes("foo(bar)")}
+      refute LineEditor.unclosed_pair?(state_closed)
+      refute LineEditor.inside_unclosed_pair?(state_closed)
+
+      state_open = %{LineEditor.new_state("prompt> ") | buffer: String.graphemes("foo(bar")}
+      assert LineEditor.unclosed_pair?(state_open)
+      assert LineEditor.inside_unclosed_pair?(state_open)
+    end
+  end
+
+  describe "Carriage Return (‹CR› aka Enter) handling in command line" do
+    test "handle_enter_key/1 submits when all pairs are closed" do
+      state = %{LineEditor.new_state("prompt> ") | buffer: String.graphemes("echo foo"), cursor: 8}
+      assert {:submit, ^state} = LineEditor.handle_enter_key(state)
+    end
+
+    test "handle_enter_key/1 inserts a newline without submitting when inside unclosed parenthesis" do
+      state = %{LineEditor.new_state("prompt> ") | buffer: String.graphemes("def test(x"), cursor: 10}
+      assert {:continue, new_state} = LineEditor.handle_enter_key(state)
+
+      assert Enum.join(new_state.buffer) == "def test(x\n"
+      assert new_state.cursor == 11
+    end
+
+    test "handle_enter_key/1 inserts a newline without submitting when inside unclosed bracket" do
+      state = %{LineEditor.new_state("prompt> ") | buffer: String.graphemes("[1, 2,"), cursor: 6}
+      assert {:continue, new_state} = LineEditor.handle_enter_key(state)
+
+      assert Enum.join(new_state.buffer) == "[1, 2,\n"
+      assert new_state.cursor == 7
+    end
+
+    test "handle_enter_key/1 inserts a newline without submitting when inside unclosed quote" do
+      state = %{LineEditor.new_state("prompt> ") | buffer: String.graphemes("\"hello"), cursor: 6}
+      assert {:continue, new_state} = LineEditor.handle_enter_key(state)
+
+      assert Enum.join(new_state.buffer) == "\"hello\n"
+      assert new_state.cursor == 7
+    end
+
+    test "handle_enter_key/1 inserts a newline without submitting when inside unclosed backtick" do
+      state = %{LineEditor.new_state("prompt> ") | buffer: String.graphemes("`code"), cursor: 5}
+      assert {:continue, new_state} = LineEditor.handle_enter_key(state)
+
+      assert Enum.join(new_state.buffer) == "`code\n"
+      assert new_state.cursor == 6
+    end
+
+    test "multi-line progression: enters newlines until pair is closed, then submits" do
+      # 1. Start with open bracket
+      s1 = %{LineEditor.new_state("prompt> ") | buffer: String.graphemes("[1,"), cursor: 3}
+      assert {:continue, s2} = LineEditor.handle_enter_key(s1)
+      assert Enum.join(s2.buffer) == "[1,\n"
+
+      # 2. Add second item, still open
+      s3 = LineEditor.insert_char(s2, "2,")
+      assert {:continue, s4} = LineEditor.handle_enter_key(s3)
+      assert Enum.join(s4.buffer) == "[1,\n2,\n"
+
+      # 3. Close bracket
+      s5 = LineEditor.insert_char(s4, "3]")
+      assert Enum.join(s5.buffer) == "[1,\n2,\n3]"
+
+      # 4. Now handle_enter_key submits!
+      assert {:submit, s_final} = LineEditor.handle_enter_key(s5)
+      assert Enum.join(s_final.buffer) == "[1,\n2,\n3]"
+    end
+
+    test "handle_enter_key/1 exits history search mode when search_mode is active" do
+      state = %{
+        LineEditor.new_state("prompt> ")
+        | search_mode: true,
+          search_query: ["m", "i", "x"],
+          history: ["mix test", "git status"]
+      }
+
+      assert {:continue, new_state} = LineEditor.handle_enter_key(state)
+      refute new_state.search_mode
+      assert Enum.join(new_state.buffer) == "mix test"
+      assert new_state.cursor == 8
+    end
+  end
 end

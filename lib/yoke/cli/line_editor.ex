@@ -838,6 +838,303 @@ defmodule Yoke.CLI.LineEditor do
   end
 
   @doc """
+  Returns true when `input` (a state map, a grapheme list buffer, or a binary string)
+  is inside an opened and non-closed backtick, quote, parenthesis, bracket, or any
+  other paired symbol.
+  """
+  def unclosed_pair?(%{buffer: buffer}) when is_list(buffer) do
+    unclosed_pair?(buffer)
+  end
+
+  def unclosed_pair?(buffer) when is_list(buffer) do
+    unclosed_pair?(Enum.join(buffer))
+  end
+
+  def unclosed_pair?(text) when is_binary(text) do
+    graphemes = String.graphemes(text)
+    scan_unclosed_pairs(graphemes, [], nil) != []
+  end
+
+  def unclosed_pair?(_), do: false
+
+  @doc """
+  Alias for `unclosed_pair?/1`.
+  """
+  def inside_unclosed_pair?(input), do: unclosed_pair?(input)
+
+  # When inside fenced code block (``` ... ```)
+  defp scan_unclosed_pairs(["`", "`", "`" | rest], [:fenced_code | stack], _prev) do
+    scan_unclosed_pairs(rest, stack, "`")
+  end
+
+  defp scan_unclosed_pairs([_ | rest], [:fenced_code | _] = stack, prev) do
+    scan_unclosed_pairs(rest, stack, prev)
+  end
+
+  # When inside triple double quotes (""" ... """)
+  defp scan_unclosed_pairs(["\\", _ | rest], [:triple_double_quote | _] = stack, _prev) do
+    scan_unclosed_pairs(rest, stack, "\\")
+  end
+
+  defp scan_unclosed_pairs(["\"", "\"", "\"" | rest], [:triple_double_quote | stack], _prev) do
+    scan_unclosed_pairs(rest, stack, "\"")
+  end
+
+  defp scan_unclosed_pairs([_ | rest], [:triple_double_quote | _] = stack, prev) do
+    scan_unclosed_pairs(rest, stack, prev)
+  end
+
+  # When inside triple single quotes (''' ... ''')
+  defp scan_unclosed_pairs(["\\", _ | rest], [:triple_single_quote | _] = stack, _prev) do
+    scan_unclosed_pairs(rest, stack, "\\")
+  end
+
+  defp scan_unclosed_pairs(["'", "'", "'" | rest], [:triple_single_quote | stack], _prev) do
+    scan_unclosed_pairs(rest, stack, "'")
+  end
+
+  defp scan_unclosed_pairs([_ | rest], [:triple_single_quote | _] = stack, prev) do
+    scan_unclosed_pairs(rest, stack, prev)
+  end
+
+  # When inside inline backticks (` ... `)
+  defp scan_unclosed_pairs(["\\", _ | rest], [:inline_code | _] = stack, _prev) do
+    scan_unclosed_pairs(rest, stack, "\\")
+  end
+
+  defp scan_unclosed_pairs(["`" | rest], [:inline_code | stack], _prev) do
+    scan_unclosed_pairs(rest, stack, "`")
+  end
+
+  defp scan_unclosed_pairs([_ | rest], [:inline_code | _] = stack, prev) do
+    scan_unclosed_pairs(rest, stack, prev)
+  end
+
+  # When inside standard double quotes (" ... ")
+  defp scan_unclosed_pairs(["\\", _ | rest], [{:quote, "\""} | _] = stack, _prev) do
+    scan_unclosed_pairs(rest, stack, "\\")
+  end
+
+  defp scan_unclosed_pairs(["\"" | rest], [{:quote, "\""} | stack], _prev) do
+    scan_unclosed_pairs(rest, stack, "\"")
+  end
+
+  defp scan_unclosed_pairs([_ | rest], [{:quote, "\""} | _] = stack, prev) do
+    scan_unclosed_pairs(rest, stack, prev)
+  end
+
+  # When inside standard single quotes (' ... ')
+  defp scan_unclosed_pairs(["\\", _ | rest], [{:quote, "'"} | _] = stack, _prev) do
+    scan_unclosed_pairs(rest, stack, "\\")
+  end
+
+  defp scan_unclosed_pairs(["'" | rest], [{:quote, "'"} | stack], _prev) do
+    scan_unclosed_pairs(rest, stack, "'")
+  end
+
+  defp scan_unclosed_pairs([_ | rest], [{:quote, "'"} | _] = stack, prev) do
+    scan_unclosed_pairs(rest, stack, prev)
+  end
+
+  # End of input
+  defp scan_unclosed_pairs([], stack, _prev), do: stack
+
+  # Normal / bracketed scanning
+  # 1. Escaped character (e.g. \( or \" or \\)
+  defp scan_unclosed_pairs(["\\", _ | rest], stack, _prev) do
+    scan_unclosed_pairs(rest, stack, "\\")
+  end
+
+  # 2. Triple backticks
+  defp scan_unclosed_pairs(["`", "`", "`" | rest], stack, _prev) do
+    scan_unclosed_pairs(rest, [:fenced_code | stack], "`")
+  end
+
+  # 3. Triple double quotes
+  defp scan_unclosed_pairs(["\"", "\"", "\"" | rest], stack, _prev) do
+    scan_unclosed_pairs(rest, [:triple_double_quote | stack], "\"")
+  end
+
+  # 4. Triple single quotes
+  defp scan_unclosed_pairs(["'", "'", "'" | rest], stack, _prev) do
+    scan_unclosed_pairs(rest, [:triple_single_quote | stack], "'")
+  end
+
+  # 5. Inline backtick
+  defp scan_unclosed_pairs(["`" | rest], stack, _prev) do
+    scan_unclosed_pairs(rest, [:inline_code | stack], "`")
+  end
+
+  # 6. Double quote
+  defp scan_unclosed_pairs(["\"" | rest], stack, _prev) do
+    scan_unclosed_pairs(rest, [{:quote, "\""} | stack], "\"")
+  end
+
+  # 7. Single quote - check contraction (e.g. don't, it's, let's)
+  defp scan_unclosed_pairs(["'" | rest], stack, prev) do
+    next = List.first(rest)
+
+    if unicode_letter?(prev) and unicode_letter?(next) do
+      # Contraction / apostrophe in word: do not treat as quote
+      scan_unclosed_pairs(rest, stack, "'")
+    else
+      scan_unclosed_pairs(rest, [{:quote, "'"} | stack], "'")
+    end
+  end
+
+  # 8. Curly single quotes (check curly contraction like don’t)
+  defp scan_unclosed_pairs(["’" | rest], [{:bracket, "’"} | stack], _prev) do
+    scan_unclosed_pairs(rest, stack, "’")
+  end
+
+  defp scan_unclosed_pairs(["’" | rest], stack, prev) do
+    next = List.first(rest)
+
+    if unicode_letter?(prev) and unicode_letter?(next) do
+      scan_unclosed_pairs(rest, stack, "’")
+    else
+      scan_unclosed_pairs(rest, stack, "’")
+    end
+  end
+
+  defp scan_unclosed_pairs(["‘" | rest], stack, prev) do
+    next = List.first(rest)
+
+    if unicode_letter?(prev) and unicode_letter?(next) do
+      scan_unclosed_pairs(rest, stack, "‘")
+    else
+      scan_unclosed_pairs(rest, [{:bracket, "’"} | stack], "‘")
+    end
+  end
+
+  # 9. Curly double quotes
+  defp scan_unclosed_pairs(["“" | rest], stack, _prev),
+    do: scan_unclosed_pairs(rest, [{:bracket, "”"} | stack], "“")
+
+  defp scan_unclosed_pairs(["”" | rest], [{:bracket, "”"} | stack], _prev),
+    do: scan_unclosed_pairs(rest, stack, "”")
+
+  # 10. Guillemets / Angle quotation (including ‹ and ›)
+  defp scan_unclosed_pairs(["«" | rest], stack, _prev),
+    do: scan_unclosed_pairs(rest, [{:bracket, "»"} | stack], "«")
+
+  defp scan_unclosed_pairs(["»" | rest], [{:bracket, "»"} | stack], _prev),
+    do: scan_unclosed_pairs(rest, stack, "»")
+
+  defp scan_unclosed_pairs(["‹" | rest], stack, _prev),
+    do: scan_unclosed_pairs(rest, [{:bracket, "›"} | stack], "‹")
+
+  defp scan_unclosed_pairs(["›" | rest], [{:bracket, "›"} | stack], _prev),
+    do: scan_unclosed_pairs(rest, stack, "›")
+
+  # 11. Parentheses, square brackets, curly braces
+  defp scan_unclosed_pairs(["(" | rest], stack, _prev),
+    do: scan_unclosed_pairs(rest, [{:bracket, ")"} | stack], "(")
+
+  defp scan_unclosed_pairs([")" | rest], [{:bracket, ")"} | stack], _prev),
+    do: scan_unclosed_pairs(rest, stack, ")")
+
+  defp scan_unclosed_pairs(["[" | rest], stack, _prev),
+    do: scan_unclosed_pairs(rest, [{:bracket, "]"} | stack], "[")
+
+  defp scan_unclosed_pairs(["]" | rest], [{:bracket, "]"} | stack], _prev),
+    do: scan_unclosed_pairs(rest, stack, "]")
+
+  defp scan_unclosed_pairs(["{" | rest], stack, _prev),
+    do: scan_unclosed_pairs(rest, [{:bracket, "}"} | stack], "{")
+
+  defp scan_unclosed_pairs(["}" | rest], [{:bracket, "}"} | stack], _prev),
+    do: scan_unclosed_pairs(rest, stack, "}")
+
+  # 12. CJK / Math paired brackets
+  defp scan_unclosed_pairs(["「" | rest], stack, _prev),
+    do: scan_unclosed_pairs(rest, [{:bracket, "」"} | stack], "「")
+
+  defp scan_unclosed_pairs(["」" | rest], [{:bracket, "」"} | stack], _prev),
+    do: scan_unclosed_pairs(rest, stack, "」")
+
+  defp scan_unclosed_pairs(["『" | rest], stack, _prev),
+    do: scan_unclosed_pairs(rest, [{:bracket, "』"} | stack], "『")
+
+  defp scan_unclosed_pairs(["』" | rest], [{:bracket, "』"} | stack], _prev),
+    do: scan_unclosed_pairs(rest, stack, "』")
+
+  defp scan_unclosed_pairs(["【" | rest], stack, _prev),
+    do: scan_unclosed_pairs(rest, [{:bracket, "】"} | stack], "【")
+
+  defp scan_unclosed_pairs(["】" | rest], [{:bracket, "】"} | stack], _prev),
+    do: scan_unclosed_pairs(rest, stack, "】")
+
+  defp scan_unclosed_pairs(["《" | rest], stack, _prev),
+    do: scan_unclosed_pairs(rest, [{:bracket, "》"} | stack], "《")
+
+  defp scan_unclosed_pairs(["》" | rest], [{:bracket, "》"} | stack], _prev),
+    do: scan_unclosed_pairs(rest, stack, "》")
+
+  defp scan_unclosed_pairs(["〔" | rest], stack, _prev),
+    do: scan_unclosed_pairs(rest, [{:bracket, "〕"} | stack], "〔")
+
+  defp scan_unclosed_pairs(["〕" | rest], [{:bracket, "〕"} | stack], _prev),
+    do: scan_unclosed_pairs(rest, stack, "〕")
+
+  defp scan_unclosed_pairs(["⟨" | rest], stack, _prev),
+    do: scan_unclosed_pairs(rest, [{:bracket, "⟩"} | stack], "⟨")
+
+  defp scan_unclosed_pairs(["⟩" | rest], [{:bracket, "⟩"} | stack], _prev),
+    do: scan_unclosed_pairs(rest, stack, "⟩")
+
+  defp scan_unclosed_pairs(["〖" | rest], stack, _prev),
+    do: scan_unclosed_pairs(rest, [{:bracket, "〗"} | stack], "〖")
+
+  defp scan_unclosed_pairs(["〗" | rest], [{:bracket, "〗"} | stack], _prev),
+    do: scan_unclosed_pairs(rest, stack, "〗")
+
+  defp scan_unclosed_pairs(["〘" | rest], stack, _prev),
+    do: scan_unclosed_pairs(rest, [{:bracket, "〙"} | stack], "〘")
+
+  defp scan_unclosed_pairs(["〙" | rest], [{:bracket, "〙"} | stack], _prev),
+    do: scan_unclosed_pairs(rest, stack, "〙")
+
+  defp scan_unclosed_pairs(["〚" | rest], stack, _prev),
+    do: scan_unclosed_pairs(rest, [{:bracket, "〛"} | stack], "〚")
+
+  defp scan_unclosed_pairs(["〛" | rest], [{:bracket, "〛"} | stack], _prev),
+    do: scan_unclosed_pairs(rest, stack, "〛")
+
+  # Ignore unmatched closing brackets when stack doesn't match
+  defp scan_unclosed_pairs([c | rest], stack, _prev)
+       when c in [
+              ")",
+              "]",
+              "}",
+              "»",
+              "›",
+              "”",
+              "」",
+              "』",
+              "】",
+              "》",
+              "〕",
+              "⟩",
+              "〗",
+              "〙",
+              "〛"
+            ] do
+    scan_unclosed_pairs(rest, stack, c)
+  end
+
+  # Default: any other character
+  defp scan_unclosed_pairs([char | rest], stack, _prev) do
+    scan_unclosed_pairs(rest, stack, char)
+  end
+
+  defp unicode_letter?(nil), do: false
+
+  defp unicode_letter?(char) when is_binary(char) do
+    String.match?(char, ~r/^\p{L}$/u)
+  end
+
+  @doc """
   Returns true when the end of `text` (the cursor position) sits inside an
   unclosed inline backtick span.
   """
@@ -1245,7 +1542,12 @@ defmodule Yoke.CLI.LineEditor do
     state = render_bar(state)
 
     case read_key() do
-      :enter -> handle_enter(state)
+      :enter ->
+        case handle_enter_key(state) do
+          {:continue, new_state} -> raw_loop(new_state)
+          {:submit, st} -> handle_enter(st)
+        end
+
       :tab -> handle_tab(state)
       :ctrl_c -> handle_interrupt(state, "^C")
       :ctrl_q -> handle_interrupt(state, "^Q")
@@ -1289,19 +1591,35 @@ defmodule Yoke.CLI.LineEditor do
   defp edit_unless_searching(%{search_mode: true} = state, _fun), do: state
   defp edit_unless_searching(state, fun), do: fun.(state)
 
-  defp handle_enter(%{search_mode: true} = state) do
+  @doc """
+  Processes the Enter / Carriage Return key on the editor state.
+  If in history search mode, completes the search and returns to normal editing.
+  If inside an opened and non-closed paired symbol (backtick, quote, parenthesis,
+  bracket, or other paired delimiter), inserts a newline into the buffer without
+  submitting. Otherwise returns `{:submit, state}` to execute/submit.
+  """
+  def handle_enter_key(%{search_mode: true} = state) do
     query = Enum.join(state.search_query)
     match = find_in_history(query, state.history, state.search_offset)
     chars = String.graphemes(match)
 
-    raw_loop(%{
-      state
-      | buffer: chars,
-        cursor: length(chars),
-        search_mode: false,
-        search_query: [],
-        search_offset: 0
-    })
+    {:continue,
+     %{
+       state
+       | buffer: chars,
+         cursor: length(chars),
+         search_mode: false,
+         search_query: [],
+         search_offset: 0
+     }}
+  end
+
+  def handle_enter_key(state) do
+    if unclosed_pair?(state) do
+      {:continue, insert_newline(state)}
+    else
+      {:submit, state}
+    end
   end
 
   defp handle_enter(state) do
