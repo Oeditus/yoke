@@ -88,7 +88,9 @@ defmodule Yoke.ConfigTest do
     prior = Application.get_env(:yoke, :default_branch)
 
     on_exit(fn ->
-      if prior, do: Application.put_env(:yoke, :default_branch, prior), else: Application.delete_env(:yoke, :default_branch)
+      if prior,
+        do: Application.put_env(:yoke, :default_branch, prior),
+        else: Application.delete_env(:yoke, :default_branch)
     end)
 
     Config.set_default_branch("trunk")

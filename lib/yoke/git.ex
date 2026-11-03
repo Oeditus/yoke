@@ -125,7 +125,8 @@ defmodule Yoke.Git do
         is_nil(base_branch) or base_branch == "" ->
           default_base_branch(cwd)
 
-        base_branch == "main" and not branch_exists?("main", cwd) and branch_exists?("master", cwd) ->
+        base_branch == "main" and not branch_exists?("main", cwd) and
+            branch_exists?("master", cwd) ->
           "master"
 
         true ->
@@ -264,7 +265,8 @@ defmodule Yoke.Git do
           nil
       end
 
-    if configured && (branch_exists?(configured, cwd) or branch_exists?("origin/#{configured}", cwd)) do
+    if configured &&
+         (branch_exists?(configured, cwd) or branch_exists?("origin/#{configured}", cwd)) do
       if branch_exists?(configured, cwd), do: configured, else: "origin/#{configured}"
     else
       cond do
