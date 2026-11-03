@@ -228,6 +228,68 @@ defmodule Yoke.CLIReplTest do
     assert :continue = Repl.handle_input("/model v4", pid, id)
   end
 
+  test "handles /config default_branch commands", %{session_pid: pid, session_id: id} do
+    prior = Application.get_env(:yoke, :default_branch)
+
+    try do
+      out_get =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/config default_branch", pid, id)
+        end)
+
+      assert out_get =~ "Default branch"
+
+      out_set =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/config default_branch develop", pid, id)
+        end)
+
+      assert out_set =~ "Configured default base branch to 'develop'"
+      assert Yoke.Config.default_branch() == "develop"
+
+      out_alias =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/config branch staging", pid, id)
+        end)
+
+      assert out_alias =~ "Configured default base branch to 'staging'"
+      assert Yoke.Config.default_branch() == "staging"
+
+      out_reset =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :continue = Repl.handle_input("/config default_branch auto", pid, id)
+        end)
+
+      assert out_reset =~ "Reset default branch to auto-detection"
+      assert Yoke.Config.default_branch() == nil
+    after
+      if prior != nil do
+        Application.put_env(:yoke, :default_branch, prior)
+      else
+        Application.delete_env(:yoke, :default_branch)
+      end
+
+      cfg_path = ".yoke/config.json"
+
+      if File.exists?(cfg_path) do
+        case File.read(cfg_path) do
+          {:ok, content} ->
+            case Jason.decode(content) do
+              {:ok, map} ->
+                cleaned = Map.drop(map, ["default_branch"])
+                File.write!(cfg_path, Jason.encode!(cleaned, pretty: true))
+
+              _ ->
+                :ok
+            end
+
+          _ ->
+            :ok
+        end
+      end
+    end
+  end
+
   test "handles /config assistant_name commands", %{session_pid: pid, session_id: id} do
     prior = Application.get_env(:yoke, :assistant_name)
 

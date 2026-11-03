@@ -656,6 +656,19 @@ defmodule Yoke.Brain.Session do
 
   @impl true
   def handle_call({:generate_code_review, base_branch, head_branch, opts}, from, state) do
+    base_branch =
+      cond do
+        is_nil(base_branch) or base_branch == "" ->
+          Yoke.Git.default_base_branch(state.cwd)
+
+        base_branch == "main" and not Yoke.Git.branch_exists?("main", state.cwd) and
+            Yoke.Git.branch_exists?("master", state.cwd) ->
+          "master"
+
+        true ->
+          base_branch
+      end
+
     case Yoke.Git.diff_branches(base_branch, head_branch, state.cwd) do
       {:ok, data} ->
         peer_comments = Keyword.get(opts, :peer_comments, [])

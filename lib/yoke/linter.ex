@@ -137,7 +137,7 @@ defmodule Yoke.Linter do
         run_on_diff(tool, target_ref, cwd)
 
       :cr ->
-        base_ref = Enum.at(target_args, 0) || "main"
+        base_ref = Enum.at(target_args, 0) || Yoke.Git.default_base_branch(cwd)
         head_ref = Enum.at(target_args, 1) || "HEAD"
         run_on_cr(tool, base_ref, head_ref, cwd)
 

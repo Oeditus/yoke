@@ -62,6 +62,9 @@ defmodule Yoke.Config do
     "god_mode" => false,
     # Reasoning output ANSI color ("yellow", "cyan", "green", "magenta", "blue", "red", "gray", "white", etc.)
     "reasoning_color" => "gray",
+    # Default base branch used for code reviews and comparisons (/cr, /review) when not specified.
+    # When unset or nil, Yoke probes for "main" first and falls back to "master".
+    "default_branch" => nil,
     # Explicit list of programming languages used in the project (e.g. ["elixir"]).
     # When set (non-empty list or string), only practices for these languages are exposed to the model as constraints.
     # When nil or empty, languages are automatically detected from workspace files.
@@ -139,6 +142,27 @@ defmodule Yoke.Config do
         cfg = load_config(cwd)
         Map.get(cfg, "reasoning_color") || Map.get(cfg, "reasoning_colour") || "gray"
     end
+  end
+
+  @doc "Returns the configured default base branch for code reviews and comparisons, or nil if unset."
+  def default_branch(cwd \\ ".") do
+    case Application.get_env(:yoke, :default_branch) do
+      b when is_binary(b) and b != "" ->
+        b
+
+      _ ->
+        cfg = load_config(cwd)
+
+        case Map.get(cfg, "default_branch") do
+          b when is_binary(b) and b != "" -> String.trim(b)
+          _ -> nil
+        end
+    end
+  end
+
+  @doc "Sets the default branch in Application env."
+  def set_default_branch(branch) when is_binary(branch) do
+    Application.put_env(:yoke, :default_branch, branch)
   end
 
   @doc "Returns the built-in default value for a configuration key."

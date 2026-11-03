@@ -369,12 +369,13 @@ defmodule Yoke.CLI.Repl do
 
   def handle_input("/cr " <> base, session_pid, session_id) do
     b = String.trim(base)
-    b = if b == "", do: "main", else: b
+    b = if b == "", do: Git.default_base_branch(), else: b
     handle_input("/review #{b} HEAD", session_pid, session_id)
   end
 
   def handle_input("/cr", session_pid, session_id) do
-    handle_input("/review main HEAD", session_pid, session_id)
+    base = Git.default_base_branch()
+    handle_input("/review #{base} HEAD", session_pid, session_id)
   end
 
   def handle_input("/git " <> args, _session_pid, _session_id) do
@@ -973,7 +974,8 @@ defmodule Yoke.CLI.Repl do
   end
 
   def handle_input("/review", session_pid, session_id) do
-    handle_input("/review main HEAD", session_pid, session_id)
+    base = Git.default_base_branch()
+    handle_input("/review #{base} HEAD", session_pid, session_id)
   end
 
   def handle_input("/commit " <> msg, _session_pid, _session_id) do
@@ -1570,6 +1572,78 @@ defmodule Yoke.CLI.Repl do
     handle_input("/config assistant_name", session_pid, session_id)
   end
 
+  def handle_input("/config default_branch auto", _session_pid, _session_id) do
+    cfg = Yoke.Config.load_config()
+    updated = Map.put(cfg, "default_branch", nil)
+    Yoke.Config.save_config(updated)
+    Application.delete_env(:yoke, :default_branch)
+    auto_resolved = Git.default_base_branch()
+
+    IO.puts(
+      Formatter.format_success(
+        "Reset default branch to auto-detection (currently '#{auto_resolved}': main then master)"
+      )
+    )
+
+    :continue
+  end
+
+  def handle_input("/config default_branch default", session_pid, session_id) do
+    handle_input("/config default_branch auto", session_pid, session_id)
+  end
+
+  def handle_input("/config default_branch " <> branch, _session_pid, _session_id) do
+    b = String.trim(branch)
+
+    if b == "" do
+      IO.puts(
+        Formatter.format_error(
+          "Usage: /config default_branch <branch> (e.g. main, master, develop) or /config default_branch auto"
+        )
+      )
+    else
+      cfg = Yoke.Config.load_config()
+      updated = Map.put(cfg, "default_branch", b)
+      Yoke.Config.save_config(updated)
+      Yoke.Config.set_default_branch(b)
+      IO.puts(Formatter.format_success("Configured default base branch to '#{b}'"))
+    end
+
+    :continue
+  end
+
+  def handle_input("/config default_branch", _session_pid, _session_id) do
+    cfg = Yoke.Config.load_config()
+    configured = Map.get(cfg, "default_branch")
+    resolved = Git.default_base_branch()
+
+    case configured do
+      nil ->
+        IO.puts(
+          Formatter.format_info(
+            "Default branch (auto-detected): '#{resolved}' (probes 'main' first, then 'master')\nTo override, run `/config default_branch <branch>` or `/config default_branch auto`"
+          )
+        )
+
+      b ->
+        IO.puts(
+          Formatter.format_info(
+            "Default branch (configured): '#{b}' (active: '#{resolved}')\nTo reset to auto-detection, run `/config default_branch auto`"
+          )
+        )
+    end
+
+    :continue
+  end
+
+  def handle_input("/config branch " <> branch, session_pid, session_id) do
+    handle_input("/config default_branch " <> branch, session_pid, session_id)
+  end
+
+  def handle_input("/config branch", session_pid, session_id) do
+    handle_input("/config default_branch", session_pid, session_id)
+  end
+
   def handle_input("/config languages auto", _session_pid, _session_id) do
     cfg = Yoke.Config.load_config()
     updated = Map.put(cfg, "languages", nil)
@@ -1654,6 +1728,7 @@ defmodule Yoke.CLI.Repl do
 
     **Usage:**
     - `/config assistant_name <name>` — Set assistant name (default: "Robby Ott")
+    - `/config default_branch <branch>` — Set default branch for comparisons and code reviews (default: auto "main" then "master")
     - `/config languages <lang1,lang2...>` — Explicitly specify languages used in project (or `auto` to auto-detect)
     - `/config style <starship|extended|compact|minimal>` — Switch prompt visual layout style
     - `/config prompt <template>` — Set custom prompt template (placeholders: `{session}`, `{model}`, `{mode}`, `{tasks}`)
@@ -2844,6 +2919,7 @@ defmodule Yoke.CLI.Repl do
 
   defp resolve_review_context(args) do
     parts = String.split(args, " ", trim: true)
+    default_base = Git.default_base_branch()
 
     {base_branch, head_branch, pr_number} =
       case parts do
@@ -2851,10 +2927,10 @@ defmodule Yoke.CLI.Repl do
           if Regex.match?(~r/^\d+$/, pr_num) do
             case Yoke.PRReview.detect_pr(pr_num) do
               {:ok, info} ->
-                {info.base || "main", info.head || "HEAD", pr_num}
+                {info.base || default_base, info.head || "HEAD", pr_num}
 
               _ ->
-                {"main", "HEAD", pr_num}
+                {default_base, "HEAD", pr_num}
             end
           else
             {pr_num, "HEAD", nil}
@@ -2864,7 +2940,7 @@ defmodule Yoke.CLI.Repl do
           {base, head, nil}
 
         _ ->
-          {"main", "HEAD", nil}
+          {default_base, "HEAD", nil}
       end
 
     pr_target =

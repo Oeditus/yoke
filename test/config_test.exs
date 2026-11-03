@@ -69,6 +69,32 @@ defmodule Yoke.ConfigTest do
     File.rm_rf!(tmp_dir)
   end
 
+  test "defaults default_branch to nil and allows workspace override" do
+    assert Config.load_config()["default_branch"] == nil
+    assert Config.default_branch() == nil
+
+    tmp_dir =
+      Path.join(System.tmp_dir!(), "config_branch_test_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(tmp_dir)
+    assert :ok = Config.save_config(%{"default_branch" => "main"}, tmp_dir)
+    assert Config.load_config(tmp_dir)["default_branch"] == "main"
+    assert Config.default_branch(tmp_dir) == "main"
+
+    File.rm_rf!(tmp_dir)
+  end
+
+  test "sets global default_branch via Application env" do
+    prior = Application.get_env(:yoke, :default_branch)
+
+    on_exit(fn ->
+      if prior, do: Application.put_env(:yoke, :default_branch, prior), else: Application.delete_env(:yoke, :default_branch)
+    end)
+
+    Config.set_default_branch("trunk")
+    assert Config.default_branch() == "trunk"
+  end
+
   test "defaults max_tokens to nil and allows workspace override" do
     # By default no per-request max_tokens is set, so the provider's own
     # default (rather than a hardcoded value) applies for each request.

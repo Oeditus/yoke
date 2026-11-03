@@ -120,6 +120,18 @@ defmodule Yoke.Git do
 
   @doc "Compares two git branches and returns stat, commit log, and diff payload."
   def diff_branches(base_branch, head_branch \\ "HEAD", cwd \\ ".") do
+    base_branch =
+      cond do
+        is_nil(base_branch) or base_branch == "" ->
+          default_base_branch(cwd)
+
+        base_branch == "main" and not branch_exists?("main", cwd) and branch_exists?("master", cwd) ->
+          "master"
+
+        true ->
+          base_branch
+      end
+
     range = "#{base_branch}...#{head_branch}"
     log_range = "#{base_branch}..#{head_branch}"
 
@@ -184,17 +196,97 @@ defmodule Yoke.Git do
     e -> {:error, "Git checkout failed: #{Exception.message(e)}"}
   end
 
-  @doc "Returns whether a local branch with the given name exists."
+  @doc """
+  Returns whether a branch or revision reference with the given name exists.
+  Checks local branches (refs/heads/), remote branches (refs/remotes/), and commit objects.
+  """
   def branch_exists?(name, cwd \\ ".") when is_binary(name) do
-    case System.cmd("git", ["show-ref", "--verify", "--quiet", "refs/heads/#{name}"],
-           cd: cwd,
-           stderr_to_stdout: true
-         ) do
-      {_, 0} -> true
-      _ -> false
+    name = String.trim(name)
+
+    if name == "" do
+      false
+    else
+      cond do
+        match?(
+          {_, 0},
+          System.cmd("git", ["show-ref", "--verify", "--quiet", "refs/heads/#{name}"],
+            cd: cwd,
+            stderr_to_stdout: true
+          )
+        ) ->
+          true
+
+        match?(
+          {_, 0},
+          System.cmd("git", ["show-ref", "--verify", "--quiet", "refs/remotes/#{name}"],
+            cd: cwd,
+            stderr_to_stdout: true
+          )
+        ) ->
+          true
+
+        match?(
+          {_, 0},
+          System.cmd("git", ["rev-parse", "--verify", "--quiet", "#{name}^{commit}"],
+            cd: cwd,
+            stderr_to_stdout: true
+          )
+        ) ->
+          true
+
+        true ->
+          false
+      end
     end
   rescue
     _ -> false
+  end
+
+  @doc """
+  Determines the default base branch to compare against for code reviews and branch diffs.
+
+  Checks configured `default_branch` in `Yoke.Config` first.
+  If not configured (or if the configured branch does not exist), probes:
+  1. `main` (local or remote reference)
+  2. `master` (local or remote reference)
+  3. `origin/main`
+  4. `origin/master`
+  5. Falls back to configured branch (if set) or `"main"`.
+  """
+  def default_base_branch(cwd \\ ".") do
+    configured =
+      case Yoke.Config.default_branch(cwd) do
+        branch when is_binary(branch) ->
+          trimmed = String.trim(branch)
+          if trimmed in ["", "auto", "default"], do: nil, else: trimmed
+
+        _ ->
+          nil
+      end
+
+    if configured && (branch_exists?(configured, cwd) or branch_exists?("origin/#{configured}", cwd)) do
+      if branch_exists?(configured, cwd), do: configured, else: "origin/#{configured}"
+    else
+      cond do
+        branch_exists?("main", cwd) ->
+          "main"
+
+        branch_exists?("master", cwd) ->
+          "master"
+
+        branch_exists?("origin/main", cwd) ->
+          "origin/main"
+
+        branch_exists?("origin/master", cwd) ->
+          "origin/master"
+
+        configured != nil ->
+          configured
+
+        true ->
+          "main"
+      end
+    end
   end
 
   @doc """

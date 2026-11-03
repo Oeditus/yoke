@@ -654,7 +654,7 @@ defmodule Yoke.CLI.Formatter do
           Patterns with #{red()}[MANDATORY Seen: 3+]#{reset()} are automatically enforced as tripwires.
 
       #{cyan()}/cr [base]#{reset()}
-          Quick shortcut to review active branch against target base (default: main).
+          Quick shortcut to review active branch against target base (default: main then master, or configured default_branch).
 
     #{bold()}Design & Review Standards:#{reset()}
       • #{bold()}Human-in-the-loop:#{reset()} Claude/DeepSeek proposes; engineer decides every comment.

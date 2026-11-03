@@ -39,6 +39,51 @@ defmodule Yoke.GitTest do
       assert Git.branch_exists?("main", repo)
       refute Git.branch_exists?("does-not-exist", repo)
     end
+
+    test "default_base_branch/1 resolves 'main' when main exists", %{repo: repo} do
+      assert Git.default_base_branch(repo) == "main"
+    end
+
+    test "default_base_branch/1 resolves 'master' when main does not exist" do
+      master_repo =
+        Path.join(System.tmp_dir!(), "yoke_git_master_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(master_repo)
+      {_, 0} = System.cmd("git", ["init", "-q", "-b", "master"], cd: master_repo)
+      {_, 0} = System.cmd("git", ["config", "user.email", "test@example.com"], cd: master_repo)
+      {_, 0} = System.cmd("git", ["config", "user.name", "Test"], cd: master_repo)
+      File.write!(Path.join(master_repo, "README.md"), "hello master\n")
+      {_, 0} = System.cmd("git", ["add", "."], cd: master_repo)
+      {_, 0} = System.cmd("git", ["commit", "-q", "-m", "initial master"], cd: master_repo)
+
+      on_exit(fn -> File.rm_rf(master_repo) end)
+
+      refute Git.branch_exists?("main", master_repo)
+      assert Git.branch_exists?("master", master_repo)
+      assert Git.default_base_branch(master_repo) == "master"
+
+      # diff_branches with nil or "main" automatically uses master
+      assert {:ok, diff1} = Git.diff_branches(nil, "HEAD", master_repo)
+      assert diff1.base == "master"
+
+      assert {:ok, diff2} = Git.diff_branches("main", "HEAD", master_repo)
+      assert diff2.base == "master"
+    end
+
+    test "default_base_branch/1 honors configured default_branch", %{repo: repo} do
+      {:ok, _} = Git.create_branch("develop", repo)
+
+      cfg = %{"default_branch" => "develop"}
+      assert :ok = Yoke.Config.save_config(cfg, repo)
+
+      assert Git.default_base_branch(repo) == "develop"
+
+      # When configured branch does not exist, it falls back to main
+      cfg_bad = %{"default_branch" => "nonexistent"}
+      assert :ok = Yoke.Config.save_config(cfg_bad, repo)
+
+      assert Git.default_base_branch(repo) == "main"
+    end
   end
 
   describe "add_worktree/3 and remove_worktree/2" do
