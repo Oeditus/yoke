@@ -695,11 +695,11 @@ defmodule Yoke.Brain.Session do
         Please generate a detailed, structured Code Review in GitHub-flavored Markdown:
         1. **Executive Summary**: Architectural purpose & high-level review summary.
         2. **Key Modifications & Feature Breakdown**: File-by-file analysis of major changes.
-        3. **Positive Highlights & Kudos**: Celebrate codepieces that are outstandingly good, clean, nifty, or clever with a heart (❤) or thumbs-up emoji (:+1:).
+        3. **Endorsements**: Highlight outstanding craftsmanship in plain text, separately from actionable issues. Never include endorsements in suggested AI prompts or fix requests.
         4. **Risk & Edge Case Assessment**: Potential bugs, security flaws, breaking changes, or performance risks.
         5. **Actionable Recommendations**: Specific code refactoring snippets & improvements.
         6. **Test & Verification Coverage**: Assessment of missing test cases.
-        7. **GitHub PR Review Formatted Block**: A ready-to-post Markdown comment block formatted for GitHub Pull Request review (including positive comments with ❤ or :+1: for clean, clever code).
+        7. **GitHub PR Review Formatted Block**: A ready-to-post Markdown review with separate issues and endorsements sections, without Unicode emojis or GitHub emoji shortcodes.
         #{peer_comments_section}#{Yoke.PRReview.prompt_instructions(cwd: state.cwd)}
         """
 

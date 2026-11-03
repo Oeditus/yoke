@@ -3,6 +3,29 @@ defmodule Yoke.PRReview.MarkdownTest do
 
   alias Yoke.PRReview.Markdown
 
+  describe "emoji policy" do
+    test "removes joined sequences, skin tones, flags, keycaps and shortcodes" do
+      emoji = "\u{1F469}\u200D\u{1F4BB}\u{1F44D}\u{1F3FD}\u{1F1EA}\u{1F1F8}1\uFE0F\u20E3"
+
+      assert Markdown.strip_emojis("before" <> emoji <> "after :+1: :heart: :100:") ==
+               "beforeafter   "
+    end
+
+    test "preserves ordinary numbers, code atoms, quotes and em dashes" do
+      text = "Use `{:ok, 42}` at 12:34:56 — “correct”."
+      assert Markdown.strip_emojis(text) == text
+    end
+
+    test "only preserves the application marker in the first review header" do
+      body = "## \u{1FAA2} Review from Alice \u{1F680}\n### Notes \u{1FAA2}\n:+1:"
+
+      assert Markdown.sanitize_review_body(body) ==
+               "## \u{1FAA2} Review from Alice \n### Notes \n"
+
+      assert Markdown.sanitize_review_body("### Notes \u{1FAA2}") == "### Notes "
+    end
+  end
+
   describe "format_inline_code/1" do
     test "wraps function arities in backticks" do
       input = "Drawer defines no handle_info/2 and calls mark_read/2 or System.cmd/3"

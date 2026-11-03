@@ -59,15 +59,41 @@ defmodule Yoke.PRReview.Markdown do
       |> Enum.map(&String.trim/1)
       |> Enum.reject(&(&1 == ""))
 
-    Enum.join(body_parts, "\n\n")
+    body_parts |> Enum.join("\n\n") |> strip_emojis()
   end
+
+  @doc """
+  Removes emoji graphemes (including joined sequences, flags and keycaps)
+  and GitHub emoji shortcodes, without removing ordinary digits or typography.
+  """
+  def strip_emojis(text) when is_binary(text) do
+    text
+    |> String.graphemes()
+    |> Enum.reject(
+      &String.match?(
+        &1,
+        ~r/[\p{Extended_Pictographic}\x{1F1E6}-\x{1F1FF}\x{20E3}\x{1F3FB}-\x{1F3FF}]/u
+      )
+    )
+    |> Enum.join()
+    |> String.replace(~r/(?<![\w:]):[a-zA-Z0-9_+-]+:(?![\w:])/u, "")
+  end
+
+  @doc """
+  Enforces emoji-free review output except for the branding marker in the first header.
+  """
+  def sanitize_review_body("## 🪢 Review from " <> rest) do
+    "## 🪢 Review from " <> strip_emojis(rest)
+  end
+
+  def sanitize_review_body(text), do: strip_emojis(text)
 
   @doc """
   Formats single-line prose or inline text (such as titles or summary lines),
   wrapping short code pieces in backticks without introducing multiline code fences.
   """
   def format_inline_code(text) when is_binary(text) do
-    apply_inline_code_rules(text)
+    text |> strip_emojis() |> apply_inline_code_rules()
   end
 
   def format_inline_code(other), do: to_string(other)
@@ -79,6 +105,7 @@ defmodule Yoke.PRReview.Markdown do
   def format_markdown_body(text, opts \\ [])
 
   def format_markdown_body(text, opts) when is_binary(text) do
+    text = strip_emojis(text)
     lang = Keyword.get(opts, :lang, "elixir")
 
     # 1. Split text into existing fenced code blocks and text segments

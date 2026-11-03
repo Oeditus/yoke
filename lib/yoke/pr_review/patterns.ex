@@ -119,6 +119,14 @@ defmodule Yoke.PRReview.Patterns do
   Otherwise, appends a new pattern under the closest category.
   """
   def record_finding(finding, pr_ref \\ "", cwd \\ ".") do
+    if Yoke.PRReview.endorsement?(finding) do
+      :ok
+    else
+      do_record_finding(finding, pr_ref, cwd)
+    end
+  end
+
+  defp do_record_finding(finding, pr_ref, cwd) do
     ensure_patterns_file(cwd)
     path = patterns_path(cwd)
     content = File.read!(path)

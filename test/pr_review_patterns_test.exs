@@ -56,6 +56,19 @@ defmodule Yoke.PRReview.PatternsTest do
   end
 
   describe "record_finding/3" do
+    test "does not record endorsements or legacy informational praise" do
+      path = Patterns.ensure_patterns_file(@test_dir)
+      original = File.read!(path)
+
+      for finding <- [
+            %{title: "Clean design", kind: "endorsement", severity: "low"},
+            %{title: "Great tests", severity: "info", fix_suggestion: ""}
+          ] do
+        assert :ok = Patterns.record_finding(finding, "PR #42", @test_dir)
+        assert File.read!(path) == original
+      end
+    end
+
     test "increments seen count for existing pattern and appends new pattern" do
       Patterns.ensure_patterns_file(@test_dir)
 

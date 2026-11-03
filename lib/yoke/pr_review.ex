@@ -18,6 +18,7 @@ defmodule Yoke.PRReview do
           line: integer() | nil,
           title: String.t(),
           description: String.t(),
+          kind: String.t(),
           severity: String.t(),
           fix_suggestion: String.t()
         }
@@ -43,12 +44,16 @@ defmodule Yoke.PRReview do
         "line": 42,
         "title": "Short title with `inline_code` in backticks",
         "description": "Clear explanation of the problem with `short_code_pieces` in backticks and multiline code snippets in code fences.",
+        "kind": "issue",
         "severity": "high",
         "fix_suggestion": "Proposed code fix or recommendation (can be committable code or fenced block)."
       }
     ]
     ```
-    (severity can be "high", "medium", "low", or "info"). For codepieces that are outstandingly good, clean, nifty, or clever, you may also include a comment with a heart (❤) or thumbs-up emoji (:+1:) (with severity "info" and an empty fix_suggestion). If no actionable issues are found, output an empty array `[]`.
+    Severity can be "high", "medium", "low", or "info". Set `kind` to "issue" for actionable problems.
+    Praise may be included separately with `kind: "endorsement"`, severity "info", and an empty `fix_suggestion`.
+    Endorsements are observations, NEVER issues or requests for changes. Never include them in any suggested AI prompt, fix prompt, actionable recommendations, or issue count.
+    If there are no issues or endorsements, output an empty array `[]`.
 
     ### 8. Self-Critique Checklist (Drop the suggestion if any apply):
     1. Another PR in the branch stack already addresses it.
@@ -64,7 +69,8 @@ defmodule Yoke.PRReview do
 
     ### 9. Tone & Comment Phrasing Rules:
     - **Technical issues only**: Never raise process, organizational, or interpersonal concerns.
-    - **Praise outstanding code**: For codepieces that are outstandingly good, clean, nifty, or clever, please also add a comment with a heart (❤) or thumbs-up emoji (:+1:) highlighting and appreciating the clean, clever craftsmanship.
+    - **Praise outstanding code**: Highlight outstanding craftsmanship in a separate Endorsements section, using plain text and `kind: "endorsement"`.
+    - **No emojis**: Do not use Unicode emojis or GitHub emoji shortcodes in review text, findings, endorsements, or suggested prompts. The application alone adds its branding marker to the very top review header.
     - **Markdown formatting for GitHub PR comments**:
       - Findings payload fields (`title`, `description`, `fix_suggestion`) are posted directly as GitHub Pull Request inline review comments and summary items. They MUST be formatted in rich GitHub-flavored Markdown, NEVER plain text.
       - **Backticks for code pieces**: Enclose all short code pieces—function/macro calls and arities (e.g. `mark_read/2`), expressions (e.g. `send(self(), ...)`), module/type names (e.g. `LiveView`), atoms/keys (e.g. `:comment_event`), variables/assigns (e.g. `socket.assigns.view`), and file paths (e.g. `config/dev.exs`)—in single backticks (`...`).
@@ -86,7 +92,7 @@ defmodule Yoke.PRReview do
   """
   def parse_findings(review_md) when is_binary(review_md) do
     case extract_json_block(review_md) do
-      {:ok, findings} when is_list(findings) and findings != [] ->
+      {:ok, findings} when is_list(findings) ->
         findings
         |> Enum.map(&normalize_finding/1)
         |> Enum.reject(&is_nil/1)
@@ -129,6 +135,7 @@ defmodule Yoke.PRReview do
     severity = Map.get(map, "severity") || Map.get(map, :severity) || "medium"
     fix = Map.get(map, "fix_suggestion") || Map.get(map, :fix_suggestion) || ""
     id = Map.get(map, "id") || Map.get(map, :id) || 1
+    kind = if endorsement?(map), do: "endorsement", else: "issue"
 
     line_int =
       cond do
@@ -143,12 +150,40 @@ defmodule Yoke.PRReview do
       line: line_int,
       title: to_string(title),
       description: to_string(desc),
+      kind: kind,
       severity: to_string(severity),
-      fix_suggestion: to_string(fix)
+      fix_suggestion: if(kind == "endorsement", do: "", else: to_string(fix))
     }
   end
 
   defp normalize_finding(_), do: nil
+
+  @doc """
+  Identifies explicit endorsements and legacy informational praise with no fix.
+  An explicit issue remains actionable even with informational severity or no suggested fix.
+  """
+  def endorsement?(finding) when is_map(finding) do
+    kind = Map.get(finding, :kind) || Map.get(finding, "kind")
+    severity = Map.get(finding, :severity) || Map.get(finding, "severity") || ""
+    fix = Map.get(finding, :fix_suggestion) || Map.get(finding, "fix_suggestion") || ""
+
+    case kind |> to_string() |> String.downcase() |> String.trim() do
+      kind when kind in ["endorsement", "praise", "kudos"] ->
+        true
+
+      "issue" ->
+        false
+
+      _ ->
+        String.downcase(String.trim(to_string(severity))) == "info" and
+          String.trim(to_string(fix)) == ""
+    end
+  end
+
+  @doc """
+  Returns only issues eligible for fix prompts and review-pattern memory.
+  """
+  def actionable_findings(findings), do: Enum.reject(findings, &endorsement?/1)
 
   defp parse_int(str) do
     case Integer.parse(str) do
@@ -161,15 +196,40 @@ defmodule Yoke.PRReview do
     lines = String.split(text, "\n")
 
     lines
-    |> Enum.filter(fn l ->
+    |> Enum.map_reduce(nil, fn line, endorsement_level ->
+      case Regex.run(~r/^\s*(#+)\s+(.*)/, line) do
+        [_, hashes, heading] ->
+          level = String.length(hashes)
+
+          next_level =
+            cond do
+              String.match?(heading, ~r/(endorsements?|positive highlights|kudos|praise)/i) ->
+                level
+
+              endorsement_level && level > endorsement_level ->
+                endorsement_level
+
+              true ->
+                nil
+            end
+
+          {{line, next_level != nil}, next_level}
+
+        _ ->
+          {{line, endorsement_level != nil}, endorsement_level}
+      end
+    end)
+    |> elem(0)
+    |> Enum.filter(fn {l, endorsement_section?} ->
       String.match?(l, ~r/^\s*[\-\*\d\.]+\s+/) and
-        String.match?(
-          l,
-          ~r/(risk|bug|flaw|issue|recommend|refactor|fix|missing|test|error|uncaught|warning|perf|edge)/i
-        )
+        (endorsement_section? or
+           String.match?(
+             l,
+             ~r/(risk|bug|flaw|issue|recommend|refactor|fix|missing|test|error|uncaught|warning|perf|edge)/i
+           ))
     end)
     |> Enum.with_index(1)
-    |> Enum.map(fn {line, idx} ->
+    |> Enum.map(fn {{line, endorsement_section?}, idx} ->
       clean = String.replace(line, ~r/^\s*[\-\*\d\.]+\s*/, "")
       {file, line_num, clean_title} = extract_file_location(clean)
 
@@ -179,7 +239,8 @@ defmodule Yoke.PRReview do
         line: line_num,
         title: clean_title,
         description: clean,
-        severity: "medium",
+        kind: if(endorsement_section?, do: "endorsement", else: "issue"),
+        severity: if(endorsement_section?, do: "info", else: "medium"),
         fix_suggestion: ""
       }
     end)
@@ -214,7 +275,7 @@ defmodule Yoke.PRReview do
       IO.puts(
         "\n" <>
           Formatter.format_info(
-            "Found #{total} actionable code review finding(s). Reviewing interactively…"
+            "Found #{total} code review item(s), including issues and endorsements. Reviewing interactively…"
           ) <> "\n"
       )
 
@@ -346,6 +407,8 @@ defmodule Yoke.PRReview do
   Builds the fix prompt to be sent back to the LLM agent model.
   """
   def build_fix_prompt(accepted_findings) when is_list(accepted_findings) do
+    accepted_findings = actionable_findings(accepted_findings)
+
     if accepted_findings == [] do
       ""
     else
@@ -398,20 +461,19 @@ defmodule Yoke.PRReview do
   Builds the Markdown body for the GitHub PR comment/review.
   """
   def build_pr_comment_body(accepted_findings, fix_prompt \\ "", opts \\ []) do
-    summary_section =
-      if accepted_findings == [] do
-        "No issues/findings accepted."
-      else
-        accepted_findings
-        |> Enum.with_index(1)
-        |> Enum.map_join("\n", fn {f, idx} ->
-          loc = if f.file, do: "`#{f.file}`#{if f.line, do: ":#{f.line}"}", else: "General"
-          title = Markdown.format_inline_code(f.title)
-          desc = Markdown.format_inline_code(f.description)
+    {endorsements, issues} = Enum.split_with(accepted_findings, &endorsement?/1)
+    summary_section = findings_summary(issues, "No issues/findings accepted.")
 
-          "- **#{idx}. [#{f.severity |> String.upcase()}]** #{loc} - **#{title}**: #{desc}"
-        end)
+    endorsements_section =
+      if endorsements == [] do
+        ""
+      else
+        "\n\n### Endorsements\n\n" <> findings_summary(endorsements, "")
       end
+
+    # Rebuild from typed findings rather than trusting a caller-supplied prompt
+    # that may already contain endorsements from an older review workflow.
+    fix_prompt = if fix_prompt != "", do: build_fix_prompt(issues), else: ""
 
     fix_block =
       if fix_prompt != "" do
@@ -419,7 +481,7 @@ defmodule Yoke.PRReview do
 
         ---
 
-        ### 🛠️ Recommended Fix Prompt
+        ### Recommended Fix Prompt
         ```
         #{fix_prompt}
         ```
@@ -435,10 +497,27 @@ defmodule Yoke.PRReview do
     """
     ## 🪢 Review from #{assistant_name}
 
-    ### 📋 Findings Summary & Accepted Issues
+    ### Findings Summary & Accepted Issues
 
-    #{summary_section}#{fix_block}
+    #{summary_section}#{endorsements_section}#{fix_block}
     """
+    |> Markdown.sanitize_review_body()
+  end
+
+  defp findings_summary(findings, empty_message) do
+    if findings == [] do
+      empty_message
+    else
+      findings
+      |> Enum.with_index(1)
+      |> Enum.map_join("\n", fn {f, idx} ->
+        loc = if f.file, do: "`#{f.file}`#{if f.line, do: ":#{f.line}"}", else: "General"
+        title = Markdown.format_inline_code(f.title)
+        desc = Markdown.format_inline_code(f.description)
+
+        "- **#{idx}. [#{f.severity |> String.upcase()}]** #{loc} - **#{title}**: #{desc}"
+      end)
+    end
   end
 
   @doc """
@@ -542,9 +621,12 @@ defmodule Yoke.PRReview do
       Enum.reject(body_sidenotes, fn f ->
         title = to_string(f.title)
         formatted_title = Markdown.format_inline_code(title)
+        sanitized_title = Markdown.strip_emojis(title)
 
         title != "" and
-          (String.contains?(review_body, title) or String.contains?(review_body, formatted_title))
+          Enum.any?([title, formatted_title, sanitized_title], fn candidate ->
+            String.trim(candidate) != "" and String.contains?(review_body, candidate)
+          end)
       end)
 
     full_body =
@@ -559,12 +641,12 @@ defmodule Yoke.PRReview do
             "- **[#{f.severity |> String.upcase()}]** #{loc} - **#{title}**: #{desc}"
           end)
 
-        review_body <> "\n\n### 📝 General Observations & Out-of-Diff Notes\n" <> sidenotes_text
+        review_body <> "\n\n### General Observations & Out-of-Diff Notes\n" <> sidenotes_text
       end
 
     %{
       "event" => event_str,
-      "body" => full_body,
+      "body" => Markdown.sanitize_review_body(full_body),
       "comments" => comments_payload
     }
   end
@@ -587,6 +669,13 @@ defmodule Yoke.PRReview do
   Falls back to standard PR comment if the API call fails or inline comments are rejected.
   """
   def post_atomic_review(target_or_head, payload, cwd \\ ".") do
+    payload =
+      payload
+      |> Map.update!("body", &Markdown.sanitize_review_body/1)
+      |> Map.update("comments", [], fn comments ->
+        Enum.map(comments, &Map.update!(&1, "body", fn body -> Markdown.strip_emojis(body) end))
+      end)
+
     case System.find_executable("gh") do
       nil ->
         {:error, "GitHub CLI ('gh') is not installed or not found in PATH."}
@@ -656,6 +745,8 @@ defmodule Yoke.PRReview do
   Posts accepted findings and review summary to GitHub PR using `gh` CLI.
   """
   def post_to_github_pr(target_or_head, pr_body, cwd \\ ".") do
+    pr_body = Markdown.sanitize_review_body(pr_body)
+
     case System.find_executable("gh") do
       nil ->
         {:error, "GitHub CLI ('gh') is not installed or not found in PATH."}

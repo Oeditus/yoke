@@ -882,83 +882,94 @@ defmodule Yoke.CLI.Repl do
               ctx.head_branch
             )
 
-            pattern_q = "Record accepted findings in .yoke/review_patterns.md living document?"
+            accepted_issues = Yoke.PRReview.actionable_findings(accepted_findings)
 
-            pattern_opts = [
-              "Yes, update living review patterns (Recommended)",
-              "No, skip pattern update"
-            ]
+            if accepted_issues != [] do
+              pattern_q = "Record accepted findings in .yoke/review_patterns.md living document?"
 
-            pattern_choice = Yoke.CLI.QuestionPrompt.ask_single_question(pattern_q, pattern_opts)
+              pattern_opts = [
+                "Yes, update living review patterns (Recommended)",
+                "No, skip pattern update"
+              ]
 
-            selected_pattern =
-              case pattern_choice do
-                %{selected: [c | _]} -> c
-                %{custom: c} when is_binary(c) -> c
-                _ -> "Yes"
+              pattern_choice =
+                Yoke.CLI.QuestionPrompt.ask_single_question(pattern_q, pattern_opts)
+
+              selected_pattern =
+                case pattern_choice do
+                  %{selected: [c | _]} -> c
+                  %{custom: c} when is_binary(c) -> c
+                  _ -> "Yes"
+                end
+
+              if String.starts_with?(selected_pattern, "Yes") or
+                   String.contains?(selected_pattern, "Yes") do
+                pr_ref =
+                  if ctx.resolved_pr_number,
+                    do: "PR ##{ctx.resolved_pr_number}",
+                    else: "PR #{ctx.head_branch}"
+
+                Enum.each(accepted_issues, &Yoke.PRReview.Patterns.record_finding(&1, pr_ref))
+
+                IO.puts(
+                  Formatter.format_success(
+                    "Updated living review patterns in .yoke/review_patterns.md"
+                  )
+                )
               end
-
-            if String.starts_with?(selected_pattern, "Yes") or
-                 String.contains?(selected_pattern, "Yes") do
-              pr_ref =
-                if ctx.resolved_pr_number,
-                  do: "PR ##{ctx.resolved_pr_number}",
-                  else: "PR #{ctx.head_branch}"
-
-              Enum.each(accepted_findings, &Yoke.PRReview.Patterns.record_finding(&1, pr_ref))
 
               IO.puts(
-                Formatter.format_success(
-                  "Updated living review patterns in .yoke/review_patterns.md"
+                "\n" <> Formatter.cyan() <> "🛠️ Yoke Code Review Fix Prompt:" <> Formatter.reset()
+              )
+
+              IO.puts(Formatter.dim() <> fix_prompt <> Formatter.reset() <> "\n")
+              Formatter.flush()
+
+              apply_question = "Would you like Yoke to examine and apply these fixes now?"
+
+              apply_options = [
+                "Yes, apply fixes now (Recommended)",
+                "No, I will apply them later"
+              ]
+
+              apply_choice =
+                Yoke.CLI.QuestionPrompt.ask_single_question(apply_question, apply_options)
+
+              selected_apply =
+                case apply_choice do
+                  %{selected: [c | _]} -> c
+                  %{custom: c} when is_binary(c) -> c
+                  _ -> "Yes"
+                end
+
+              if String.starts_with?(selected_apply, "Yes") or
+                   String.contains?(selected_apply, "Yes") do
+                IO.puts(Formatter.format_info("Passing fix prompt to Yoke model…"))
+
+                apply_fn = fn -> Session.send_user_message(session_pid, fix_prompt) end
+
+                fix_res =
+                  Yoke.CLI.Spinner.run(
+                    fn -> Yoke.CLI.Interrupt.run(session_pid, apply_fn) end,
+                    title: "Applying Code Review fixes… (Ctrl+Q to interrupt)"
+                  )
+
+                case fix_res do
+                  {:ok, %{content: fix_reply}} ->
+                    IO.puts("\n" <> Formatter.format_agent_response(fix_reply) <> "\n")
+                    Formatter.flush()
+
+                  {:error, err} ->
+                    IO.puts(Formatter.format_error(err))
+                    Formatter.flush()
+                end
+              end
+            else
+              IO.puts(
+                Formatter.format_info(
+                  "Only endorsements accepted; no fixes to apply or patterns to record."
                 )
               )
-            end
-
-            IO.puts(
-              "\n" <> Formatter.cyan() <> "🛠️ Yoke Code Review Fix Prompt:" <> Formatter.reset()
-            )
-
-            IO.puts(Formatter.dim() <> fix_prompt <> Formatter.reset() <> "\n")
-            Formatter.flush()
-
-            apply_question = "Would you like Yoke to examine and apply these fixes now?"
-
-            apply_options = [
-              "Yes, apply fixes now (Recommended)",
-              "No, I will apply them later"
-            ]
-
-            apply_choice =
-              Yoke.CLI.QuestionPrompt.ask_single_question(apply_question, apply_options)
-
-            selected_apply =
-              case apply_choice do
-                %{selected: [c | _]} -> c
-                %{custom: c} when is_binary(c) -> c
-                _ -> "Yes"
-              end
-
-            if String.starts_with?(selected_apply, "Yes") or
-                 String.contains?(selected_apply, "Yes") do
-              IO.puts(Formatter.format_info("Passing fix prompt to Yoke model…"))
-
-              apply_fn = fn -> Session.send_user_message(session_pid, fix_prompt) end
-
-              fix_res =
-                Yoke.CLI.Spinner.run(
-                  fn -> Yoke.CLI.Interrupt.run(session_pid, apply_fn) end,
-                  title: "Applying Code Review fixes… (Ctrl+Q to interrupt)"
-                )
-
-              case fix_res do
-                {:ok, %{content: fix_reply}} ->
-                  IO.puts("\n" <> Formatter.format_agent_response(fix_reply) <> "\n")
-                  Formatter.flush()
-
-                {:error, err} ->
-                  IO.puts(Formatter.format_error(err))
-                  Formatter.flush()
-              end
             end
           else
             IO.puts(Formatter.format_info("No findings were accepted by user."))

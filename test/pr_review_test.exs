@@ -197,9 +197,9 @@ defmodule Yoke.PRReviewTest do
       pr_body = PRReview.build_pr_comment_body(accepted, fix_prompt)
 
       assert String.contains?(pr_body, "## 🪢 Review from Robby Ott")
-      assert String.contains?(pr_body, "### 📋 Findings Summary & Accepted Issues")
+      assert String.contains?(pr_body, "### Findings Summary & Accepted Issues")
       assert String.contains?(pr_body, "- **1. [MEDIUM]** `lib/yoke/git.ex`:42")
-      assert String.contains?(pr_body, "### 🛠️ Recommended Fix Prompt")
+      assert String.contains?(pr_body, "### Recommended Fix Prompt")
 
       custom_body = PRReview.build_pr_comment_body(accepted, fix_prompt, assistant_name: "Alice")
       assert String.contains?(custom_body, "## 🪢 Review from Alice")
@@ -327,7 +327,7 @@ defmodule Yoke.PRReviewTest do
       # off-diff sidenotes section would be an exact duplicate and must be
       # suppressed entirely.
       review_body =
-        "### 📋 Findings Summary & Accepted Issues\n" <>
+        "### Findings Summary & Accepted Issues\n" <>
           "- **1. [LOW]** `lib/other.ex`:99 - **Outside diff issue**: Old code has a bug"
 
       payload =
@@ -381,8 +381,11 @@ defmodule Yoke.PRReviewTest do
       assert String.contains?(prompt, "Backticks for code pieces")
       assert String.contains?(prompt, "Code fences for multiline snippets")
       assert String.contains?(prompt, "Praise outstanding code")
-      assert String.contains?(prompt, "❤")
-      assert String.contains?(prompt, ":+1:")
+      assert String.contains?(prompt, "No emojis")
+      assert String.contains?(prompt, ~s(kind: "endorsement"))
+      assert String.contains?(prompt, "Never include them in any suggested AI prompt")
+      refute String.contains?(prompt, "\u2764")
+      refute String.contains?(prompt, ":+1:")
     end
   end
 
@@ -423,6 +426,166 @@ defmodule Yoke.PRReviewTest do
       assert String.contains?(c["body"], "`LiveView`")
       assert String.contains?(c["body"], "```")
       assert String.contains?(c["body"], "def handle_info")
+    end
+  end
+
+  describe "endorsement separation" do
+    test "normalizes explicit endorsements and clears spurious fix suggestions" do
+      review = """
+      ```json findings
+      #{Yoke.Json.encode!([Map.merge(review_finding(), %{kind: "endorsement", title: "Clean design", fix_suggestion: "Keep this design."}), Map.merge(review_finding(), %{kind: "issue"})])}
+      ```
+      """
+
+      assert [endorsement, issue] = PRReview.parse_findings(review)
+      assert endorsement.kind == "endorsement"
+      assert endorsement.fix_suggestion == ""
+      assert issue.kind == "issue"
+      assert PRReview.actionable_findings([endorsement, issue]) == [issue]
+    end
+
+    test "recognizes legacy informational praise but preserves explicit informational issues" do
+      praise = review_finding(%{severity: " INFO ", fix_suggestion: "  "})
+      explicit_issue = Map.put(praise, :kind, "issue")
+      info_with_fix = Map.put(praise, :fix_suggestion, "Add a guard.")
+      low_without_fix = review_finding(%{severity: "low", fix_suggestion: ""})
+
+      assert PRReview.endorsement?(praise)
+      refute PRReview.endorsement?(explicit_issue)
+      refute PRReview.endorsement?(info_with_fix)
+      refute PRReview.endorsement?(low_without_fix)
+      assert PRReview.build_fix_prompt([praise]) == ""
+
+      assert PRReview.actionable_findings([
+               praise,
+               explicit_issue,
+               info_with_fix,
+               low_without_fix
+             ]) ==
+               [explicit_issue, info_with_fix, low_without_fix]
+    end
+
+    test "empty structured payload is authoritative even when prose mentions tests or fixes" do
+      for payload <- ["```json findings\n[]\n```", "<findings>[]</findings>", "```json\n[]\n```"] do
+        assert PRReview.parse_findings("# Kudos\n- Great error handling and tests.\n" <> payload) ==
+                 []
+      end
+    end
+
+    test "fallback parsing keeps praise separate even when it mentions issue keywords" do
+      review = """
+      ## Positive Highlights & Kudos
+      ### Error handling
+      - Excellent error handling and tests in lib/good.ex:10
+      ## Risk & Edge Case Assessment
+      - lib/bad.ex:12 Missing error handling
+      """
+
+      assert [endorsement, issue] = PRReview.parse_findings(review)
+      assert PRReview.endorsement?(endorsement)
+      refute PRReview.endorsement?(issue)
+      prompt = PRReview.build_fix_prompt([endorsement, issue])
+      assert prompt =~ "Missing error handling"
+      refute prompt =~ "Excellent error handling"
+    end
+
+    test "fix prompts include only issues and renumber after filtering" do
+      endorsement = review_finding(%{kind: "endorsement", title: "Clean design"})
+      issue = review_finding()
+      prompt = PRReview.build_fix_prompt([endorsement, issue])
+
+      assert prompt =~ "1. [Unhandled error]"
+      refute prompt =~ "Clean design"
+      refute prompt =~ "2. ["
+    end
+
+    test "GitHub body separates endorsements and rebuilds stale mixed fix prompts" do
+      endorsement = review_finding(%{kind: "endorsement", title: "Clean design"})
+      issue = review_finding()
+
+      body =
+        PRReview.build_pr_comment_body(
+          [endorsement, issue],
+          "Fix everything including Clean design"
+        )
+
+      [summary, rest] = String.split(body, "### Endorsements")
+      [praise, prompt] = String.split(rest, "### Recommended Fix Prompt")
+      assert summary =~ "Unhandled error"
+      refute summary =~ "Clean design"
+      assert praise =~ "Clean design"
+      assert prompt =~ "Unhandled error"
+      refute prompt =~ "Clean design"
+    end
+
+    test "endorsement-only GitHub reviews have no fix-prompt section" do
+      endorsement = review_finding(%{kind: "endorsement", title: "Clean design"})
+      body = PRReview.build_pr_comment_body([endorsement], "Stale prompt")
+
+      assert body =~ "### Endorsements"
+      assert body =~ "Clean design"
+      assert body =~ "No issues/findings accepted."
+      refute body =~ "Recommended Fix Prompt"
+      refute body =~ "Stale prompt"
+    end
+
+    test "GitHub payload keeps only the branding emoji in the top header" do
+      issue =
+        review_finding(%{
+          title: "Unhandled error \u{1F680}",
+          description: "Missing guard \u2764\uFE0F :warning:",
+          fix_suggestion: "Add a guard. :+1:"
+        })
+
+      endorsement =
+        review_finding(%{
+          kind: "endorsement",
+          title: "Clean design \u{1FAA2}",
+          description: "Great tests \u{1F44D}\u{1F3FD}"
+        })
+
+      findings = [issue, endorsement]
+
+      body =
+        PRReview.build_pr_comment_body(findings, PRReview.build_fix_prompt(findings),
+          assistant_name: "Reviewer \u{1F680}"
+        )
+
+      payload = PRReview.build_atomic_review_payload(findings, body)
+
+      assert String.starts_with?(payload["body"], "## \u{1FAA2} Review from Reviewer")
+      [_header | lines] = String.split(payload["body"], "\n")
+      assert Yoke.PRReview.Markdown.strip_emojis(Enum.join(lines, "\n")) == Enum.join(lines, "\n")
+      assert [_, _] = payload["comments"]
+
+      for comment <- payload["comments"] do
+        assert Yoke.PRReview.Markdown.strip_emojis(comment["body"]) == comment["body"]
+        refute comment["body"] =~ ":warning:"
+        refute comment["body"] =~ ":+1:"
+      end
+    end
+
+    test "out-of-diff observations and arbitrary review bodies are sanitized" do
+      finding = review_finding(%{title: "Unhandled error \u{1F680}"})
+
+      payload =
+        PRReview.build_atomic_review_payload(
+          [finding],
+          "## Summary :warning:",
+          "COMMENT",
+          MapSet.new()
+        )
+
+      assert payload["body"] =~ "General Observations & Out-of-Diff Notes"
+      assert payload["body"] == Yoke.PRReview.Markdown.strip_emojis(payload["body"])
+    end
+
+    test "emoji removal does not duplicate out-of-diff endorsements in general notes" do
+      endorsement = review_finding(%{kind: "endorsement", title: "Clean design \u{1F680}"})
+      body = PRReview.build_pr_comment_body([endorsement])
+      payload = PRReview.build_atomic_review_payload([endorsement], body, "COMMENT", MapSet.new())
+      assert payload["body"] == body
+      refute payload["body"] =~ "General Observations & Out-of-Diff Notes"
     end
   end
 
@@ -689,5 +852,20 @@ defmodule Yoke.PRReviewTest do
       assert PRReview.drop_already_reported(findings, []) == findings
       assert PRReview.drop_already_reported(findings, nil) == findings
     end
+  end
+
+  defp review_finding(overrides \\ %{}) do
+    Map.merge(
+      %{
+        id: 1,
+        file: "lib/example.ex",
+        line: 10,
+        title: "Unhandled error",
+        description: "The caller crashes on an error tuple.",
+        severity: "medium",
+        fix_suggestion: "Add an error clause."
+      },
+      overrides
+    )
   end
 end
