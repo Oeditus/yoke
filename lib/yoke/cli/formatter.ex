@@ -82,7 +82,7 @@ defmodule Yoke.CLI.Formatter do
 
     #{color}#{bold()}╭──────────────────────────────────────────────────────────────────────────────╮
     │#{title_line}│
-    │  #{dim()}Actors • Hot-Code Reloading • Distributed Brain/Hands • Aliases • Snapshots#{reset()}#{color}  │
+    │  #{dim()}Actors • Hot-Code Reloading • Distributed Brain/Hands • Aliases • Snapshots#{reset()}#{color} │
     ╰──────────────────────────────────────────────────────────────────────────────╯#{reset()}
     """
   end

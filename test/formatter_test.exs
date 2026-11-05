@@ -40,6 +40,10 @@ defmodule Yoke.FormatterTest do
     assert String.contains?(banner, "Yoke Agentic CLI")
     assert String.contains?(banner, "v#{Yoke.version()}")
     assert String.contains?(banner, "Aliases")
+
+    lines = String.split(banner, "\n", trim: true)
+    widths = Enum.map(lines, &Formatter.display_width/1)
+    assert Enum.uniq(widths) == [80]
   end
 
   test "renders help menu with all slash commands" do
