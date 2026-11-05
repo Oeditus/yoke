@@ -9,6 +9,7 @@ defmodule Yoke.MixProject do
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       test_coverage: [tool: ExCoveralls],
+      test_ignore_filters: [~r{test/support/}],
       dialyzer: [
         plt_add_apps: [:mix, :ex_unit],
         plt_core_path: "priv/plts",
@@ -97,7 +98,7 @@ defmodule Yoke.MixProject do
   # Opt-in source override for validating changes before a Ragex Hex release.
   defp ragex_dep do
     case System.get_env("LOCAL_RAGEX") do
-      nil -> {:ragex, "~> 0.38.1"}
+      nil -> {:ragex, "~> 0.39"}
       path -> {:ragex, path: Path.expand(path), override: true}
     end
   end

@@ -29,7 +29,7 @@ defmodule Yoke.Brain.AgentLoop do
     mcp_ragex_structure
   )
 
-  @repeatable_tools ~w(bash cmd run_command shell exec job_status ask_question user_input)
+  @repeatable_tools ~w(bash cmd run_command shell exec job_status ask_question user_input read_file read_files list_dir grep_search glob_search git_status git_diff git_root mcp_ragex_grep mcp_ragex_search_code mcp_ragex_view mcp_ragex_structure)
 
   @doc "Detects whether the exact same tool calls with identical arguments were executed in the previous turn."
   def duplicate_tool_calls?(messages, new_tool_calls)
@@ -42,6 +42,7 @@ defmodule Yoke.Brain.AgentLoop do
       last_assistant_msg =
         messages
         |> Enum.reverse()
+        |> Enum.take_while(&(&1["role"] != "user"))
         |> Enum.find(fn m -> m["role"] == "assistant" and is_list(m["tool_calls"]) end)
 
       case last_assistant_msg do

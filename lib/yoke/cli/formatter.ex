@@ -653,8 +653,12 @@ defmodule Yoke.CLI.Formatter do
           Inspect living codebase review memory (#{dim()}.yoke/review_patterns.md#{reset()}).
           Patterns with #{red()}[MANDATORY Seen: 3+]#{reset()} are automatically enforced as tripwires.
 
-      #{cyan()}/cr [base]#{reset()}
-          Quick shortcut to review active branch against target base (default: main then master, or configured default_branch).
+      #{cyan()}/cr [<base> [head] | <pr_num>]#{reset()}
+          Exact alias of /review, including numeric PR targets and explicit head revisions.
+          Defaults to committed changes from the configured base to HEAD; workspace edits are excluded.
+          Empty or oversized diffs stop without a model request. PR commits are fetched and pinned.
+          Reviews use fresh context and read-only tools at the reviewed head, never a stale checkout.
+          Posting is opt-in for explicit PR reviews and checks that base/head commits have not changed.
 
     #{bold()}Design & Review Standards:#{reset()}
       • #{bold()}Human-in-the-loop:#{reset()} Claude/DeepSeek proposes; engineer decides every comment.
@@ -662,7 +666,7 @@ defmodule Yoke.CLI.Formatter do
         with right-side diff inline comments and committable ```suggestion blocks in a single call.
       • #{bold()}Self-Critique:#{reset()} 10-point checklist filtering false flags, bikeshedding, and linters.
       • #{bold()}Typography:#{reset()} Enforces real em dashes (—) and proper typographic quotes (“ ” and ‘ ’).
-      • #{bold()}Praise & Kudos:#{reset()} Commends outstandingly good, clean, nifty, or clever codepieces with a heart (❤) or thumbs-up emoji (:+1:).
+      • #{bold()}Endorsements:#{reset()} Optional plain-text praise is separate from issues and never becomes a fix request.
     """
   end
 end

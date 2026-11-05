@@ -487,7 +487,7 @@ The full reference lives in [`docs/cheat_sheet.md`](docs/cheat_sheet.md); the es
 | Command | Action |
 | :--- | :--- |
 | `/review [<base> [head] \| <pr>]` | Interactive Human-in-the-Loop PR Code Review with finding triage (`[i] Include`, `[e] Edit`, `[d] Drop`), atomic inline diff comments, and living memory |
-| `/cr [base]` | Fast shortcut to generate Code Review for current branch against `main` or custom base |
+| `/cr [<base> [head] \| <pr>]` | Exact alias of `/review`, including explicit PR numbers and head revisions |
 | `/prboard` \| `/review queue` | Live Pull Request review queue board (CI state, approval thresholds, re-review readiness) |
 | `/review next` | Auto-advance and start reviewing the next recommended PR in the queue |
 | `/review skip <pr>` \| `/review unskip <pr>` | Commit-pinned PR skip (hides PR until author pushes new commits) |
@@ -498,6 +498,25 @@ The full reference lives in [`docs/cheat_sheet.md`](docs/cheat_sheet.md); the es
 | `/finish [files] [--commit-only]` \| `/pr` | Complete work: auto-format, write 5-section structured commit, and create GitHub PR (or commit only with `--commit-only`) |
 | `/commit-structured [files]` \| `/cpr` | Commit staged changes with the 5 structured PR sections without creating a PR |
 | `/linter <tool> [project\|diff\|cr]` | Run `oeditus_credo`, `propwise`, `credo`, or `dialyzer` (alias: `/lint`) |
+
+Review commands inspect **committed branch changes**, not staged, unstaged, or
+untracked workspace edits. The default compares the configured base branch with
+`HEAD`; use `/review HEAD~1 HEAD` to review the last commit. Empty diffs and diffs
+over 300 KB stop with a diagnostic rather than generating a partial review.
+
+For `/review <pr_number>`, Yoke fetches the exact GitHub base/head commits without
+checking out a branch or changing your files. Each review starts with fresh
+review context and revision-pinned, read-only tools. A configured model provider
+is required; offline canned responses are never treated as reviews. Malformed,
+truncated, or off-diff findings stop the workflow instead of becoming fix requests.
+
+GitHub submission is opt-in and available for explicit PR-number reviews. Reviews
+retain the selected PR number and reviewed commit, and submission stops if the PR
+base or head has changed. Local branch reviews never guess a PR to publish to.
+Fix application is opt-in and offered only when Yoke runs at the repository root
+in a clean checkout of the reviewed head. The checkout is checked again after
+confirmation. Optional endorsements stay separate from actionable issues; pattern
+memory updates are also opt-in and happen after fix handling.
 
 #### Model, Execution & Rules
 | Command | Action |

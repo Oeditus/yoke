@@ -67,6 +67,56 @@ defmodule Yoke.CLI.Repl do
     loop(session_pid, session_id, history)
   end
 
+  defp handle_review_fixes(session_pid, ctx, fix_prompt) do
+    IO.puts("\nYoke Code Review Fix Prompt:\n" <> fix_prompt)
+
+    case Yoke.PRReview.Context.verify_fix_checkout(ctx) do
+      :ok ->
+        options = ["No, I will apply them later (Recommended)", "Yes, apply fixes now"]
+
+        if review_yes?("Would you like Yoke to examine and apply these fixes now?", options) do
+          case Yoke.PRReview.Context.verify_fix_checkout(ctx) do
+            :ok ->
+              prompt = "Repository: #{ctx.cwd}\nReviewed head: #{ctx.head_sha}\n\n" <> fix_prompt
+
+              run_review_turn(
+                session_pid,
+                fn -> Session.apply_review_fixes(session_pid, ctx, prompt) end,
+                "Applying Code Review fixes… (Ctrl+Q to interrupt)"
+              )
+              |> print_review_result()
+
+            {:error, error} ->
+              IO.puts(Formatter.format_warning(error))
+          end
+        end
+
+      {:error, error} ->
+        IO.puts(Formatter.format_warning(error))
+    end
+  end
+
+  defp maybe_record_review_patterns(findings, ctx) do
+    options = ["No, skip pattern update (Recommended)", "Yes, update living review patterns"]
+
+    if review_yes?("Record accepted findings in .yoke/review_patterns.md?", options) do
+      reference = if ctx.pr_number, do: "PR ##{ctx.pr_number}", else: "Commit #{ctx.head_sha}"
+      Enum.each(findings, &Yoke.PRReview.Patterns.record_finding(&1, reference, ctx.cwd))
+
+      IO.puts(
+        Formatter.format_success("Updated living review patterns in .yoke/review_patterns.md")
+      )
+    end
+  end
+
+  defp review_yes?(question, options) do
+    case Yoke.CLI.QuestionPrompt.ask_single_question(question, options) do
+      %{selected: [choice | _]} -> String.starts_with?(choice, "Yes")
+      %{custom: choice} when is_binary(choice) -> String.starts_with?(choice, "Yes")
+      _ -> false
+    end
+  end
+
   def loop(session_pid, session_id, history \\ [], console_mode? \\ false)
 
   # "Pure console" mode: entered/exited via the `!!` flip-flop command.
@@ -367,15 +417,11 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
-  def handle_input("/cr " <> base, session_pid, session_id) do
-    b = String.trim(base)
-    b = if b == "", do: Git.default_base_branch(), else: b
-    handle_input("/review #{b} HEAD", session_pid, session_id)
-  end
+  def handle_input("/cr " <> args, session_pid, session_id),
+    do: handle_input("/review " <> args, session_pid, session_id)
 
   def handle_input("/cr", session_pid, session_id) do
-    base = Git.default_base_branch()
-    handle_input("/review #{base} HEAD", session_pid, session_id)
+    handle_input("/review", session_pid, session_id)
   end
 
   def handle_input("/git " <> args, _session_pid, _session_id) do
@@ -838,142 +884,72 @@ defmodule Yoke.CLI.Repl do
   end
 
   def handle_input("/review " <> args, session_pid, _session_id) do
-    ctx = resolve_review_context(args)
+    cwd = Session.get_info(session_pid).cwd
 
-    IO.puts(
-      Formatter.format_info(
-        "Comparing branches '#{ctx.base_branch}' vs '#{ctx.head_branch}' and generating Code Review…"
-      )
-    )
+    case Yoke.PRReview.Context.resolve(args, cwd) do
+      {:ok, ctx} ->
+        IO.puts(
+          Formatter.format_info(
+            "Reviewing committed changes '#{ctx.base}' vs '#{ctx.head}' at #{String.slice(ctx.head_sha, 0, 12)} (working-tree edits excluded)…"
+          )
+        )
 
-    review_fn = fn ->
-      Session.generate_code_review(session_pid, ctx.base_branch, ctx.head_branch,
-        peer_comments: ctx.peer_comments
-      )
-    end
+        review_fn = fn ->
+          Session.generate_code_review(session_pid, ctx.base, ctx.head,
+            peer_comments: ctx.peer_comments,
+            review_context: ctx
+          )
+        end
 
-    res =
-      Yoke.CLI.Spinner.run(
-        fn -> Yoke.CLI.Interrupt.run(session_pid, review_fn) end,
-        title: "Generating Code Review… (Ctrl+Q to interrupt)"
-      )
+        res =
+          Yoke.CLI.Spinner.run(
+            fn -> Yoke.CLI.Interrupt.run(session_pid, review_fn) end,
+            title: "Generating Code Review… (Ctrl+Q to interrupt)"
+          )
 
-    case res do
-      {:ok, %{content: review_md}} ->
-        Formatter.safe_puts("\n" <> Formatter.format_agent_response(review_md) <> "\n")
-        Formatter.flush()
+        case res do
+          {:ok, %{content: review_md}} ->
+            Formatter.safe_puts("\n" <> Formatter.format_agent_response(review_md) <> "\n")
+            Formatter.flush()
 
-        raw_findings = Yoke.PRReview.parse_findings(review_md)
-        findings = Yoke.PRReview.drop_already_reported(raw_findings, ctx.peer_comments)
+            raw_findings = Yoke.PRReview.parse_findings(review_md)
+            findings = Yoke.PRReview.drop_already_reported(raw_findings, ctx.peer_comments)
 
-        if findings == [] do
-          IO.puts(Formatter.format_info("No discrete actionable findings parsed from review."))
-        else
-          {:ok, accepted_findings, _declined} = Yoke.PRReview.interactive_review(findings)
-
-          if accepted_findings != [] do
-            fix_prompt = Yoke.PRReview.build_fix_prompt(accepted_findings)
-            pr_body = Yoke.PRReview.build_pr_comment_body(accepted_findings, fix_prompt)
-
-            maybe_post_review_to_github(
-              accepted_findings,
-              pr_body,
-              ctx.resolved_pr_number,
-              ctx.head_branch
-            )
-
-            accepted_issues = Yoke.PRReview.actionable_findings(accepted_findings)
-
-            if accepted_issues != [] do
-              pattern_q = "Record accepted findings in .yoke/review_patterns.md living document?"
-
-              pattern_opts = [
-                "Yes, update living review patterns (Recommended)",
-                "No, skip pattern update"
-              ]
-
-              pattern_choice =
-                Yoke.CLI.QuestionPrompt.ask_single_question(pattern_q, pattern_opts)
-
-              selected_pattern =
-                case pattern_choice do
-                  %{selected: [c | _]} -> c
-                  %{custom: c} when is_binary(c) -> c
-                  _ -> "Yes"
-                end
-
-              if String.starts_with?(selected_pattern, "Yes") or
-                   String.contains?(selected_pattern, "Yes") do
-                pr_ref =
-                  if ctx.resolved_pr_number,
-                    do: "PR ##{ctx.resolved_pr_number}",
-                    else: "PR #{ctx.head_branch}"
-
-                Enum.each(accepted_issues, &Yoke.PRReview.Patterns.record_finding(&1, pr_ref))
-
-                IO.puts(
-                  Formatter.format_success(
-                    "Updated living review patterns in .yoke/review_patterns.md"
-                  )
-                )
-              end
-
-              IO.puts(
-                "\n" <> Formatter.cyan() <> "🛠️ Yoke Code Review Fix Prompt:" <> Formatter.reset()
-              )
-
-              IO.puts(Formatter.dim() <> fix_prompt <> Formatter.reset() <> "\n")
-              Formatter.flush()
-
-              apply_question = "Would you like Yoke to examine and apply these fixes now?"
-
-              apply_options = [
-                "Yes, apply fixes now (Recommended)",
-                "No, I will apply them later"
-              ]
-
-              apply_choice =
-                Yoke.CLI.QuestionPrompt.ask_single_question(apply_question, apply_options)
-
-              selected_apply =
-                case apply_choice do
-                  %{selected: [c | _]} -> c
-                  %{custom: c} when is_binary(c) -> c
-                  _ -> "Yes"
-                end
-
-              if String.starts_with?(selected_apply, "Yes") or
-                   String.contains?(selected_apply, "Yes") do
-                IO.puts(Formatter.format_info("Passing fix prompt to Yoke model…"))
-
-                apply_fn = fn -> Session.send_user_message(session_pid, fix_prompt) end
-
-                fix_res =
-                  Yoke.CLI.Spinner.run(
-                    fn -> Yoke.CLI.Interrupt.run(session_pid, apply_fn) end,
-                    title: "Applying Code Review fixes… (Ctrl+Q to interrupt)"
-                  )
-
-                case fix_res do
-                  {:ok, %{content: fix_reply}} ->
-                    IO.puts("\n" <> Formatter.format_agent_response(fix_reply) <> "\n")
-                    Formatter.flush()
-
-                  {:error, err} ->
-                    IO.puts(Formatter.format_error(err))
-                    Formatter.flush()
-                end
-              end
+            if findings == [] do
+              IO.puts(Formatter.format_info("Review completed: no new findings to triage."))
             else
-              IO.puts(
-                Formatter.format_info(
-                  "Only endorsements accepted; no fixes to apply or patterns to record."
+              {:ok, accepted_findings, _declined} = Yoke.PRReview.interactive_review(findings)
+
+              if accepted_findings != [] do
+                fix_prompt = Yoke.PRReview.build_fix_prompt(accepted_findings)
+                pr_body = Yoke.PRReview.build_pr_comment_body(accepted_findings, fix_prompt)
+
+                maybe_post_review_to_github(
+                  accepted_findings,
+                  pr_body,
+                  ctx
                 )
-              )
+
+                accepted_issues = Yoke.PRReview.actionable_findings(accepted_findings)
+
+                if accepted_issues != [] do
+                  handle_review_fixes(session_pid, ctx, fix_prompt)
+                  maybe_record_review_patterns(accepted_issues, ctx)
+                else
+                  IO.puts(
+                    Formatter.format_info(
+                      "Only endorsements accepted; no fixes to apply or patterns to record."
+                    )
+                  )
+                end
+              else
+                IO.puts(Formatter.format_info("No findings were accepted by user."))
+              end
             end
-          else
-            IO.puts(Formatter.format_info("No findings were accepted by user."))
-          end
+
+          {:error, err} ->
+            IO.puts(Formatter.format_error(err))
+            Formatter.flush()
         end
 
       {:error, err} ->
@@ -985,8 +961,7 @@ defmodule Yoke.CLI.Repl do
   end
 
   def handle_input("/review", session_pid, session_id) do
-    base = Git.default_base_branch()
-    handle_input("/review #{base} HEAD", session_pid, session_id)
+    handle_input("/review ", session_pid, session_id)
   end
 
   def handle_input("/commit " <> msg, _session_pid, _session_id) do
@@ -2928,75 +2903,36 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
-  defp resolve_review_context(args) do
-    parts = String.split(args, " ", trim: true)
-    default_base = Git.default_base_branch()
-
-    {base_branch, head_branch, pr_number} =
-      case parts do
-        [pr_num] ->
-          if Regex.match?(~r/^\d+$/, pr_num) do
-            case Yoke.PRReview.detect_pr(pr_num) do
-              {:ok, info} ->
-                {info.base || default_base, info.head || "HEAD", pr_num}
-
-              _ ->
-                {default_base, "HEAD", pr_num}
-            end
-          else
-            {pr_num, "HEAD", nil}
-          end
-
-        [base, head | _] ->
-          {base, head, nil}
-
-        _ ->
-          {default_base, "HEAD", nil}
-      end
-
-    pr_target =
-      cond do
-        pr_number != nil -> pr_number
-        head_branch != nil and head_branch != "HEAD" -> head_branch
-        true -> nil
-      end
-
-    pr_info =
-      case Yoke.PRReview.detect_pr(pr_target) do
-        {:ok, info} -> info
-        _ -> nil
-      end
-
-    resolved_pr_number = if pr_info, do: to_string(pr_info.number), else: pr_number
-    pr_author = if pr_info, do: pr_info.author, else: nil
-
-    peer_comments =
-      if resolved_pr_number do
-        case Yoke.PRReview.fetch_peer_comments(resolved_pr_number, pr_author: pr_author) do
-          {:ok, comments} -> comments
-          _ -> []
-        end
-      else
-        []
-      end
-
-    %{
-      base_branch: base_branch,
-      head_branch: head_branch,
-      resolved_pr_number: resolved_pr_number,
-      pr_author: pr_author,
-      peer_comments: peer_comments
-    }
+  defp run_review_turn(session_pid, fun, title) do
+    Yoke.CLI.Spinner.run(fn -> Yoke.CLI.Interrupt.run(session_pid, fun) end, title: title)
   end
 
-  defp maybe_post_review_to_github(accepted_findings, pr_body, resolved_pr_number, head_branch) do
+  defp print_review_result({:ok, %{content: content}}) do
+    IO.puts("\n" <> Formatter.format_agent_response(content) <> "\n")
+    Formatter.flush()
+  end
+
+  defp print_review_result({:error, error}) do
+    IO.puts(Formatter.format_error(error))
+    Formatter.flush()
+  end
+
+  defp maybe_post_review_to_github(_findings, _body, %{pr_number: nil}) do
+    IO.puts(
+      Formatter.format_info(
+        "Local branch review only. Use /review <pr_number> to submit a pinned GitHub review."
+      )
+    )
+  end
+
+  defp maybe_post_review_to_github(accepted_findings, pr_body, ctx) do
     post_question = "Choose GitHub PR review action for accepted findings:"
 
     post_options = [
-      "Submit APPROVE review with inline comments (Recommended)",
+      "Skip posting to GitHub (Recommended)",
       "Submit COMMENT review with inline comments",
       "Submit REQUEST_CHANGES review with inline comments",
-      "Skip posting to GitHub"
+      "Submit APPROVE review with inline comments"
     ]
 
     post_choice = Yoke.CLI.QuestionPrompt.ask_single_question(post_question, post_options)
@@ -3005,7 +2941,7 @@ defmodule Yoke.CLI.Repl do
       case post_choice do
         %{selected: [c | _]} -> c
         %{custom: c} when is_binary(c) -> c
-        _ -> "Submit APPROVE"
+        _ -> "Skip posting to GitHub"
       end
 
     event =
@@ -3017,27 +2953,10 @@ defmodule Yoke.CLI.Repl do
       end
 
     if event do
-      valid_lines =
-        if resolved_pr_number do
-          case Yoke.PRReview.fetch_pr_diff(resolved_pr_number) do
-            {:ok, diff} -> Yoke.PRReview.parse_diff_right_lines(diff)
-            _ -> nil
-          end
-        else
-          nil
-        end
-
-      atomic_payload =
-        Yoke.PRReview.build_atomic_review_payload(
-          accepted_findings,
-          pr_body,
-          event,
-          valid_lines
-        )
-
-      case Yoke.PRReview.post_atomic_review(head_branch, atomic_payload) do
+      case Yoke.PRReview.post_context_review(ctx, accepted_findings, pr_body, event) do
         {:ok, pr_info} ->
-          comments_count = length(atomic_payload["comments"])
+          comments_count =
+            Enum.count(accepted_findings, &MapSet.member?(ctx.valid_lines, {&1.file, &1.line}))
 
           IO.puts(
             Formatter.format_success(

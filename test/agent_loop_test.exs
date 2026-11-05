@@ -4,7 +4,7 @@ defmodule Yoke.Brain.AgentLoopTest do
   alias Yoke.Brain.AgentLoop
 
   describe "AgentLoop duplicate tool call detection" do
-    test "returns true when identical tool calls with identical arguments repeat" do
+    test "allows identical mutable reads to observe refreshed evidence" do
       messages = [
         %{"role" => "user", "content" => "List files"},
         %{
@@ -22,7 +22,7 @@ defmodule Yoke.Brain.AgentLoopTest do
 
       new_tool_calls = [%{id: "call_2", name: "list_dir", arguments: %{"path" => "."}}]
 
-      assert AgentLoop.duplicate_tool_calls?(messages, new_tool_calls) == true
+      refute AgentLoop.duplicate_tool_calls?(messages, new_tool_calls)
     end
 
     test "returns false when tool calls or arguments differ" do
@@ -75,6 +75,34 @@ defmodule Yoke.Brain.AgentLoopTest do
       # Probes must be permitted to repeat to observe changing external state
       assert AgentLoop.duplicate_tool_calls?(messages, new_tool_calls) == false
     end
+  end
+
+  test "retains loop protection within a turn, but not across new user requests" do
+    call = %{id: "new", name: "custom_analysis", arguments: %{"path" => "lib/a.ex"}}
+
+    old_call = %{
+      "role" => "assistant",
+      "tool_calls" => [
+        %{"function" => %{"name" => call.name, "arguments" => Yoke.Json.encode!(call.arguments)}}
+      ]
+    }
+
+    history = [
+      %{"role" => "user", "content" => "Review A"},
+      old_call,
+      %{"role" => "tool", "content" => "Old evidence"}
+    ]
+
+    assert AgentLoop.duplicate_tool_calls?(history, [call])
+
+    refute AgentLoop.duplicate_tool_calls?(
+             history ++
+               [
+                 %{"role" => "assistant", "content" => "Review A completed"},
+                 %{"role" => "user", "content" => "Review B"}
+               ],
+             [call]
+           )
   end
 
   describe "AgentLoop circuit breaker for non-standard tool failures" do

@@ -14,6 +14,58 @@ defmodule Yoke.Git do
     e -> {:error, "Git not available: #{Exception.message(e)}"}
   end
 
+  @doc "Lists changed paths with the same configuration-independent semantics as review diffs."
+  def review_changed_paths(merge_base, head_sha, cwd) do
+    case System.cmd("git", review_diff_args("#{merge_base}..#{head_sha}", ["--name-only", "-z"]),
+           cd: cwd,
+           stderr_to_stdout: true
+         ) do
+      {paths, 0} -> {:ok, MapSet.new(String.split(paths, <<0>>, trim: true))}
+      {_error, _} -> {:error, "Cannot list files in the reviewed diff."}
+    end
+  end
+
+  @doc "Resolves a revision once, without allowing revision arguments to become Git options."
+  def resolve_revision(ref, cwd \\ ".") when is_binary(ref) do
+    case System.cmd("git", ["rev-parse", "--verify", "--end-of-options", "#{ref}^{commit}"],
+           cd: cwd,
+           stderr_to_stdout: true
+         ) do
+      {out, 0} -> {:ok, String.trim(out)}
+      {_out, _} -> {:error, "Cannot resolve review revision #{inspect(ref)} in #{cwd}."}
+    end
+  rescue
+    e -> {:error, "Cannot resolve review revision: #{Exception.message(e)}"}
+  end
+
+  defp complete_review_diff(diff) when byte_size(diff) > 300_000,
+    do:
+      {:error,
+       "Review diff exceeds 300 KB. Review a smaller commit range; no partial review was generated."}
+
+  defp complete_review_diff(_diff), do: :ok
+
+  defp review_diff_args(range, extra \\ []) do
+    [
+      "--no-pager",
+      "-c",
+      "core.quotePath=false",
+      "-c",
+      "diff.noprefix=false",
+      "-c",
+      "diff.mnemonicPrefix=false",
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-color",
+      "--no-relative",
+      "--ignore-submodules=none",
+      "--src-prefix=a/",
+      "--dst-prefix=b/",
+      "--unified=3"
+    ] ++ extra ++ [range, "--"]
+  end
+
   @doc "Returns true when the workspace has uncommitted changes (staged, unstaged, or untracked)."
   def dirty?(cwd \\ ".") do
     case status(cwd) do
@@ -133,33 +185,44 @@ defmodule Yoke.Git do
           base_branch
       end
 
-    range = "#{base_branch}...#{head_branch}"
-    log_range = "#{base_branch}..#{head_branch}"
-
-    with {stat, 0} <-
-           System.cmd("git", ["diff", "--stat", range], cd: cwd, stderr_to_stdout: true),
+    with {:ok, base_sha} <- resolve_revision(base_branch, cwd),
+         {:ok, head_sha} <- resolve_revision(head_branch, cwd),
+         {merge_base, 0} <-
+           System.cmd("git", ["merge-base", base_sha, head_sha], cd: cwd, stderr_to_stdout: true),
+         range = "#{String.trim(merge_base)}..#{head_sha}",
+         {stat, 0} <-
+           System.cmd("git", review_diff_args(range, ["--stat"]), cd: cwd, stderr_to_stdout: true),
          {log, 0} <-
-           System.cmd("git", ["log", "--oneline", log_range], cd: cwd, stderr_to_stdout: true),
-         {raw_diff, 0} <- System.cmd("git", ["diff", range], cd: cwd, stderr_to_stdout: true) do
-      diff_payload =
-        if byte_size(raw_diff) > 300_000 do
-          binary_part(raw_diff, 0, 300_000)
-          |> Yoke.Json.sanitize_utf8()
-          |> Kernel.<>("\n... [Diff truncated at 300KB]")
-        else
-          Yoke.Json.sanitize_utf8(raw_diff)
-        end
+           System.cmd("git", ["--no-pager", "log", "--oneline", range, "--"],
+             cd: cwd,
+             stderr_to_stdout: true
+           ),
+         {raw_diff, 0} <-
+           System.cmd(
+             "git",
+             review_diff_args(range),
+             cd: cwd,
+             stderr_to_stdout: true
+           ),
+         :ok <- complete_review_diff(raw_diff) do
+      diff_payload = Yoke.Json.sanitize_utf8(raw_diff)
 
       {:ok,
        %{
          base: base_branch,
          head: head_branch,
+         base_sha: base_sha,
+         head_sha: head_sha,
+         merge_base: String.trim(merge_base),
          stat: String.trim(stat),
          log: String.trim(log),
          raw_diff: diff_payload,
          color_diff: colorize_diff(diff_payload)
        }}
     else
+      {:error, reason} ->
+        {:error, reason}
+
       {err, code} ->
         {:error,
          "Failed to compare branches (#{base_branch} vs #{head_branch}, code #{code}): #{err}"}

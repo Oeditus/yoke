@@ -12,6 +12,51 @@ defmodule Yoke.PRReview do
   alias Yoke.PRReview.Markdown
   alias Yoke.PRReview.Patterns
 
+  @doc "Builds a review request solely from pinned evidence and explicit review guidance."
+  def review_prompt(context, peer_comments \\ []) do
+    """
+    Review the committed diff below. Base: #{context.base} (#{context.base_sha}).
+    Head: #{context.head} (#{context.head_sha}). Merge base: #{context.merge_base}.
+    Working-tree edits are NOT included. Supporting reads default to the head commit;
+    read_file/read_files can use revision: "base" to inspect the comparison merge-base,
+    including deleted code. No reads inspect the mutable checkout.
+
+    Summarize the actual changes briefly, then report only verified, actionable
+    regressions introduced here. Do not report pre-existing issues or speculate.
+    Anchor each issue to a changed file and a RIGHT-side diff line, or use a null
+    line for a deleted file. Use the read-only tools to verify callers and tests
+    when needed. An empty findings array is a valid, complete review.
+
+    <review_commits>
+    #{context.log}
+    </review_commits>
+    <review_stat>
+    #{context.stat}
+    </review_stat>
+    <review_diff>
+    #{context.raw_diff}
+    </review_diff>
+    #{format_peer_comments_for_prompt(peer_comments)}
+    #{prompt_instructions(cwd: context.cwd)}
+    ### Current Project Guidance
+    #{Yoke.Config.discover_project_rules(context.cwd)}
+    #{Yoke.Rules.build_preamble("cr", context.cwd)}
+    """
+  end
+
+  @doc "Posts findings to the exact PR and commit whose diff was reviewed."
+  def post_context_review(context, findings, body, event \\ "COMMENT") do
+    with :ok <- Yoke.PRReview.Context.verify_current(context),
+         :ok <- Yoke.PRReview.Context.validate_findings(findings, context) do
+      payload =
+        findings
+        |> build_atomic_review_payload(body, event, context.valid_lines)
+        |> Map.put("commit_id", context.head_sha)
+
+      post_atomic_review(context.pr_number, payload, context.cwd)
+    end
+  end
+
   @type finding :: %{
           id: integer(),
           file: String.t() | nil,
@@ -34,9 +79,11 @@ defmodule Yoke.PRReview do
     """
 
     ### 7. Structured Findings Payload
-    At the end of your response, output a ```json findings ... ``` code block containing a JSON array of all discrete code findings/issues identified during this review.
+    At the end of your response, output exactly one <findings>JSON array</findings> payload.
+    Do not wrap it in a Markdown fence. A legacy ```json findings block is supported
+    for compatibility, but the <findings> envelope is preferred.
     Each object in the array MUST have the following structure:
-    ```json findings
+    <findings>
     [
       {
         "id": 1,
@@ -49,7 +96,7 @@ defmodule Yoke.PRReview do
         "fix_suggestion": "Proposed code fix or recommendation (can be committable code or fenced block)."
       }
     ]
-    ```
+    </findings>
     Severity can be "high", "medium", "low", or "info". Set `kind` to "issue" for actionable problems.
     Praise may be included separately with `kind: "endorsement"`, severity "info", and an empty `fix_suggestion`.
     Endorsements are observations, NEVER issues or requests for changes. Never include them in any suggested AI prompt, fix prompt, actionable recommendations, or issue count.
@@ -87,76 +134,17 @@ defmodule Yoke.PRReview do
   end
 
   @doc """
-  Parses findings from LLM review output. Looks for ```json findings``` or ```json``` blocks
-  containing JSON arrays, with fallback heuristic parsing for Markdown sections.
+  Parses only schema-validated structured findings. Invalid output returns no
+  findings; use `Yoke.PRReview.Findings.parse/1` when a diagnostic is required.
   """
   def parse_findings(review_md) when is_binary(review_md) do
-    case extract_json_block(review_md) do
-      {:ok, findings} when is_list(findings) ->
-        findings
-        |> Enum.map(&normalize_finding/1)
-        |> Enum.reject(&is_nil/1)
-
-      _ ->
-        fallback_parse_findings(review_md)
+    case Yoke.PRReview.Findings.parse(review_md) do
+      {:ok, findings} -> findings
+      {:error, _reason} -> []
     end
   end
 
   def parse_findings(_), do: []
-
-  defp extract_json_block(text) do
-    regex_findings = ~r/```json\s*findings\s*\n(.*?)```/s
-    regex_generic = ~r/```json\s*\n(.*?)```/s
-    regex_tags = ~r/<findings>\s*(.*?)\s*<\/findings>/s
-
-    json_str =
-      cond do
-        match = Regex.run(regex_findings, text) -> Enum.at(match, 1)
-        match = Regex.run(regex_tags, text) -> Enum.at(match, 1)
-        match = Regex.run(regex_generic, text) -> Enum.at(match, 1)
-        true -> nil
-      end
-
-    if json_str do
-      case Json.decode(String.trim(json_str)) do
-        {:ok, list} when is_list(list) -> {:ok, list}
-        _ -> :error
-      end
-    else
-      :error
-    end
-  end
-
-  defp normalize_finding(map) when is_map(map) do
-    file = Map.get(map, "file") || Map.get(map, :file)
-    line = Map.get(map, "line") || Map.get(map, :line)
-    title = Map.get(map, "title") || Map.get(map, :title) || "Unspecified Issue"
-    desc = Map.get(map, "description") || Map.get(map, :description) || ""
-    severity = Map.get(map, "severity") || Map.get(map, :severity) || "medium"
-    fix = Map.get(map, "fix_suggestion") || Map.get(map, :fix_suggestion) || ""
-    id = Map.get(map, "id") || Map.get(map, :id) || 1
-    kind = if endorsement?(map), do: "endorsement", else: "issue"
-
-    line_int =
-      cond do
-        is_integer(line) -> line
-        is_binary(line) -> parse_int(line)
-        true -> nil
-      end
-
-    %{
-      id: id,
-      file: if(is_binary(file) and file != "", do: file, else: nil),
-      line: line_int,
-      title: to_string(title),
-      description: to_string(desc),
-      kind: kind,
-      severity: to_string(severity),
-      fix_suggestion: if(kind == "endorsement", do: "", else: to_string(fix))
-    }
-  end
-
-  defp normalize_finding(_), do: nil
 
   @doc """
   Identifies explicit endorsements and legacy informational praise with no fix.
@@ -189,76 +177,6 @@ defmodule Yoke.PRReview do
     case Integer.parse(str) do
       {i, _} -> i
       :error -> nil
-    end
-  end
-
-  defp fallback_parse_findings(text) do
-    lines = String.split(text, "\n")
-
-    lines
-    |> Enum.map_reduce(nil, fn line, endorsement_level ->
-      case Regex.run(~r/^\s*(#+)\s+(.*)/, line) do
-        [_, hashes, heading] ->
-          level = String.length(hashes)
-
-          next_level =
-            cond do
-              String.match?(heading, ~r/(endorsements?|positive highlights|kudos|praise)/i) ->
-                level
-
-              endorsement_level && level > endorsement_level ->
-                endorsement_level
-
-              true ->
-                nil
-            end
-
-          {{line, next_level != nil}, next_level}
-
-        _ ->
-          {{line, endorsement_level != nil}, endorsement_level}
-      end
-    end)
-    |> elem(0)
-    |> Enum.filter(fn {l, endorsement_section?} ->
-      String.match?(l, ~r/^\s*[\-\*\d\.]+\s+/) and
-        (endorsement_section? or
-           String.match?(
-             l,
-             ~r/(risk|bug|flaw|issue|recommend|refactor|fix|missing|test|error|uncaught|warning|perf|edge)/i
-           ))
-    end)
-    |> Enum.with_index(1)
-    |> Enum.map(fn {{line, endorsement_section?}, idx} ->
-      clean = String.replace(line, ~r/^\s*[\-\*\d\.]+\s*/, "")
-      {file, line_num, clean_title} = extract_file_location(clean)
-
-      %{
-        id: idx,
-        file: file,
-        line: line_num,
-        title: clean_title,
-        description: clean,
-        kind: if(endorsement_section?, do: "endorsement", else: "issue"),
-        severity: if(endorsement_section?, do: "info", else: "medium"),
-        fix_suggestion: ""
-      }
-    end)
-  end
-
-  defp extract_file_location(text) do
-    sanitized = String.replace(text, ~r/^[\s\*\`\[]+/, "")
-
-    match =
-      Regex.run(
-        ~r/([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]+)(?::(\d+))?[`\]\*]*\s*[\:\-\]\*]*\s*(.*)/,
-        sanitized
-      )
-
-    case match do
-      [_, f, "", rest] -> {f, nil, String.trim(rest)}
-      [_, f, l_str, rest] -> {f, parse_int(l_str), String.trim(rest)}
-      _ -> {nil, nil, String.trim(text)}
     end
   end
 
@@ -530,13 +448,12 @@ defmodule Yoke.PRReview do
     {set, _cur_file, _cur_line} =
       Enum.reduce(lines, {MapSet.new(), nil, nil}, fn line, {set_acc, cur_file, cur_line} ->
         cond do
-          String.starts_with?(line, "+++ b/") ->
-            file = String.replace_prefix(line, "+++ b/", "") |> String.trim()
-            {set_acc, file, nil}
-
-          String.starts_with?(line, "+++ ") ->
-            # e.g. +++ /dev/null
+          String.starts_with?(line, "diff --git ") ->
             {set_acc, nil, nil}
+
+          String.starts_with?(line, "+++ ") and is_nil(cur_line) ->
+            file = line |> String.replace_prefix("+++ ", "") |> diff_file_path()
+            {set_acc, file, nil}
 
           String.starts_with?(line, "@@ ") ->
             case Regex.run(~r/@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/, line) do
@@ -573,6 +490,52 @@ defmodule Yoke.PRReview do
 
     set
   end
+
+  defp diff_file_path("b/" <> path), do: String.trim_trailing(path, "\t")
+
+  defp diff_file_path("\"" <> quoted) do
+    if String.ends_with?(quoted, "\"") do
+      quoted
+      |> binary_part(0, byte_size(quoted) - 1)
+      |> then(fn path ->
+        Regex.replace(~r/\\([0-7]{1,3}|.)/s, path, fn _, escaped ->
+          case escaped do
+            "n" ->
+              "\n"
+
+            "t" ->
+              "\t"
+
+            "r" ->
+              "\r"
+
+            "a" ->
+              <<7>>
+
+            "b" ->
+              <<8>>
+
+            "f" ->
+              <<12>>
+
+            "v" ->
+              <<11>>
+
+            value ->
+              if Regex.match?(~r/^[0-7]+$/, value),
+                do: <<String.to_integer(value, 8)>>,
+                else: value
+          end
+        end)
+      end)
+      |> then(fn
+        "b/" <> path -> path
+        _ -> nil
+      end)
+    end
+  end
+
+  defp diff_file_path(_path), do: nil
 
   @doc """
   Builds an atomic GitHub review payload.
@@ -705,13 +668,18 @@ defmodule Yoke.PRReview do
               File.rm(temp_file)
 
               # If atomic reviews fail (e.g. invalid line number rejection), fall back to top-level PR comment
-              case post_to_github_pr(target_or_head, payload["body"], cwd) do
-                {:ok, res} ->
-                  {:ok, Map.put(res, :fallback_comment, true)}
+              if is_binary(payload["commit_id"]) do
+                {:error,
+                 "GitHub rejected the commit-pinned review: #{String.trim(err)}. No fallback comment was posted."}
+              else
+                case post_to_github_pr(target_or_head, payload["body"], cwd) do
+                  {:ok, res} ->
+                    {:ok, Map.put(res, :fallback_comment, true)}
 
-                {:error, fallback_err} ->
-                  {:error,
-                   "Atomic review failed: #{String.trim(err)}; fallback comment failed: #{fallback_err}"}
+                  {:error, fallback_err} ->
+                    {:error,
+                     "Atomic review failed: #{String.trim(err)}; fallback comment failed: #{fallback_err}"}
+                end
               end
           end
         end
@@ -797,13 +765,24 @@ defmodule Yoke.PRReview do
     args =
       cond do
         Regex.match?(~r/^\d+$/, target_str) ->
-          ["pr", "view", target_str, "--json", "number,url,headRefName,baseRefName,author"]
+          [
+            "pr",
+            "view",
+            target_str,
+            "--json",
+            "number,url,headRefName,baseRefName,headRefOid,baseRefOid,author"
+          ]
 
         target_str != "" and target_str != "HEAD" ->
           ["pr", "view", target_str, "--json", "number,url,headRefName,baseRefName,author"]
 
         true ->
-          ["pr", "view", "--json", "number,url,headRefName,baseRefName,author"]
+          [
+            "pr",
+            "view",
+            "--json",
+            "number,url,headRefName,baseRefName,headRefOid,baseRefOid,author"
+          ]
       end
 
     case System.cmd("gh", args, cd: cwd, stderr_to_stdout: true) do
@@ -823,6 +802,8 @@ defmodule Yoke.PRReview do
                url: url,
                head: Map.get(map, "headRefName"),
                base: Map.get(map, "baseRefName"),
+               base_sha: Map.get(map, "baseRefOid"),
+               head_sha: Map.get(map, "headRefOid"),
                author: author_login
              }}
 

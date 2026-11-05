@@ -88,6 +88,21 @@ defmodule Yoke.PRReviewPostingTest do
     assert File.read!(Path.join(directory, "comment.md")) == "Notes  "
   end
 
+  test "pinned review failure never turns into an unpinned comment", %{directory: directory} do
+    File.write!(Path.join(directory, "fail-api"), "")
+
+    payload = %{
+      "event" => "REQUEST_CHANGES",
+      "body" => "Review",
+      "comments" => [],
+      "commit_id" => String.duplicate("a", 40)
+    }
+
+    assert {:error, message} = PRReview.post_atomic_review("42", payload, directory)
+    assert message =~ "No fallback comment was posted"
+    refute File.exists?(Path.join(directory, "comment.md"))
+  end
+
   test "direct posting and its review fallback enforce the same policy", %{directory: directory} do
     body = "## \u{1FAA2} Review from Alice\nNotes \u{1F680} :warning:"
 

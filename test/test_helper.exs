@@ -13,3 +13,4 @@ if System.get_env("CI") || System.get_env("GITHUB_ACTIONS") do
 end
 
 ExUnit.start()
+Code.require_file("support/review_fixture.ex", __DIR__)

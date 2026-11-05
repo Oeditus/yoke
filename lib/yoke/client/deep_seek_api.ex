@@ -30,6 +30,19 @@ defmodule Yoke.Client.DeepSeekAPI do
               reasoning_effort: nil
   end
 
+  @doc "Rejects review requests that would silently use offline canned responses."
+  def validate_live_config(opts) do
+    config = build_config(opts)
+
+    if config.mock or
+         ((is_nil(config.api_key) or config.api_key == "") and
+            not local_endpoint?(config.endpoint)),
+       do:
+         {:error,
+          "Code review requires a configured model provider. No API credentials are configured; canned offline responses cannot be used for reviews."},
+       else: :ok
+  end
+
   @doc """
   Sends a chat completion request to DeepSeek API or mock handler.
   """
@@ -431,7 +444,7 @@ defmodule Yoke.Client.DeepSeekAPI do
     end)
   end
 
-  defp parse_choice(%{"message" => msg}, usage) do
+  defp parse_choice(%{"message" => msg} = choice, usage) do
     raw_content = Map.get(msg, "content")
     tool_calls = Map.get(msg, "tool_calls") || []
 
@@ -471,6 +484,7 @@ defmodule Yoke.Client.DeepSeekAPI do
        role: "assistant",
        content: content,
        reasoning_content: reasoning_content,
+       finish_reason: Map.get(choice, "finish_reason"),
        tool_calls: parsed_tool_calls,
        usage: usage_map
      }}

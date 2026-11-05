@@ -115,7 +115,17 @@ defmodule Yoke.TaskEngine.Orchestrator do
     end
 
     try do
-      HandsExecutor.execute(session_state.hands, tc.name, effective_arguments(tc, session_state))
+      case Map.get(session_state, :review_context) do
+        nil ->
+          HandsExecutor.execute(
+            session_state.hands,
+            tc.name,
+            effective_arguments(tc, session_state)
+          )
+
+        context ->
+          Yoke.PRReview.Tools.execute(tc.name, tc.arguments, context)
+      end
     after
       if lock_key do
         release_lock(lock_key)
@@ -131,9 +141,9 @@ defmodule Yoke.TaskEngine.Orchestrator do
   # hides any such key from the tool-call summary line so this never leaks
   # into what the user sees echoed for the call.
   defp effective_arguments(%{name: "spawn_subagent", arguments: args}, session_state) do
-    sid = if is_map(session_state), do: Map.get(session_state, :session_id)
-    model = if is_map(session_state), do: Map.get(session_state, :model)
-    cwd = if is_map(session_state), do: Map.get(session_state, :cwd)
+    sid = Map.get(session_state, :session_id)
+    model = Map.get(session_state, :model)
+    cwd = Map.get(session_state, :cwd)
 
     args
     |> Map.put("_session_id", sid)
@@ -142,8 +152,8 @@ defmodule Yoke.TaskEngine.Orchestrator do
   end
 
   defp effective_arguments(%{arguments: args}, session_state) do
-    sid = if is_map(session_state), do: Map.get(session_state, :session_id)
-    cwd = if is_map(session_state), do: Map.get(session_state, :cwd)
+    sid = Map.get(session_state, :session_id)
+    cwd = Map.get(session_state, :cwd)
 
     args
     |> Map.put("_session_id", sid)

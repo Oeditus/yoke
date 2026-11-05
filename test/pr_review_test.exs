@@ -82,17 +82,15 @@ defmodule Yoke.PRReviewTest do
       assert Enum.at(findings, 0).file == "lib/foo.ex"
     end
 
-    test "fallback parsing extracts bullet points when json block is missing" do
+    test "unstructured bullets are never manufactured into actionable findings" do
       review_md = """
       # Risk & Edge Case Assessment
       - **`lib/yoke/git.ex:42`** Uncaught error: System.cmd might fail without rescue
       - **`lib/yoke/cli.ex:10`** Refactor recommendation: simplify pattern match
       """
 
-      findings = PRReview.parse_findings(review_md)
-      assert length(findings) == 2
-      assert Enum.at(findings, 0).file == "lib/yoke/git.ex"
-      assert Enum.at(findings, 0).line == 42
+      assert PRReview.parse_findings(review_md) == []
+      assert {:error, _} = PRReview.Findings.parse(review_md)
     end
   end
 
@@ -472,7 +470,7 @@ defmodule Yoke.PRReviewTest do
       end
     end
 
-    test "fallback parsing keeps praise separate even when it mentions issue keywords" do
+    test "praise and issue-like prose require a structured payload" do
       review = """
       ## Positive Highlights & Kudos
       ### Error handling
@@ -481,12 +479,8 @@ defmodule Yoke.PRReviewTest do
       - lib/bad.ex:12 Missing error handling
       """
 
-      assert [endorsement, issue] = PRReview.parse_findings(review)
-      assert PRReview.endorsement?(endorsement)
-      refute PRReview.endorsement?(issue)
-      prompt = PRReview.build_fix_prompt([endorsement, issue])
-      assert prompt =~ "Missing error handling"
-      refute prompt =~ "Excellent error handling"
+      assert PRReview.parse_findings(review) == []
+      assert {:error, _} = PRReview.Findings.parse(review)
     end
 
     test "fix prompts include only issues and renumber after filtering" do
