@@ -63,7 +63,9 @@ defmodule Yoke.MCP.ServerManager do
 
   @doc """
   Gracefully shuts down the Ragex MCP server, including stopping any
-  per-project `dllb-server` OS process it spawned.
+  per-project `dllb-server` OS process it spawned. Only projects activated
+  through this manager are cleaned up; other Ragex instances are untouched.
+  Borrowed daemons are disconnected without stopping their OS processes.
 
   MUST be called before the VM halts (see `Yoke.CLI.Repl` exit
   handling and `Yoke.CLI.Main` one-shot mode). `System.halt/1`
@@ -85,11 +87,13 @@ defmodule Yoke.MCP.ServerManager do
 
   @impl true
   def init(_opts) do
+    state = %{servers: %{}, waiting_callers: [], dllb_projects: MapSet.new()}
+
     if Application.get_env(:yoke, :auto_start_ragex, true) do
       send(self(), :auto_start_ragex)
-      {:ok, %{servers: %{}, ragex_status: :starting, waiting_callers: []}}
+      {:ok, Map.put(state, :ragex_status, :starting)}
     else
-      {:ok, %{servers: %{}, ragex_status: :ready, waiting_callers: []}}
+      {:ok, Map.put(state, :ragex_status, :ready)}
     end
   end
 
@@ -218,19 +222,26 @@ defmodule Yoke.MCP.ServerManager do
     end
   end
 
+  def handle_call({:activate_dllb_project, target_dir}, _from, state) do
+    project = Path.expand(target_dir)
+
+    case DllbPM.set_active_project(project) do
+      :ok ->
+        # Record before indexing begins, so failed or unfinished initialization
+        # cannot leave an instance outside Yoke's shutdown scope.
+        {:reply, :ok, %{state | dllb_projects: MapSet.put(state.dllb_projects, project)}}
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
+  end
+
   @impl true
   def handle_call(:stop_ragex, _from, state) do
-    if Code.ensure_loaded?(DllbPM) do
-      try do
-        DllbPM.stop_all_instances()
-      rescue
-        _ -> :ok
-      catch
-        _, _ -> :ok
-      end
-    end
+    Enum.each(state.dllb_projects, &stop_dllb_project/1)
 
-    {:reply, :ok, %{state | servers: Map.delete(state.servers, "ragex")}}
+    {:reply, :ok,
+     %{state | servers: Map.delete(state.servers, "ragex"), dllb_projects: MapSet.new()}}
   end
 
   @impl true
@@ -629,7 +640,7 @@ defmodule Yoke.MCP.ServerManager do
       Application.put_env(:dllb, :pool_size, pool_size)
 
       if dllb_mode == :per_project and Code.ensure_loaded?(DllbPM) do
-        case DllbPM.set_active_project(target_dir) do
+        case GenServer.call(@name, {:activate_dllb_project, target_dir}, :infinity) do
           :ok ->
             db_path = Path.join(target_dir, ".ragex/dllb.redb")
 
@@ -703,6 +714,13 @@ defmodule Yoke.MCP.ServerManager do
   end
 
   # Helper Functions
+  defp stop_dllb_project(project) do
+    DllbPM.stop_instance(project)
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
 
   @doc "Returns the active user project directory (preserving YOKE_PROJECT_DIR from launcher)."
   def project_dir(override \\ nil) do
