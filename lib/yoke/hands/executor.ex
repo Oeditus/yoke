@@ -3,21 +3,56 @@ defmodule Yoke.Hands.Executor do
   The "Hands" component of Yoke.
   Executes tools and sandbox operations across local system, isolated Erlang nodes, or Docker containers.
   Provides temporal side-effect tracking for undo and crash recovery.
+
+  ## Execution modes
+
+    * `:local` -- the interactive REPL's own machine.
+    * `:remote` -- an isolated Erlang node reached over `:rpc`.
+    * `:docker` -- a container reached over `docker exec`.
+    * `:ci` -- the headless CI runner (`docs/CI_PLAN.md` §2.3). Identical to
+      `:local` except that it is *read-only by policy*: any write-capable
+      tool (`write_file`, `replace_file`, `edit_files`, `git_commit`, ...)
+      and any write-ish `bash` command is refused outright unless the
+      effective `Yoke.Interaction.Policy` sets `allow_writes` to `true`.
+
+  A PR review is read-only. That is a safety property, not a preference: a
+  prompt-injected diff must not be able to make the runner modify the
+  checkout, regardless of what the model asks for.
   """
   require Logger
   alias Yoke.CLI.Formatter
   alias Yoke.CLI.LineEditor
 
   defstruct [
-    # :local | :remote | :docker
+    # :local | :remote | :docker | :ci
     mode: :local,
     # e.g., :"hands@127.0.0.1"
     remote_node: nil,
     # e.g., "yoke_sandbox_1"
-    docker_container: nil
+    docker_container: nil,
+    # Wall-clock budget per tool call in `:ci` mode. `nil` keeps the
+    # historical unbounded behaviour of `:local`.
+    timeout_ms: nil,
+    # When set, overrides the policy file's `allow_writes` for this executor.
+    allow_writes: nil,
+    # Working directory used to locate `.yoke/policy.json` in `:ci` mode.
+    cwd: nil
   ]
 
-  @type execution_mode :: :local | :remote | :docker
+  @type execution_mode :: :local | :remote | :docker | :ci
+
+  # Tools that can mutate the checkout, or run arbitrary code that might.
+  # Anything not listed here is treated as read-only and allowed.
+  @write_tool_names ~w(
+    write_file write_to_file create_file save_file replace_file replace_file_content
+    edit_file edit_files patch_file apply_diff git_commit git_push git_merge git_reset
+    mcp_ragex_edit_file mcp_ragex_edit_files mcp_ragex_refactor_code
+    mcp_ragex_advanced_refactor mcp_ragex_rollback_edit mcp_ragex_undo_refactor
+    ragex_edit_file ragex_edit_files ragex_refactor_code ragex_advanced_refactor
+    ragex_rollback_edit ragex_undo_refactor
+  )
+
+  @shell_exec_tool_names ~w(bash cmd run_command shell exec execute_command)
 
   @doc "Executes a tool call under the configured sandbox target."
   def execute(%__MODULE__{mode: :local} = _executor, tool_name, args) do
@@ -32,6 +67,15 @@ defmodule Yoke.Hands.Executor do
         {:ok, result} -> {:ok, format_output(result)}
         {:error, reason} -> {:error, reason}
       end
+    end
+  end
+
+  # The CI Hands target. Read-only by policy, bounded by a per-call
+  # wall-clock timeout, and never able to mutate the checkout unless the
+  # policy explicitly opts in.
+  def execute(%__MODULE__{mode: :ci} = executor, tool_name, args) do
+    with :ok <- authorize_ci_write(tool_name, args, executor) do
+      run_ci_tool(executor, tool_name, args)
     end
   end
 
@@ -82,7 +126,122 @@ defmodule Yoke.Hands.Executor do
 
   def execute(config, tool_name, args) do
     {:error,
-     "Invalid Hands configuration: #{inspect(config)} for tool #{tool_name} (#{inspect(args)})"}
+     "Invalid Hands configuration: #{inspect(config)} for tool #{tool_name} (#{inspect(args)})}"}
+  end
+
+  # ---------------------------------------------------------------------
+  # `:ci` mode
+  # ---------------------------------------------------------------------
+
+  @doc """
+  Returns true when `tool_name` could modify the checkout and must therefore
+  be refused by a read-only (`:ci`) Hands target unless writes are allowed.
+  """
+  @spec write_tool?(String.t(), map()) :: boolean()
+  def write_tool?(tool_name, args \\ %{})
+
+  def write_tool?(tool_name, args) when is_binary(tool_name) do
+    down = String.downcase(tool_name)
+
+    cond do
+      down in @write_tool_names -> true
+      down in @shell_exec_tool_names -> shell_write?(args)
+      true -> false
+    end
+  end
+
+  def write_tool?(_, _), do: false
+
+  # Delegates to the plan gate's classifier, which already knows every
+  # write-ish bash marker (`rm`, `sed -i`, `git commit`, `tee`, redirection
+  # tokens, ...) and deliberately ignores `->` / `=>` false positives.
+  defp shell_write?(args) when is_map(args), do: Yoke.PlanGate.write_ish_bash?(args)
+  defp shell_write?(_), do: false
+
+  @doc """
+  Decides whether a write-capable call is permitted in `:ci` mode.
+
+  Returns `:ok` for read-only calls, `{:error, reason}` for a refused write.
+  An explicit `allow_writes` field on the executor struct wins over the policy
+  file, so a caller can tighten (or, for tests, loosen) the decision without
+  touching disk.
+  """
+  @spec authorize_ci_write(String.t(), map(), %__MODULE__{}) :: :ok | {:error, String.t()}
+  def authorize_ci_write(tool_name, args, %__MODULE__{} = executor) do
+    if write_tool?(tool_name, args) and not ci_writes_allowed?(executor) do
+      {:error,
+       "[CI Hands] Refusing write-capable tool #{inspect(tool_name)}: " <>
+         "a CI run is read-only unless .yoke/policy.json sets \"allow_writes\": true."}
+    else
+      :ok
+    end
+  end
+
+  defp ci_writes_allowed?(%__MODULE__{allow_writes: allow}) when is_boolean(allow), do: allow
+
+  defp ci_writes_allowed?(%__MODULE__{cwd: cwd}) when is_binary(cwd),
+    do: Yoke.Interaction.Policy.allow_writes?(cwd)
+
+  defp ci_writes_allowed?(_), do: Yoke.Interaction.Policy.allow_writes?(".")
+
+  defp run_ci_tool(executor, tool_name, args) do
+    verdict = Yoke.AIGuard.guard_tool(tool_name, args, mode: :enforce)
+
+    if verdict.action == :blocked do
+      {:error, "[AI Guard Enforce] Tool execution blocked: #{verdict.reason}"}
+    else
+      emit_ci_log(tool_name, args)
+
+      case executor.timeout_ms do
+        timeout when is_integer(timeout) and timeout > 0 ->
+          run_with_timeout(tool_name, args, timeout)
+
+        _ ->
+          invoke_local(tool_name, args)
+      end
+    end
+  end
+
+  defp run_with_timeout(tool_name, args, timeout_ms) do
+    task = Task.async(fn -> invoke_local(tool_name, args) end)
+
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} ->
+        result
+
+      nil ->
+        {:error, "[CI Hands] Tool #{inspect(tool_name)} exceeded its #{timeout_ms}ms budget."}
+
+      {:exit, reason} ->
+        {:error, "[CI Hands] Tool #{inspect(tool_name)} crashed: #{inspect(reason)}"}
+    end
+  end
+
+  defp invoke_local(tool_name, args) do
+    case Yoke.Plugin.Loader.execute_tool(tool_name, args, :infinity) do
+      {:ok, result} -> {:ok, format_output(result)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Structured JSON-lines tool log. Written to stderr so it never pollutes the
+  # command's own stdout (which may be piped into a report), and only when the
+  # caller opted in via `YOKE_CI_LOGS=1` -- CI runners capture both streams.
+  defp emit_ci_log(tool_name, args) do
+    if System.get_env("YOKE_CI_LOGS") in ["1", "true"] do
+      entry = %{
+        "type" => "tool_call",
+        "tool" => to_string(tool_name),
+        "args" => Yoke.Json.sanitize_utf8(args),
+        "timestamp" => DateTime.utc_now() |> DateTime.to_iso8601()
+      }
+
+      IO.puts(:stderr, Yoke.Json.encode!(entry))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
   end
 
   @icon_map %{

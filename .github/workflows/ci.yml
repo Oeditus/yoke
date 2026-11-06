@@ -11,8 +11,10 @@ jobs:
     name: Test (Elixir ${{matrix.elixir}} / OTP ${{matrix.otp}})
     runs-on: ubuntu-latest
     env:
-      EXLA_TARGET: cpu
-      EXLA_BUILD: "false"
+      # `XLA_TARGET` (not `EXLA_TARGET`) selects the prebuilt XLA binary.
+      # `cpu` downloads a build with no CUDA linkage at all, so no GPU
+      # libraries are needed on the runner. See docs/CI.md §6.1.
+      XLA_TARGET: cpu
       NX_DEFAULT_BACKEND: Nx.BinaryBackend
     strategy:
       matrix:
@@ -28,11 +30,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgit2-dev build-essential
+
       - name: Restore dependencies cache
         uses: actions/cache@v3
         with:
           path: deps
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-mix-${{ env.XLA_TARGET }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: ${{ runner.os }}-mix-
       - name: Install dependencies
         run: mix deps.get
@@ -43,12 +46,111 @@ jobs:
       - name: Run yoke launcher tests
         run: bash test/yoke_release_test.sh
 
+  headless:
+    name: Headless seams (no TTY)
+    runs-on: ubuntu-latest
+    env:
+      # `XLA_TARGET` (not `EXLA_TARGET`) selects the prebuilt XLA binary.
+      # `cpu` downloads a build with no CUDA linkage at all, so no GPU
+      # libraries are needed on the runner. See docs/CI.md §6.1.
+      XLA_TARGET: cpu
+      NX_DEFAULT_BACKEND: Nx.BinaryBackend
+      # Proves the presentation seam degrades: nothing below may emit ANSI.
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v3
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.20'
+          otp-version: '29'
+      - name: Install system dependencies (libgit2)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgit2-dev build-essential
+
+      - name: Restore dependencies cache
+        uses: actions/cache@v3
+        with:
+          path: deps
+          key: ${{ runner.os }}-mix-${{ env.XLA_TARGET }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-
+      - name: Install dependencies
+        run: mix deps.get
+
+      # The exit test from docs/CI_PLAN.md Phase 1.0: the CLI must complete
+      # with stdin closed and no TTY, and must not hang.
+      - name: One-shot prompt completes with stdin closed
+        run: |
+          set -o pipefail
+          timeout 120 mix run --no-start -e '
+            Application.put_env(:yoke, :system_halt_enabled, false)
+            Yoke.CLI.Main.main(["--help"])
+          ' </dev/null | tee /tmp/help.txt
+
+      - name: No ANSI escapes reach stdout
+        run: |
+          if grep -qP '\x1b\[' /tmp/help.txt; then
+            echo "::error::ANSI escape sequences leaked into headless output"
+            exit 1
+          fi
+          echo "No ANSI escapes in headless output."
+
+      # The blocking seam must answer immediately, never prompt.
+      - name: Interaction seam answers without blocking
+        run: |
+          timeout 60 mix run --no-start -e '
+            Yoke.Config.CI.install_headless_seams(".")
+            for kind <- Yoke.Interaction.kinds() do
+              decision = Yoke.Interaction.ask(kind, %{cwd: "."})
+              unless decision == :deny do
+                IO.puts("::error::#{kind} returned #{inspect(decision)}, expected :deny")
+                System.halt(1)
+              end
+            end
+            IO.puts("All interaction kinds answered :deny without blocking.")
+          ' </dev/null
+
+      # The CI Hands target must refuse writes.
+      - name: CI Hands refuses writes
+        run: |
+          timeout 60 mix run --no-start -e '
+            executor = %Yoke.Hands.Executor{mode: :ci, cwd: "."}
+            case Yoke.Hands.Executor.execute(executor, "write_file", %{"path" => "/tmp/x", "content" => "y"}) do
+              {:error, reason} ->
+                IO.puts("Refused as expected: " <> reason)
+              {:ok, _} ->
+                IO.puts("::error::CI Hands allowed a write")
+                System.halt(1)
+            end
+          ' </dev/null
+
+      # `XLA_TARGET=cpu` downloads a CPU-only XLA binary, so `:yoke` must boot
+      # on a runner with no GPU libraries. If this step reports a failure, the
+      # pin is not taking effect -- most likely a stale `deps` cache holding a
+      # CUDA build (the cache key includes `XLA_TARGET` to prevent that).
+      # See docs/CI.md §6.1.
+      - name: Application boots on a GPU-less runner
+        run: |
+          timeout 120 mix run --no-start -e '
+            case Application.ensure_all_started(:yoke, :temporary) do
+              {:ok, apps} ->
+                IO.puts("yoke booted; exla started?: #{:exla in apps}")
+              {:error, reason} ->
+                IO.puts("::error title=yoke failed to boot::" <>
+                  "XLA_TARGET=cpu should avoid all GPU linkage. Check for a stale " <>
+                  "deps cache. See docs/CI.md section 6.1. (#{inspect(elem(reason, 0))})")
+                System.halt(1)
+            end
+          ' </dev/null
+
   linters:
     name: Static Analysis
     runs-on: ubuntu-latest
     env:
-      EXLA_TARGET: cpu
-      EXLA_BUILD: "false"
+      # `XLA_TARGET` (not `EXLA_TARGET`) selects the prebuilt XLA binary.
+      # `cpu` downloads a build with no CUDA linkage at all, so no GPU
+      # libraries are needed on the runner. See docs/CI.md §6.1.
+      XLA_TARGET: cpu
       NX_DEFAULT_BACKEND: Nx.BinaryBackend
     strategy:
       matrix:
@@ -64,11 +166,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgit2-dev build-essential
+
       - name: Restore dependencies cache
         uses: actions/cache@v3
         with:
           path: deps
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-mix-${{ env.XLA_TARGET }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: ${{ runner.os }}-mix-
       - name: Restore PLT cache
         uses: actions/cache@v3
@@ -84,13 +187,14 @@ jobs:
   quality:
     name: Quality Gate
     runs-on: ubuntu-latest
-    needs: [linters, test]
+    needs: [linters, test, headless]
     if: always()
     steps:
       - name: Check all jobs status
         run: |
           if [ "${{ needs.linters.result }}" != "success" ] || \
-             [ "${{ needs.test.result }}" != "success" ]; then
+             [ "${{ needs.test.result }}" != "success" ] || \
+             [ "${{ needs.headless.result }}" != "success" ]; then
             echo "❌ Quality gate failed!"
             exit 1
           fi

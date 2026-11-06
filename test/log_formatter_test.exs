@@ -15,9 +15,19 @@ defmodule Yoke.CLI.LogFormatterTest do
     Spinner.stop()
     TerminalOwner.clear()
 
+    # The log formatter's assertions describe the interactive, ANSI-coloured
+    # rendering. Pin the presentation seam to `:tty` so they are deterministic
+    # whether or not the suite runs in CI.
+    prior = Application.get_env(:yoke, :output_mode)
+    Application.put_env(:yoke, :output_mode, :tty)
+
     on_exit(fn ->
       Spinner.stop()
       TerminalOwner.clear()
+
+      if prior == nil,
+        do: Application.delete_env(:yoke, :output_mode),
+        else: Application.put_env(:yoke, :output_mode, prior)
     end)
 
     :ok

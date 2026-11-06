@@ -360,7 +360,11 @@ defmodule Yoke.Brain.Session do
       # turn and reply to its still-waiting caller without this GenServer
       # ever blocking its own mailbox for the turn's duration.
       active_turn: nil,
-      images: %{}
+      images: %{},
+      # Optional hard run budgets (`docs/CI_PLAN.md` Phase 1.3). `nil` in the
+      # interactive REPL; a `Yoke.CI.Budget` struct in a CI run, where
+      # exceeding any ceiling aborts the turn fail-closed.
+      budget: opts[:budget]
     }
 
     # Attempt to restore session state if persisted
@@ -1230,22 +1234,18 @@ defmodule Yoke.Brain.Session do
       "Stop turn here"
     ]
 
-    ans =
-      Yoke.CLI.Spinner.with_paused(fn ->
-        Yoke.CLI.QuestionPrompt.ask_single_question(question, choices, false)
-      end)
+    case Yoke.Interaction.ask(:max_depth, %{
+           question: question,
+           options: choices,
+           extra_iterations: state.max_tool_depth,
+           cwd: state.cwd
+         }) do
+      :approve ->
+        Logger.info(
+          "[Brain.Session] User authorized #{state.max_tool_depth} additional tool iterations."
+        )
 
-    case ans do
-      %{selected: [sel]} ->
-        if String.contains?(sel, "Continue") do
-          Logger.info(
-            "[Brain.Session] User authorized #{state.max_tool_depth} additional tool iterations."
-          )
-
-          run_agent_loop(state, state.max_tool_depth)
-        else
-          {{:error, "Turn stopped by user at max tool iteration depth."}, state}
-        end
+        run_agent_loop(state, state.max_tool_depth)
 
       _ ->
         {{:error, "Turn stopped by user at max tool iteration depth."}, state}
@@ -1253,6 +1253,25 @@ defmodule Yoke.Brain.Session do
   end
 
   defp run_agent_loop(state, depth, retries \\ 0) do
+    # Hard, fail-closed run budgets (`docs/CI_PLAN.md` Phase 1.3). Checked
+    # before every model call so a runaway loop is stopped at the boundary
+    # rather than after it has already spent the budget. `nil` budget means
+    # no budgets are configured (the interactive default), so this is a no-op
+    # for the REPL.
+    case check_budget(state) do
+      :ok -> run_agent_loop_within_budget(state, depth, retries)
+      {:error, reason} -> {{:error, reason}, %{state | status: :idle}}
+    end
+  end
+
+  defp check_budget(state) do
+    case Map.get(state, :budget) do
+      nil -> :ok
+      budget -> Yoke.CI.Budget.check(budget)
+    end
+  end
+
+  defp run_agent_loop_within_budget(state, depth, retries) do
     opts = [
       model: state.model,
       api_key: state.api_key,
@@ -1338,19 +1357,15 @@ defmodule Yoke.Brain.Session do
       "Stop turn here"
     ]
 
-    ans =
-      Yoke.CLI.Spinner.with_paused(fn ->
-        Yoke.CLI.QuestionPrompt.ask_single_question(question, choices, false)
-      end)
-
-    case ans do
-      %{selected: [sel]} ->
-        if String.contains?(sel, "Retry") do
-          Logger.info("[Brain.Session] User authorized retry for failed API/tool call.")
-          run_agent_loop(state, depth, 0)
-        else
-          {{:error, "Error communicating with DeepSeek API: #{reason}"}, %{state | status: :idle}}
-        end
+    case Yoke.Interaction.ask(:api_error, %{
+           question: question,
+           options: choices,
+           reason: reason,
+           cwd: state.cwd
+         }) do
+      :approve ->
+        Logger.info("[Brain.Session] User authorized retry for failed API/tool call.")
+        run_agent_loop(state, depth, 0)
 
       _ ->
         {{:error, "Error communicating with DeepSeek API: #{reason}"}, %{state | status: :idle}}
@@ -1359,6 +1374,7 @@ defmodule Yoke.Brain.Session do
 
   defp handle_tool_calls_turn(state, response, tool_calls, depth) do
     state = accumulate_usage(state, response[:usage])
+    state = record_budget_tool_calls(state, tool_calls)
 
     if response[:reasoning_content] do
       Logger.info(
@@ -1500,24 +1516,21 @@ defmodule Yoke.Brain.Session do
 
     options = ["Approve & execute", "Request changes", "Deny"]
 
-    answer =
-      Yoke.CLI.Spinner.with_paused(fn ->
-        Yoke.CLI.QuestionPrompt.ask_single_question(question, options, false)
-      end)
-
     decision =
-      case answer do
-        %{selected: [sel]} -> PlanGate.decision_from_selection(sel)
-        %{custom: custom} when is_binary(custom) and custom != "" -> :request_changes
-        _ -> :deny
-      end
+      Yoke.Interaction.ask(:plan_gate, %{
+        question: question,
+        options: options,
+        plan: plan,
+        rendered_plan: rendered,
+        cwd: state.cwd
+      })
 
     case decision do
       :approve ->
         approved_state = inject_approved_plan(state, rendered)
         {:approved, %{approved_state | plan_approved_for_turn: true}}
 
-      :request_changes ->
+      {:answer, _feedback} ->
         handle_plan_revisions(state, plan, rendered)
 
       _ ->
@@ -1530,29 +1543,28 @@ defmodule Yoke.Brain.Session do
   # treat as denied.
   defp handle_plan_revisions(state, _plan, rendered) do
     feedback =
-      Yoke.CLI.Spinner.with_paused(fn ->
-        Yoke.CLI.QuestionPrompt.ask_single_question(
-          "Approved plan needs changes. What should change? (type your feedback)",
-          ["Approve as-is anyway", "Deny"],
-          false
-        )
-      end)
+      Yoke.Interaction.ask(:plan_revision, %{
+        question: "Approved plan needs changes. What should change? (type your feedback)",
+        options: ["Approve as-is anyway", "Deny"],
+        rendered_plan: rendered,
+        cwd: state.cwd
+      })
 
-    custom =
-      case feedback do
-        %{custom: text} when is_binary(text) and text != "" -> text
-        _ -> ""
-      end
+    case feedback do
+      {:answer, custom} ->
+        # Fold the user's feedback into the conversation so the model revises
+        # its approach accordingly, then treat the plan as approved with the
+        # requested changes noted.
+        amended = rendered <> "\n\n### User amendments\n#{custom}"
+        approved_state = inject_approved_plan(state, amended)
+        {:approved, %{approved_state | plan_approved_for_turn: true}}
 
-    if custom != "" do
-      # Fold the user's feedback into the conversation so the model revises
-      # its approach accordingly, then treat the plan as approved with the
-      # requested changes noted.
-      amended = rendered <> "\n\n### User amendments\n#{custom}"
-      approved_state = inject_approved_plan(state, amended)
-      {:approved, %{approved_state | plan_approved_for_turn: true}}
-    else
-      {:denied, state}
+      :approve ->
+        approved_state = inject_approved_plan(state, rendered)
+        {:approved, %{approved_state | plan_approved_for_turn: true}}
+
+      _ ->
+        {:denied, state}
     end
   end
 
@@ -1732,48 +1744,43 @@ defmodule Yoke.Brain.Session do
       "Force model to summarize without tools"
     ]
 
-    ans =
-      Yoke.CLI.Spinner.with_paused(fn ->
-        Yoke.CLI.QuestionPrompt.ask_single_question(question, choices, false)
-      end)
+    case Yoke.Interaction.ask(:loop_break, %{
+           question: question,
+           options: choices,
+           loop_info: loop_info,
+           cwd: state.cwd
+         }) do
+      :approve ->
+        force_msg = %{
+          "role" => "user",
+          "content" =>
+            "SYSTEM INTERRUPT: Tool execution disabled due to persistent repetition loop. You MUST respond with text only now. Do NOT call any tools. Summarize your current findings and status immediately."
+        }
 
-    case ans do
-      %{selected: [sel]} ->
-        if String.contains?(sel, "Force model") do
-          force_msg = %{
-            "role" => "user",
-            "content" =>
-              "SYSTEM INTERRUPT: Tool execution disabled due to persistent repetition loop. You MUST respond with text only now. Do NOT call any tools. Summarize your current findings and status immediately."
-          }
+        tool_cancel_messages =
+          case Enum.at(state.messages, -1) do
+            %{"tool_calls" => tc_list} when is_list(tc_list) ->
+              Enum.map(tc_list, fn tc ->
+                call_id = Map.get(tc, "id") || Map.get(tc, :id)
 
-          tool_cancel_messages =
-            case Enum.at(state.messages, -1) do
-              %{"tool_calls" => tc_list} when is_list(tc_list) ->
-                Enum.map(tc_list, fn tc ->
-                  call_id = Map.get(tc, "id") || Map.get(tc, :id)
+                %{
+                  "role" => "tool",
+                  "tool_call_id" => call_id,
+                  "content" => "SYSTEM NOTICE: Repetitive tool call ignored (loop detected)."
+                }
+              end)
 
-                  %{
-                    "role" => "tool",
-                    "tool_call_id" => call_id,
-                    "content" => "SYSTEM NOTICE: Repetitive tool call ignored (loop detected)."
-                  }
-                end)
+            _ ->
+              []
+          end
 
-              _ ->
-                []
-            end
+        state_forced = %{
+          state
+          | messages: state.messages ++ tool_cancel_messages ++ [force_msg],
+            suppress_tools: true
+        }
 
-          state_forced = %{
-            state
-            | messages: state.messages ++ tool_cancel_messages ++ [force_msg],
-              suppress_tools: true
-          }
-
-          run_agent_loop(state_forced, depth - 1)
-        else
-          {{:error, "Turn stopped by user: agent stuck in infinite tool loop."},
-           %{state | status: :idle, suppress_tools: false}}
-        end
+        run_agent_loop(state_forced, depth - 1)
 
       _ ->
         {{:error, "Turn stopped by user: agent stuck in infinite tool loop."},
@@ -1844,6 +1851,36 @@ defmodule Yoke.Brain.Session do
         total_completion_tokens: state.total_completion_tokens + c,
         turn_history: state.turn_history ++ [turn_entry]
     }
+    |> record_budget_usage(usage)
+  end
+
+  defp accumulate_usage(state, _usage), do: state
+
+  # Feeds provider usage into the run budget, when one is configured.
+  defp record_budget_usage(state, usage) do
+    case Map.get(state, :budget) do
+      %Yoke.CI.Budget{} = budget ->
+        %{state | budget: Yoke.CI.Budget.record_usage(budget, usage)}
+
+      _ ->
+        state
+    end
+  end
+
+  # Feeds a batch of tool calls into the run budget, when one is configured.
+  defp record_budget_tool_calls(state, tool_calls) do
+    case Map.get(state, :budget) do
+      %Yoke.CI.Budget{} = budget ->
+        updated =
+          Enum.reduce(tool_calls, budget, fn _call, acc ->
+            Yoke.CI.Budget.record_tool_call(acc)
+          end)
+
+        %{state | budget: updated}
+
+      _ ->
+        state
+    end
   end
 
   defp maybe_put_reasoning(msg, reasoning) when is_binary(reasoning) and reasoning != "" do
@@ -2167,56 +2204,85 @@ defmodule Yoke.Brain.Session do
         "Deny always (save to global config)"
       ]
 
-      ans =
-        Yoke.CLI.Spinner.with_paused(fn ->
-          Yoke.CLI.QuestionPrompt.ask_single_question(q, opts, false)
-        end)
+      case Yoke.Interaction.ask(:tool_permission, %{
+             question: q,
+             options: opts,
+             tool: tool_name,
+             args: args,
+             reason: reason,
+             cwd: state.cwd
+           }) do
+        {:allow, persistence} ->
+          allow_tool_with_persistence(tool_name, persistence, state)
 
-      case ans do
-        %{selected: [sel]} ->
-          cond do
-            String.contains?(sel, "save to global config") and
-                String.contains?(String.downcase(sel), "allow") ->
-              Config.set_global_tool_permission(tool_name, "allow")
-              perms = Map.put(Map.get(state, :session_tool_permissions, %{}), tool_name, "allow")
-              {:allow, %{state | session_tool_permissions: perms}}
+        {:deny, persistence} ->
+          deny_tool_with_persistence(tool_name, persistence, state)
 
-            String.contains?(sel, "save to global config") and
-                String.contains?(String.downcase(sel), "deny") ->
-              Config.set_global_tool_permission(tool_name, "deny")
-              perms = Map.put(Map.get(state, :session_tool_permissions, %{}), tool_name, "deny")
-
-              {:deny, "Tool execution denied by user (saved globally).",
-               %{state | session_tool_permissions: perms}}
-
-            String.contains?(sel, "save to project config") and
-                String.contains?(String.downcase(sel), "allow") ->
-              Config.set_tool_permission(tool_name, "allow", state.cwd)
-              perms = Map.put(Map.get(state, :session_tool_permissions, %{}), tool_name, "allow")
-              {:allow, %{state | session_tool_permissions: perms}}
-
-            String.contains?(sel, "save to project config") and
-                String.contains?(String.downcase(sel), "deny") ->
-              Config.set_tool_permission(tool_name, "deny", state.cwd)
-              perms = Map.put(Map.get(state, :session_tool_permissions, %{}), tool_name, "deny")
-
-              {:deny, "Tool execution denied by user (saved to project).",
-               %{state | session_tool_permissions: perms}}
-
-            String.contains?(sel, "this session") ->
-              perms = Map.put(Map.get(state, :session_tool_permissions, %{}), tool_name, "allow")
-              {:allow, %{state | session_tool_permissions: perms}}
-
-            String.contains?(String.downcase(sel), "allow") ->
-              {:allow, state}
-
-            true ->
-              {:deny, "Tool execution denied by user.", state}
-          end
+        :approve ->
+          {:allow, state}
 
         _ ->
           {:deny, "Tool execution denied by user.", state}
       end
+    end
+  end
+
+  # Applies a `{:allow, persistence}` decision: the persistence level decides
+  # whether the choice is remembered for the session, the project config, the
+  # global config, or just this one call.
+  defp allow_tool_with_persistence(tool_name, persistence, state) do
+    case persistence do
+      :global ->
+        Config.set_global_tool_permission(tool_name, "allow")
+        remember_tool_permission(tool_name, "allow", state)
+
+      :project ->
+        Config.set_tool_permission(tool_name, "allow", state.cwd)
+        remember_tool_permission(tool_name, "allow", state)
+
+      :session ->
+        remember_tool_permission(tool_name, "allow", state)
+
+      _ ->
+        {:allow, state}
+    end
+  end
+
+  defp deny_tool_with_persistence(tool_name, persistence, state) do
+    case persistence do
+      :global ->
+        Config.set_global_tool_permission(tool_name, "deny")
+
+        remember_tool_permission(
+          tool_name,
+          "deny",
+          state,
+          "Tool execution denied by user (saved globally)."
+        )
+
+      :project ->
+        Config.set_tool_permission(tool_name, "deny", state.cwd)
+
+        remember_tool_permission(
+          tool_name,
+          "deny",
+          state,
+          "Tool execution denied by user (saved to project)."
+        )
+
+      _ ->
+        {:deny, "Tool execution denied by user.", state}
+    end
+  end
+
+  defp remember_tool_permission(tool_name, policy, state, deny_reason \\ nil) do
+    perms = Map.put(Map.get(state, :session_tool_permissions, %{}), tool_name, policy)
+    updated = %{state | session_tool_permissions: perms}
+
+    case {policy, deny_reason} do
+      {"allow", _} -> {:allow, updated}
+      {_, nil} -> {:deny, "Tool execution denied by user.", updated}
+      {_, reason} -> {:deny, reason, updated}
     end
   end
 

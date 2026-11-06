@@ -6,6 +6,22 @@ defmodule Yoke.CLI.QuestionPromptTest do
   alias Yoke.CLI.QuestionPrompt
   alias Yoke.Plugin.DefaultTools
 
+  setup do
+    # The modal is an interactive surface: its assertions describe the
+    # ANSI-styled box. Pin the presentation seam to `:tty` so they are
+    # deterministic whether or not the suite runs in CI.
+    prior = Application.get_env(:yoke, :output_mode)
+    Application.put_env(:yoke, :output_mode, :tty)
+
+    on_exit(fn ->
+      if prior == nil,
+        do: Application.delete_env(:yoke, :output_mode),
+        else: Application.put_env(:yoke, :output_mode, prior)
+    end)
+
+    :ok
+  end
+
   describe "QuestionPrompt pure state operations" do
     test "initializes fresh state with cursor at 0" do
       state = QuestionPrompt.new_state("Which framework?", ["Phoenix", "Absinthe"], false, 2)

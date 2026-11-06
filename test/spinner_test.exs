@@ -6,6 +6,19 @@ defmodule Yoke.CLI.SpinnerTest do
   setup do
     Spinner.stop()
     on_exit(fn -> Spinner.stop() end)
+
+    # This module's assertions describe the interactive spinner line, which
+    # is the only mode that emits ANSI. Pin the output seam to `:tty` so the
+    # suite is deterministic regardless of whether it runs in CI.
+    prior = Application.get_env(:yoke, :output_mode)
+    Application.put_env(:yoke, :output_mode, :tty)
+
+    on_exit(fn ->
+      if prior == nil,
+        do: Application.delete_env(:yoke, :output_mode),
+        else: Application.put_env(:yoke, :output_mode, prior)
+    end)
+
     :ok
   end
 

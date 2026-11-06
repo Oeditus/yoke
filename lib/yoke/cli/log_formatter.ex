@@ -33,12 +33,12 @@ defmodule Yoke.CLI.LogFormatter do
 
       circle =
         case level do
-          :error -> IO.ANSI.red() <> "●" <> IO.ANSI.reset()
-          :warning -> IO.ANSI.yellow() <> "●" <> IO.ANSI.reset()
-          :warn -> IO.ANSI.yellow() <> "●" <> IO.ANSI.reset()
-          :info -> IO.ANSI.blue() <> "●" <> IO.ANSI.reset()
-          :debug -> IO.ANSI.blue() <> "●" <> IO.ANSI.reset()
-          _ -> IO.ANSI.blue() <> "●" <> IO.ANSI.reset()
+          :error -> Formatter.red() <> "●" <> Formatter.reset()
+          :warning -> Formatter.yellow() <> "●" <> Formatter.reset()
+          :warn -> Formatter.yellow() <> "●" <> Formatter.reset()
+          :info -> Formatter.blue() <> "●" <> Formatter.reset()
+          :debug -> Formatter.blue() <> "●" <> Formatter.reset()
+          _ -> Formatter.blue() <> "●" <> Formatter.reset()
         end
 
       base_line =
@@ -55,7 +55,16 @@ defmodule Yoke.CLI.LogFormatter do
       cond do
         Spinner.active?() and not Spinner.paused?() ->
           current_spinner = Spinner.current_line()
-          "\r\e[2K" <> base_line <> "\r" <> current_spinner
+
+          # The clear-line cursor control is only meaningful on a real
+          # terminal; in plain mode the spinner never renders, so this branch
+          # is unreachable anyway -- but guard it so no escape byte can ever
+          # reach a CI log even if the spinner state were stale.
+          if Yoke.CLI.Output.tty?() do
+            "\r\e[2K" <> base_line <> "\r" <> current_spinner
+          else
+            base_line
+          end
 
         TerminalOwner.active?() ->
           TerminalOwner.interject(base_line)

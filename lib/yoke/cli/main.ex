@@ -2,12 +2,46 @@ defmodule Yoke.CLI.Main do
   @moduledoc """
   CLI entrypoint module for `yoke` escript executable.
   Supports interactive REPL and command-line execution arguments.
+
+  ## Subcommand dispatch
+
+  `yoke <subcommand> ...` is routed through `@subcommands`. The table is
+  deliberately built out in full even where only some entries are wired yet
+  (`docs/CI_PLAN.md` Phase 1.1), so later capabilities are *additive* rather
+  than a refactor. An entry that is not yet implemented prints a clear
+  "not implemented" message and exits non-zero, rather than silently falling
+  through to the REPL.
+
+  Anything that is not a known subcommand keeps the historical behaviour:
+  one-shot mode when a prompt is present, otherwise the interactive REPL.
   """
   alias Yoke.Brain.SessionSupervisor
   alias Yoke.CLI.Repl
   alias Yoke.Distribution.NodeManager
 
+  # The full dispatch table. `:implemented` entries are wired; `:planned`
+  # entries exist so the CLI surface is stable and `--help` can advertise them.
+  @subcommands %{
+    "review" => %{module: Yoke.CLI.CI, fun: :review, status: :implemented},
+    "lint" => %{module: nil, fun: nil, status: :planned},
+    "describe" => %{module: nil, fun: nil, status: :planned},
+    "run" => %{module: nil, fun: nil, status: :planned},
+    "audit" => %{module: nil, fun: nil, status: :planned},
+    "rag" => %{module: nil, fun: nil, status: :planned}
+  }
+
+  @doc "Returns the subcommand dispatch table."
+  @spec subcommands() :: map()
+  def subcommands, do: @subcommands
+
   def main(args) do
+    # Probe terminal capability FIRST, before anything else can write output.
+    # `Application.ensure_all_started/1` below logs startup lines through
+    # `Yoke.CLI.LogFormatter`, so priming after it would let ANSI escapes
+    # reach a CI log for the entire boot sequence. In CI (`</dev/null`,
+    # piped stdout) this pins the presentation seam to `:plain` up front.
+    Yoke.CLI.Output.prime()
+
     # Ensure custom Yoke-style LogFormatter is installed
     Yoke.CLI.LogFormatter.install()
 
@@ -27,6 +61,54 @@ defmodule Yoke.CLI.Main do
         other -> other
       end
 
+    # A subcommand is the first non-flag argument, when it names a known
+    # entry in the dispatch table. `--help` / `--doctor` still win.
+    case split_subcommand(args) do
+      {subcommand, rest} ->
+        dispatch_subcommand(subcommand, rest)
+
+      nil ->
+        run_legacy(args)
+    end
+  end
+
+  @doc """
+  Splits `args` into `{subcommand, rest}` when the first non-flag argument
+  names a known subcommand, or `nil` otherwise.
+  """
+  @spec split_subcommand([String.t()]) :: {String.t(), [String.t()]} | nil
+  def split_subcommand(args) do
+    case Enum.split_while(args, &String.starts_with?(&1, "-")) do
+      {_flags, []} ->
+        nil
+
+      {flags, [candidate | rest]} ->
+        if Map.has_key?(@subcommands, candidate) do
+          {candidate, flags ++ rest}
+        else
+          nil
+        end
+    end
+  end
+
+  defp dispatch_subcommand(subcommand, args) do
+    case Map.fetch!(@subcommands, subcommand) do
+      %{status: :implemented, module: module, fun: fun} ->
+        code = apply(module, fun, [args])
+        halt(code)
+
+      %{status: :planned} ->
+        IO.puts(
+          Yoke.CLI.Formatter.format_warning(
+            "`yoke #{subcommand}` is not implemented yet. See docs/CI_PLAN.md §6."
+          )
+        )
+
+        halt(2)
+    end
+  end
+
+  defp run_legacy(args) do
     {opts, extra_args, _invalid} =
       OptionParser.parse(args,
         switches: [

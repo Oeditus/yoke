@@ -38,12 +38,33 @@ defmodule Yoke.Git do
     e -> {:error, "Cannot resolve review revision: #{Exception.message(e)}"}
   end
 
-  defp complete_review_diff(diff) when byte_size(diff) > 300_000,
-    do:
-      {:error,
-       "Review diff exceeds 300 KB. Review a smaller commit range; no partial review was generated."}
+  # Default cap on the size of a review diff, in bytes.
+  #
+  # 300 KB is a good default: it bounds both the model's context cost and the
+  # CI job's runtime. Repositories can tighten it with `max_diff_bytes` in
+  # `.yoke/policy.json`.
+  @default_max_diff_bytes 300_000
 
-  defp complete_review_diff(_diff), do: :ok
+  @doc "Returns the effective review-diff cap in bytes for `cwd`."
+  @spec max_diff_bytes(String.t()) :: non_neg_integer()
+  def max_diff_bytes(cwd \\ ".") do
+    case Yoke.Interaction.Policy.load(cwd)["max_diff_bytes"] do
+      limit when is_integer(limit) and limit > 0 -> limit
+      _ -> @default_max_diff_bytes
+    end
+  end
+
+  defp complete_review_diff(diff, cwd) do
+    limit = max_diff_bytes(cwd)
+
+    if byte_size(diff) > limit do
+      {:error,
+       "Review diff exceeds #{div(limit, 1000)} KB. Review a smaller commit range; " <>
+         "no partial review was generated."}
+    else
+      :ok
+    end
+  end
 
   defp review_diff_args(range, extra \\ []) do
     [
@@ -204,7 +225,7 @@ defmodule Yoke.Git do
              cd: cwd,
              stderr_to_stdout: true
            ),
-         :ok <- complete_review_diff(raw_diff) do
+         :ok <- complete_review_diff(raw_diff, cwd) do
       diff_payload = Yoke.Json.sanitize_utf8(raw_diff)
 
       {:ok,

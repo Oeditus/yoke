@@ -10,7 +10,15 @@ config :dllb,
 
 # Configure yoke global defaults
 config :yoke,
-  assistant_name: "Robby Ott"
+  assistant_name: "Robby Ott",
+  # The blocking seam (`docs/CI_PLAN.md` §2.1): which module answers every
+  # "stop and ask a human" site in the agent loop. `Yoke.Interaction.TTY` is
+  # the interactive REPL; CI swaps in `Yoke.Interaction.Policy`, which never
+  # blocks. Selected once here so no call site branches per call.
+  interaction: Yoke.Interaction.TTY,
+  # The presentation seam (§2.2). `:auto` probes the environment on first
+  # use; `:tty` / `:plain` force a mode (tests, `yoke --doctor`).
+  output_mode: :auto
 
 # Configure ragex knowledge graph store backend to use per-project dllb server daemon
 # Disable stdio server when embedded in yoke to prevent raw JSON-RPC dumps
