@@ -331,6 +331,19 @@ defmodule Yoke.Brain.Session do
       plan_gate_threshold:
         opts[:plan_gate_threshold] || Map.get(Config.load_config(cwd), "plan_gate_threshold", 2),
       plan_approved_for_turn: false,
+      loop_detection_enabled:
+        Keyword.get(
+          opts,
+          :loop_detection_enabled,
+          Map.get(Config.load_config(cwd), "loop_detection_enabled", true)
+        ),
+      max_cycle_period:
+        Keyword.get(
+          opts,
+          :max_cycle_period,
+          Map.get(Config.load_config(cwd), "max_cycle_period", 4)
+        ),
+      suppress_tools: false,
       # Optional per-request completion-token cap, read from config
       # ("max_tokens") and forwarded to the DeepSeek API on each call.
       # `nil` means "not set" and the field is omitted from requests.
@@ -570,6 +583,7 @@ defmodule Yoke.Brain.Session do
         total_completion_tokens: 0,
         step_count: 0,
         plan_approved_for_turn: false,
+        suppress_tools: false,
         turn_history: []
     }
 
@@ -763,6 +777,8 @@ defmodule Yoke.Brain.Session do
       hands_mode: state.hands.mode,
       hands_target: state.hands.remote_node || state.hands.docker_container || "local",
       tools_count: length(state.tools),
+      loop_detection_enabled: state.loop_detection_enabled,
+      max_cycle_period: state.max_cycle_period,
       status: state.status,
       plan_gate_enabled: state.plan_gate_enabled,
       plan_gate_threshold: state.plan_gate_threshold,
@@ -831,6 +847,8 @@ defmodule Yoke.Brain.Session do
       total_tokens: total,
       estimated_cost_usd: Float.round(total_cost, 6),
       tools_count: length(state.tools),
+      loop_detection_enabled: state.loop_detection_enabled,
+      max_cycle_period: state.max_cycle_period,
       mcp_servers_count: Enum.count(mcp_servers),
       turns_count: length(state.turn_history),
       max_tool_depth: state.max_tool_depth,
@@ -1251,7 +1269,14 @@ defmodule Yoke.Brain.Session do
 
     sanitized_messages = sanitize_messages(state.messages)
 
-    case DeepSeekAPI.chat_completion(sanitized_messages, state.tools, opts) do
+    effective_tools =
+      if Map.get(state, :suppress_tools, false) do
+        []
+      else
+        state.tools
+      end
+
+    case DeepSeekAPI.chat_completion(sanitized_messages, effective_tools, opts) do
       {:ok, %{finish_reason: reason} = response}
       when reason in ["length", "content_filter"] and is_map_key(state, :review_context) ->
         handle_text_response_turn(state, response)
@@ -1344,52 +1369,78 @@ defmodule Yoke.Brain.Session do
     assistant_msg = build_assistant_tool_msg(response, tool_calls)
     state_after_assistant = %{state | messages: state.messages ++ [assistant_msg]}
 
-    if AgentLoop.duplicate_tool_calls?(state.messages, tool_calls) do
-      Logger.warning(
-        "[Brain.Session] Detected duplicate tool call loop. Instructing model to finalize response."
-      )
+    loop_detection_enabled = Map.get(state, :loop_detection_enabled, true)
+    loop_opts = [max_period: Map.get(state, :max_cycle_period, 4)]
 
-      tool_cancel_messages =
-        Enum.map(tool_calls, fn tc ->
-          %{
-            "role" => "tool",
-            "tool_call_id" => tc.id,
-            "content" => "SYSTEM NOTICE: Duplicate tool call ignored."
-          }
-        end)
-
-      system_feedback = %{
-        "role" => "user",
-        "content" =>
-          "SYSTEM NOTICE: The tool call(s) #{inspect(Enum.map(tool_calls, & &1.name))} with the exact same arguments were already executed in the previous turn. Do NOT call the tool again. Synthesize your final answer using the results already provided."
-      }
-
-      state_with_feedback = %{
-        state_after_assistant
-        | messages: state_after_assistant.messages ++ tool_cancel_messages ++ [system_feedback]
-      }
-
-      run_agent_loop(state_with_feedback, depth - 1)
-    else
-      state_after_gate =
-        maybe_run_plan_gate(tool_calls, state_after_assistant)
-
-      case state_after_gate do
-        {:denied, denied_state} ->
-          {{:error, "Turn stopped by user: plan was not approved for a non-trivial task."},
-           %{denied_state | status: :idle}}
-
-        {:ok, gated_state} ->
-          {tool_messages, updated_hands_state} = execute_tool_calls(tool_calls, gated_state)
-
-          state_after_tools = %{
-            updated_hands_state
-            | messages: updated_hands_state.messages ++ tool_messages,
-              step_count: updated_hands_state.step_count + 1
-          }
-
-          run_agent_loop(state_after_tools, depth - 1)
+    loop_result =
+      if loop_detection_enabled do
+        AgentLoop.detect_tool_loop(state.messages, tool_calls, loop_opts)
+      else
+        :ok
       end
+
+    case loop_result do
+      {:loop, %{period: period, count: count, cycle: cycle} = loop_info} ->
+        cycle_desc = AgentLoop.format_cycle_description(cycle)
+
+        if previous_message_was_loop_warning?(state.messages) do
+          Logger.warning(
+            "[Brain.Session] Model ignored previous loop break warning and repeated cycle (period #{period}, repeated #{count} times):\n#{cycle_desc}"
+          )
+
+          handle_unyielding_loop(state_after_assistant, depth, loop_info)
+        else
+          Logger.warning(
+            "[Brain.Session] Detected tool loop (period #{period}, repeated #{count} times):\n#{cycle_desc}\nInstructing model to break loop and synthesize response."
+          )
+
+          tool_cancel_messages =
+            Enum.map(tool_calls, fn tc ->
+              %{
+                "role" => "tool",
+                "tool_call_id" => tc.id,
+                "content" => "SYSTEM NOTICE: Repetitive tool call ignored (loop detected)."
+              }
+            end)
+
+          system_feedback = %{
+            "role" => "user",
+            "content" =>
+              "SYSTEM NOTICE: Repetitive tool loop detected (period #{period}, repeated #{count} times):\n" <>
+                cycle_desc <>
+                "\n\n" <>
+                "Do NOT repeat these tool calls with the same arguments. Synthesize your final answer using the results already provided, or state the specific different action required to make forward progress."
+          }
+
+          state_with_feedback = %{
+            state_after_assistant
+            | messages:
+                state_after_assistant.messages ++ tool_cancel_messages ++ [system_feedback]
+          }
+
+          run_agent_loop(state_with_feedback, depth - 1)
+        end
+
+      :ok ->
+        state_after_gate =
+          maybe_run_plan_gate(tool_calls, state_after_assistant)
+
+        case state_after_gate do
+          {:denied, denied_state} ->
+            {{:error, "Turn stopped by user: plan was not approved for a non-trivial task."},
+             %{denied_state | status: :idle}}
+
+          {:ok, gated_state} ->
+            {tool_messages, updated_hands_state} = execute_tool_calls(tool_calls, gated_state)
+
+            state_after_tools = %{
+              updated_hands_state
+              | messages: updated_hands_state.messages ++ tool_messages,
+                step_count: updated_hands_state.step_count + 1
+            }
+
+            run_agent_loop(state_after_tools, depth - 1)
+        end
     end
   end
 
@@ -1641,7 +1692,13 @@ defmodule Yoke.Brain.Session do
     case validate_review_response(state, response) do
       :ok ->
         final_msg = %{"role" => "assistant", "content" => response.content}
-        final_state = %{state | messages: state.messages ++ [final_msg], status: :idle}
+
+        final_state = %{
+          state
+          | messages: state.messages ++ [final_msg],
+            status: :idle,
+            suppress_tools: false
+        }
 
         unless Map.has_key?(state, :review_context),
           do: SessionStore.save_session(final_state, state.cwd)
@@ -1649,7 +1706,103 @@ defmodule Yoke.Brain.Session do
         {{:ok, response}, final_state}
 
       {:error, reason} ->
-        {{:error, reason}, %{state | status: :idle}}
+        {{:error, reason}, %{state | status: :idle, suppress_tools: false}}
+    end
+  end
+
+  defp handle_unyielding_loop(state, depth, loop_info) do
+    if top_level_session?(state.session_id) do
+      prompt_user_on_loop(state, depth, loop_info)
+    else
+      {{:error, "Turn stopped: agent stuck in infinite tool loop (period #{loop_info.period})."},
+       %{state | status: :idle, suppress_tools: false}}
+    end
+  end
+
+  defp prompt_user_on_loop(state, depth, loop_info) do
+    cycle_desc = AgentLoop.format_cycle_description(loop_info.cycle)
+
+    question =
+      "Agent is stuck in an infinite tool loop (period #{loop_info.period}, repeated #{loop_info.count} times):\n\n" <>
+        "#{cycle_desc}\n\n" <>
+        "The model was instructed to break the loop but continued repeating. What would you like to do?"
+
+    choices = [
+      "Stop turn here (break loop)",
+      "Force model to summarize without tools"
+    ]
+
+    ans =
+      Yoke.CLI.Spinner.with_paused(fn ->
+        Yoke.CLI.QuestionPrompt.ask_single_question(question, choices, false)
+      end)
+
+    case ans do
+      %{selected: [sel]} ->
+        if String.contains?(sel, "Force model") do
+          force_msg = %{
+            "role" => "user",
+            "content" =>
+              "SYSTEM INTERRUPT: Tool execution disabled due to persistent repetition loop. You MUST respond with text only now. Do NOT call any tools. Summarize your current findings and status immediately."
+          }
+
+          tool_cancel_messages =
+            case Enum.at(state.messages, -1) do
+              %{"tool_calls" => tc_list} when is_list(tc_list) ->
+                Enum.map(tc_list, fn tc ->
+                  call_id = Map.get(tc, "id") || Map.get(tc, :id)
+
+                  %{
+                    "role" => "tool",
+                    "tool_call_id" => call_id,
+                    "content" => "SYSTEM NOTICE: Repetitive tool call ignored (loop detected)."
+                  }
+                end)
+
+              _ ->
+                []
+            end
+
+          state_forced = %{
+            state
+            | messages: state.messages ++ tool_cancel_messages ++ [force_msg],
+              suppress_tools: true
+          }
+
+          run_agent_loop(state_forced, depth - 1)
+        else
+          {{:error, "Turn stopped by user: agent stuck in infinite tool loop."},
+           %{state | status: :idle, suppress_tools: false}}
+        end
+
+      _ ->
+        {{:error, "Turn stopped by user: agent stuck in infinite tool loop."},
+         %{state | status: :idle, suppress_tools: false}}
+    end
+  end
+
+  defp previous_message_was_loop_warning?(messages) do
+    if is_list(messages) do
+      messages
+      |> Enum.reverse()
+      |> Enum.find_value(false, fn msg ->
+        role = Map.get(msg, "role") || Map.get(msg, :role)
+        content = Map.get(msg, "content") || Map.get(msg, :content) || ""
+
+        cond do
+          role == "user" and
+              String.starts_with?(content, "SYSTEM NOTICE: Repetitive tool loop detected") ->
+            true
+
+          role == "user" ->
+            false
+
+          true ->
+            nil
+        end
+      end)
+    else
+      false
     end
   end
 

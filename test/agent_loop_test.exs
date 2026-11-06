@@ -72,8 +72,184 @@ defmodule Yoke.Brain.AgentLoopTest do
         }
       ]
 
-      # Probes must be permitted to repeat to observe changing external state
+      # Probes must be permitted to repeat to observe changing external state (up to 2 times)
       assert AgentLoop.duplicate_tool_calls?(messages, new_tool_calls) == false
+    end
+
+    test "detects period 1 loop when repeatable probe repeats 3 or more times" do
+      probe_call = %{
+        "role" => "assistant",
+        "tool_calls" => [
+          %{
+            "id" => "call_1",
+            "function" => %{
+              "name" => "bash",
+              "arguments" => "{\"command\":\"curl -s http://localhost:4000/health\"}"
+            }
+          }
+        ]
+      }
+
+      messages = [
+        %{"role" => "user", "content" => "Check status"},
+        probe_call,
+        %{"role" => "tool", "content" => "status: starting"},
+        probe_call,
+        %{"role" => "tool", "content" => "status: starting"}
+      ]
+
+      new_tool_calls = [
+        %{
+          id: "call_3",
+          name: "bash",
+          arguments: %{"command" => "curl -s http://localhost:4000/health"}
+        }
+      ]
+
+      assert {:loop, loop_info} = AgentLoop.detect_tool_loop(messages, new_tool_calls)
+      assert loop_info.period == 1
+      assert loop_info.count == 3
+      assert AgentLoop.duplicate_tool_calls?(messages, new_tool_calls) == true
+    end
+
+    test "detects alternating period 2 tool cycle (e.g. bash wc -l and grep SOUNDNESS.md)" do
+      cmd_a =
+        "cd /home/am/Proyectos/cure-lang && wc -l /tmp/check-stage8.log && tail -2 /tmp/check-stage8.log"
+
+      cmd_b =
+        "cd /home/am/Proyectos/cure-lang && grep -n \"M2a–M2c\" docs/SOUNDNESS.md; sed -n '1580,1591p' docs/SOUNDNESS.md"
+
+      step_a = %{
+        "role" => "assistant",
+        "tool_calls" => [
+          %{
+            "id" => "c_a1",
+            "function" => %{"name" => "bash", "arguments" => Yoke.Json.encode!(%{command: cmd_a})}
+          }
+        ]
+      }
+
+      step_b = %{
+        "role" => "assistant",
+        "tool_calls" => [
+          %{
+            "id" => "c_b1",
+            "function" => %{"name" => "bash", "arguments" => Yoke.Json.encode!(%{command: cmd_b})}
+          }
+        ]
+      }
+
+      # 3 previous turns: A, B, A
+      messages = [
+        %{"role" => "user", "content" => "Check progress on stage 8 soundness"},
+        step_a,
+        %{"role" => "tool", "content" => "450 /tmp/check-stage8.log\nOK"},
+        step_b,
+        %{"role" => "tool", "content" => "1580: M2a-M2c passed"},
+        step_a,
+        %{"role" => "tool", "content" => "450 /tmp/check-stage8.log\nOK"}
+      ]
+
+      # Candidate 4th turn: B (completing second full cycle of [A, B])
+      candidate_call = [
+        %{id: "c_b2", name: "bash", arguments: %{"command" => cmd_b}}
+      ]
+
+      assert {:loop, loop_info} = AgentLoop.detect_tool_loop(messages, candidate_call)
+      assert loop_info.period == 2
+      assert loop_info.count == 2
+      assert AgentLoop.duplicate_tool_calls?(messages, candidate_call) == true
+
+      desc = AgentLoop.format_cycle_description(loop_info.cycle)
+      assert desc =~ "bash(command:"
+      assert desc =~ "wc -l"
+      assert desc =~ "SOUNDNESS.md"
+    end
+
+    test "detects period 3 tool cycle (A -> B -> C -> A -> B -> C)" do
+      make_step = fn id, name, arg ->
+        %{
+          "role" => "assistant",
+          "tool_calls" => [
+            %{
+              "id" => id,
+              "function" => %{"name" => name, "arguments" => Yoke.Json.encode!(%{path: arg})}
+            }
+          ]
+        }
+      end
+
+      step_a = make_step.("c1", "read_file", "a.txt")
+      step_b = make_step.("c2", "read_file", "b.txt")
+      step_c = make_step.("c3", "read_file", "c.txt")
+
+      messages = [
+        %{"role" => "user", "content" => "Inspect files"},
+        step_a,
+        %{"role" => "tool", "content" => "a"},
+        step_b,
+        %{"role" => "tool", "content" => "b"},
+        step_c,
+        %{"role" => "tool", "content" => "c"},
+        step_a,
+        %{"role" => "tool", "content" => "a"},
+        step_b,
+        %{"role" => "tool", "content" => "b"}
+      ]
+
+      candidate_c = [%{id: "c6", name: "read_file", arguments: %{"path" => "c.txt"}}]
+
+      assert {:loop, loop_info} = AgentLoop.detect_tool_loop(messages, candidate_c)
+      assert loop_info.period == 3
+      assert loop_info.count == 2
+      assert AgentLoop.duplicate_tool_calls?(messages, candidate_c) == true
+    end
+
+    test "does not flag alternating commands when arguments vary" do
+      step_a1 = %{
+        "role" => "assistant",
+        "tool_calls" => [
+          %{
+            "id" => "c1",
+            "function" => %{"name" => "bash", "arguments" => "{\"command\":\"test 1\"}"}
+          }
+        ]
+      }
+
+      step_b1 = %{
+        "role" => "assistant",
+        "tool_calls" => [
+          %{
+            "id" => "c2",
+            "function" => %{"name" => "bash", "arguments" => "{\"command\":\"test 2\"}"}
+          }
+        ]
+      }
+
+      step_a2 = %{
+        "role" => "assistant",
+        "tool_calls" => [
+          %{
+            "id" => "c3",
+            "function" => %{"name" => "bash", "arguments" => "{\"command\":\"test 3\"}"}
+          }
+        ]
+      }
+
+      messages = [
+        %{"role" => "user", "content" => "Run test series"},
+        step_a1,
+        %{"role" => "tool", "content" => "ok 1"},
+        step_b1,
+        %{"role" => "tool", "content" => "ok 2"},
+        step_a2,
+        %{"role" => "tool", "content" => "ok 3"}
+      ]
+
+      candidate = [%{id: "c4", name: "bash", arguments: %{"command" => "test 4"}}]
+
+      assert AgentLoop.detect_tool_loop(messages, candidate) == :ok
+      assert AgentLoop.duplicate_tool_calls?(messages, candidate) == false
     end
   end
 

@@ -257,6 +257,16 @@ defmodule Yoke.BrainSessionTest do
     assert Session.get_stats(override_pid).max_tool_depth == 7
   end
 
+  test "initializes with loop_detection_enabled and max_cycle_period", %{pid: pid} do
+    info = Session.get_info(pid)
+    assert info.loop_detection_enabled == true
+    assert info.max_cycle_period == 4
+
+    stats = Session.get_stats(pid)
+    assert stats.loop_detection_enabled == true
+    assert stats.max_cycle_period == 4
+  end
+
   test "estimated cost honors configurable per-million-token prices" do
     tmp_dir =
       Path.join(

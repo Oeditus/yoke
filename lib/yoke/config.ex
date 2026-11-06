@@ -57,6 +57,10 @@ defmodule Yoke.Config do
     # .yoke/config.json (or ~/.yoke/config.json).
     "plan_gate_enabled" => true,
     "plan_gate_threshold" => 2,
+    # Repeating tool loop detection: identifies periodic tool cycles (e.g. A -> B -> A -> B)
+    # and automatically injects an interruption directive before wasting turns and tokens.
+    "loop_detection_enabled" => true,
+    "max_cycle_period" => 4,
     # God mode switcher: when enabled, all questions and confirmations are
     # automatically answered without user interaction. Default: false.
     "god_mode" => false,
