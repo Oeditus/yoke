@@ -28,10 +28,17 @@ defmodule Yoke.MixProject do
       # silently overwrite the tracked `yoke` launcher bash script (same
       # filename). The release workflow renames the built escript to `yoke`
       # only when packaging the release asset, after the checkout is done.
+      # NOTE: `app:` is deliberately omitted. Setting it makes the escript
+      # start the `:yoke` application *before* `Yoke.CLI.Main.main/1` runs,
+      # so every startup log line is emitted before `main/0` can install
+      # `Yoke.CLI.LogFormatter` or prime `Yoke.CLI.Output` -- producing ~19
+      # lines of raw `[info]`/`[debug]` output with timestamps in front of
+      # the actual command output. `main/0` calls
+      # `Application.ensure_all_started(:yoke)` itself, after both seams are
+      # installed.
       escript: [
         main_module: Yoke.CLI.Main,
-        name: "yoke_escript",
-        app: :yoke
+        name: "yoke_escript"
       ],
       deps: deps()
     ]

@@ -704,7 +704,36 @@ it. Do not reintroduce a second copy — an earlier draft had `Formatter`
 delegate *to* `Output` while `Output` delegated back to `Formatter` in `:tty`
 mode, which recursed infinitely and hung the suite.
 
-### 12.3 Golden-file review tests
+### 12.3 Escript startup logs
+
+An escript archive starts the dependency tree (`:ragex`, `:dllb`) before
+`config/runtime.exs` is evaluated and before `Yoke.CLI.Main.main/1` runs, so
+~15 startup lines were emitted raw — timestamps and `[info]` tags included —
+ahead of the command's own output.
+
+**Fixed** by baking the formatter into the archive's `:logger` app env at build
+time, in `config/config.exs`:
+
+```elixir
+if config_env() == :escript do
+  config :logger, default_handler: [formatter: {Yoke.CLI.LogFormatter, %{}}]
+end
+```
+
+Runtime installation (in `runtime.exs` or `main/0`) cannot work for an escript,
+because by then the dependencies have already logged. The config must be
+present in the archive itself.
+
+Two related fixes in the same area:
+
+* `config/runtime.exs` configured `:exla` unconditionally, but `mix.exs`
+  excludes that dep under `MIX_ENV=escript` — every escript boot printed
+  *"Please ensure :exla exists or remove the configuration"*. Now guarded by
+  `config_env() != :escript`.
+* `escript: [app: :yoke]` made the archive start the application before
+  `main/0` could install anything. Removed; `main/0` starts it explicitly.
+
+### 12.4 Golden-file review tests
 
 `test/yoke/golden_review_test.exs` pins the rendered output of the review
 sinks over **5 real pull requests**. The fixtures are genuine merge commits

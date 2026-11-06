@@ -72,3 +72,16 @@ if config_env() == :test do
   config :exla, start_log_sink: false
   config :logger, level: :warning
 end
+
+# Bake Yoke's log formatter into the `:logger` default handler at *build* time.
+#
+# This matters only for the `escript` env. An escript archive starts the
+# dependency tree (`:ragex`, `:dllb`) before `config/runtime.exs` is evaluated
+# and before `Yoke.CLI.Main.main/1` runs, so ~15 raw `[info]`/`[debug]` lines
+# with timestamps appear ahead of the command's own output. Installing the
+# formatter here puts it in the archive's `logger` app env, so it is in place
+# before anything starts.
+if config_env() == :escript do
+  config :logger,
+    default_handler: [formatter: {Yoke.CLI.LogFormatter, %{}}]
+end

@@ -43,7 +43,13 @@ defmodule Yoke.CLI.Main do
     # piped stdout) this pins the presentation seam to `:plain` up front.
     Yoke.CLI.Output.prime()
 
-    # Ensure custom Yoke-style LogFormatter is installed
+    # Install the log formatter before starting anything. In a `mix run` /
+    # release this is also done by `config/runtime.exs`, but an escript
+    # bootstraps differently: its archive starts the dependency tree before
+    # `runtime.exs` is evaluated, so `:ragex` and `:dllb` would emit ~15 raw
+    # `[info]` lines (timestamps and tags included) ahead of the command's own
+    # output. Installing here -- the first statement of the escript's entry
+    # point -- is what actually silences them. Idempotent.
     Yoke.CLI.LogFormatter.install()
 
     configure_ragex_ai()
