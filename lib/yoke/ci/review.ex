@@ -254,10 +254,28 @@ defmodule Yoke.CI.Review do
   """
   @spec run_uid() :: String.t()
   def run_uid do
+    # UUIDv7: 48-bit big-endian Unix milliseconds, then 80 random bits with
+    # the version (7) and variant (RFC 4122) nibbles set. Built byte-wise
+    # rather than with sub-byte bit patterns, which are easy to get subtly
+    # wrong at the 6/8-byte group boundaries.
     ms = System.system_time(:millisecond)
-    <<a::48, b::16, c::16, d::16, e::48>> = <<ms::48, :crypto.strong_rand_bytes(10)::binary>>
+    <<ms_hi::16, ms_lo::32>> = <<ms::48>>
+    <<r1, r2, r3, r4, r5, r6, r7, r8, r9, r10>> = :crypto.strong_rand_bytes(10)
 
-    :io_lib.format("~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b", [a, b, c, d, e])
-    |> IO.iodata_to_binary()
+    # Byte layout of a UUIDv7 (16 bytes):
+    #   0..5  ms_hi, ms_lo          (48-bit timestamp)
+    #   6     version_byte          (0x70 | random nibble)
+    #   7     r3
+    #   8     variant_byte          (0x80 | random 6 bits)
+    #   9..15 r4..r10
+    version_byte = Bitwise.bor(0x70, Bitwise.band(r1, 0x0F))
+    variant_byte = Bitwise.bor(0x80, Bitwise.band(r2, 0x3F))
+
+    <<g1::binary-size(4), g2::binary-size(2), g3::binary-size(2), g4::binary-size(2),
+      g5::binary-size(6)>> =
+      <<ms_hi::16, ms_lo::32, version_byte, r3, variant_byte, r4, r5, r6, r7, r8, r9, r10>>
+
+    hex = fn bytes -> Base.encode16(bytes, case: :lower) end
+    "#{hex.(g1)}-#{hex.(g2)}-#{hex.(g3)}-#{hex.(g4)}-#{hex.(g5)}"
   end
 end

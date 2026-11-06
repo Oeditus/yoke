@@ -1,0 +1,18 @@
+## Yoke review
+**Result: failing** — 1 finding(s) at or above `high`.
+Reviewed `8a0c3fda7cb6...5d60f4c12583`
+| | Count |
+| :--- | ---: |
+| Issues | 3 |
+| Endorsements | 0 |
+| Gating (`high`) | 1 |
+| Max severity | high |
+
+### Issues
+
+| # | Severity | Location | Title |
+| ---: | :--- | :--- | :--- |
+| 1 | `high` | `lib/mix/tasks/muex.ex:12` | Golden finding 1 |
+| 2 | `medium` | `lib/mix/tasks/muex.ex:13` | Golden finding 2 |
+| 3 | `low` | `lib/mix/tasks/muex.ex:14` | Golden finding 3 |
+

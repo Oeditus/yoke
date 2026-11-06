@@ -122,7 +122,7 @@ Add `mode: :ci` alongside `:local | :remote | :docker`. Differences from `:local
 ┌──────────────────────────── GitHub Actions job ─────────────────────────────┐
 │                                                                             │
 │  action.yml (composite)                                                     │
-│    ├─ erlef/setup-beam (Elixir 1.19 / OTP 27)                               │
+│    ├─ erlef/setup-beam (Elixir 1.19 / OTP 29)                               │
 │    ├─ cache deps                                                             │
 │    ├─ download `yoke` escript (pinned SHA + checksum)                       │
 │    └─ yoke review --base <sha> --head <sha> --fail-on high                  │
@@ -229,6 +229,15 @@ stdout. Then: `yoke review --base <sha> --head <sha>` against a real PR, `</dev/
 **Exit test:** golden-file tests over 5 real PRs. Byte-identical output on re-run. A PR with a
 deliberate bug produces exactly one inline annotation on the correct line.
 
+- [x] Golden-file tests over 5 real PRs (`test/yoke/golden_review_test.exs`).
+      Fixtures are real merge commits from `../muex` (override with `YOKE_GOLDEN_REPO`).
+      Each PR pins base/head SHAs, so the fixtures stay stable as history grows.
+      Captures two artefacts per PR — the rendered step summary and the workflow
+      commands — normalised only for run UIDs and timestamps. Verified to fail on
+      a tampered golden. Regenerate with `YOKE_UPDATE_GOLDEN=1`.
+      **Skips** (rather than fails) when the sibling checkout is absent, so a fresh
+      clone stays green.
+
 ### Phase 1.2 — The Action (2–3 days)
 
 - [x] `action.yml` (composite): setup-beam, cache, download escript by pinned SHA + checksum, run.
@@ -247,8 +256,12 @@ non-zero exit. Then confirm a clean PR passes.
 - [x] `AIGuard` in `:enforce` for anything written to the artifact sink.
 - [x] SIGTERM handler flushes the artifact sink before exit.
 - [x] Diff-size cap (yoke's existing 300 KB limit is a good default).
-- [x] CI matrix: Elixir 1.19/1.20 × OTP 27/29, `mix quality.ci`, `</dev/null` smoke test.
+- [x] CI matrix: Elixir 1.19/1.20 × OTP 28/29, `mix quality.ci`, `</dev/null` smoke test.
+      OTP 27 is deliberately **not** supported. The original plan named 27/29, which was
+      aspirational — `mix.exs` requires `elixir: "~> 1.19"` and nothing is validated against
+      27. The matrix now covers 28 and 29.
 - [x] `docs/CI.md` — copy-pasteable workflows for PR review, push review, and scheduled review.
+      See §3 (quick start), §3.1 (push), §3.2 (scheduled), §3.3 (dry run), §3.4 (lint-only).
 
 **Milestone 1 total: ~2–3 weeks.** Shippable, useful, zero backend.
 
@@ -260,18 +273,35 @@ Begins once `yoke review` is solid. These are not optional extras — they are t
 capabilities going to CI, and each reuses the seams from §2. Ship them one at a time, each behind
 its own subcommand, each independently useful.
 
-- [ ] `yoke lint` — wrap `mix format --check-formatted`, `mix credo`, `mix dialyzer`,
+- [x] `yoke lint` — wrap `mix format --check-formatted`, `mix credo`, `mix dialyzer`,
       `mix deps.audit` into one annotated report (ports `Yoke.Linter` + `Workflow.Steps.Lint`).
-- [ ] `yoke describe` — one-shot PR summary (ports `Workflow.Engine.ask_llm/3`).
-- [ ] `yoke run <workflow>` — headless `Yoke.Workflow.Engine`. `task_split` degrades to
+      Implemented in `Yoke.CI.Lint` + `Yoke.CI.Lint.Parser`; see docs/CI.md §6.
+- [x] `yoke describe` — one-shot PR summary (ports `Workflow.Engine.ask_llm/3`).
+      Implemented in `Yoke.CI.Describe`; see docs/CI.md §7.
+- [x] `yoke run <workflow>` — headless `Yoke.Workflow.Engine`. `task_split` degrades to
       single-task (CI has one checkout, no worktrees).
-- [ ] `yoke audit` — emit `Yoke.AIGuard`'s audit trail as a CI artifact and step summary, so every
+      Implemented in `Yoke.CI.Run`; see docs/CI.md §9.
+- [x] `yoke audit` — emit `Yoke.AIGuard`'s audit trail as a CI artifact and step summary, so every
       LLM call and tool execution in a run is reviewable after the fact.
-- [ ] `yoke rag` — optional Ragex code intelligence in CI, cached and explicitly opted into
+      Implemented in `Yoke.CI.Audit`; see docs/CI.md §8.
+- [x] `yoke rag` — optional Ragex code intelligence in CI, cached and explicitly opted into
       (this is the `with-ragex: true` path deferred from §4.2).
+      Implemented in `Yoke.CI.Rag`; see docs/CI.md §10.
 
 Each subcommand shares the same `Interaction.Policy`, `CLI.Output`, `:ci` Hands mode, and sink
 implementations. The marginal cost of each is small; the marginal value compounds.
+
+### Shared flag contract
+
+`action.yml` passes a common set of flags (`--output`, `--fail-on`, `--format`) to **every**
+subcommand. A command that rejects one fails with a usage error the moment anyone selects it
+from the action — a bug no per-command test catches, because each command's own tests only
+exercise its own flags.
+
+`test/yoke/cli_ci_action_contract_test.exs` asserts this contract across all six commands. It
+found five real rejections when first written (`describe --fail-on`, `rag --format`,
+`rag --fail-on`, `run --format`, `run --fail-on`), all now fixed. **Any new subcommand must be
+added to that test.**
 
 ---
 

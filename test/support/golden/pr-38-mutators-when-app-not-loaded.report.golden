@@ -1,0 +1,18 @@
+## Yoke review
+**Result: failing** — 1 finding(s) at or above `high`.
+Reviewed `a08fe40b6bef...6b68ab50f2e8`
+| | Count |
+| :--- | ---: |
+| Issues | 3 |
+| Endorsements | 0 |
+| Gating (`high`) | 1 |
+| Max severity | high |
+
+### Issues
+
+| # | Severity | Location | Title |
+| ---: | :--- | :--- | :--- |
+| 1 | `high` | `lib/muex/config.ex:401` | Golden finding 1 |
+| 2 | `medium` | `lib/muex/config.ex:402` | Golden finding 2 |
+| 3 | `low` | `lib/muex/config.ex:403` | Golden finding 3 |
+

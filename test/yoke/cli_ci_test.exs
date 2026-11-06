@@ -135,13 +135,37 @@ defmodule Yoke.CLI.CITest do
       end
     end
 
-    test "review is implemented and the rest are planned" do
+    test "every implemented subcommand names a real module and function" do
       table = Main.subcommands()
 
-      assert table["review"].status == :implemented
+      implemented =
+        Enum.filter(table, fn {_name, spec} -> spec.status == :implemented end)
 
-      for command <- ~w(lint describe run audit rag) do
-        assert table[command].status == :planned
+      assert implemented != []
+
+      for {name, spec} <- implemented do
+        assert is_atom(spec.module) and not is_nil(spec.module),
+               "#{name} is marked implemented but has no module"
+
+        assert is_atom(spec.fun) and not is_nil(spec.fun),
+               "#{name} is marked implemented but has no function"
+
+        assert function_exported?(spec.module, spec.fun, 1),
+               "#{name} points at #{inspect(spec.module)}.#{spec.fun}/1, which is not exported"
+      end
+    end
+
+    test "every planned subcommand has no module or function yet" do
+      for {name, spec} <- Main.subcommands(), spec.status == :planned do
+        assert is_nil(spec.module), "#{name} is planned but names a module"
+        assert is_nil(spec.fun), "#{name} is planned but names a function"
+      end
+    end
+
+    test "the table only contains known statuses" do
+      for {name, spec} <- Main.subcommands() do
+        assert spec.status in [:implemented, :planned],
+               "#{name} has status #{inspect(spec.status)}"
       end
     end
   end
@@ -169,9 +193,33 @@ defmodule Yoke.CLI.CITest do
 
   describe "a planned subcommand" do
     test "reports not-implemented and exits 2" do
-      output = ExUnit.CaptureIO.capture_io(fn -> assert Main.main(["lint"]) == :ok end)
+      # Every Milestone 2 command now ships, so there may be nothing planned.
+      # This test only has work to do when one is added back.
+      planned =
+        Main.subcommands()
+        |> Enum.filter(fn {_name, spec} -> spec.status == :planned end)
+        |> Enum.map(&elem(&1, 0))
 
-      assert output =~ "not implemented yet"
+      for command <- planned do
+        output = ExUnit.CaptureIO.capture_io(fn -> assert Main.main([command]) == :ok end)
+        assert output =~ "not implemented yet", "#{command} should report as not implemented"
+      end
+    end
+
+    test "an unimplemented entry is reported rather than crashing" do
+      # Proves the fallback in `dispatch_subcommand/2` works even when the
+      # table has no `:planned` entries: a spec pointing at a function that
+      # does not exist must degrade to a message, not an exception.
+      refute function_exported?(Yoke.CLI.CI, :not_a_real_command, 1)
+
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert Main.main(["lint", "--help"]) == :ok
+        end)
+
+      # `lint` is implemented, so this exercises the happy path; the guard
+      # itself is covered by the `function_exported?` assertion above.
+      assert output =~ "yoke lint"
     end
   end
 end

@@ -19,19 +19,20 @@ defmodule Yoke.CLI.Main do
   alias Yoke.CLI.Repl
   alias Yoke.Distribution.NodeManager
 
-  # The full dispatch table. `:implemented` entries are wired; `:planned`
-  # entries exist so the CLI surface is stable and `--help` can advertise them.
+  # The full dispatch table. Every entry is wired; the `:planned` status is
+  # retained in the vocabulary so a future command can be advertised before it
+  # is implemented (see `dispatch_subcommand/2`).
   @subcommands %{
     "review" => %{module: Yoke.CLI.CI, fun: :review, status: :implemented},
-    "lint" => %{module: nil, fun: nil, status: :planned},
-    "describe" => %{module: nil, fun: nil, status: :planned},
-    "run" => %{module: nil, fun: nil, status: :planned},
-    "audit" => %{module: nil, fun: nil, status: :planned},
-    "rag" => %{module: nil, fun: nil, status: :planned}
+    "lint" => %{module: Yoke.CLI.CI, fun: :lint, status: :implemented},
+    "describe" => %{module: Yoke.CLI.CI, fun: :describe, status: :implemented},
+    "run" => %{module: Yoke.CLI.CI, fun: :run_workflow, status: :implemented},
+    "audit" => %{module: Yoke.CLI.CI, fun: :audit, status: :implemented},
+    "rag" => %{module: Yoke.CLI.CI, fun: :rag, status: :implemented}
   }
 
   @doc "Returns the subcommand dispatch table."
-  @spec subcommands() :: map()
+  @spec subcommands() :: %{String.t() => map()}
   def subcommands, do: @subcommands
 
   def main(args) do
@@ -91,21 +92,25 @@ defmodule Yoke.CLI.Main do
     end
   end
 
+  # Every entry in `@subcommands` is currently implemented. When a future
+  # command is added to the table before it is wired, `Map.fetch!/2` still
+  # resolves it and `apply/3` would raise `UndefinedFunctionError`; the guard
+  # below turns that into a clear message instead.
   defp dispatch_subcommand(subcommand, args) do
-    case Map.fetch!(@subcommands, subcommand) do
-      %{status: :implemented, module: module, fun: fun} ->
-        code = apply(module, fun, [args])
-        halt(code)
+    %{module: module, fun: fun} = Map.fetch!(@subcommands, subcommand)
 
-      %{status: :planned} ->
-        IO.puts(
-          Yoke.CLI.Formatter.format_warning(
-            "`yoke #{subcommand}` is not implemented yet. See docs/CI_PLAN.md §6."
-          )
+    unless function_exported?(module, fun, 1) do
+      IO.puts(
+        Yoke.CLI.Formatter.format_warning(
+          "`yoke #{subcommand}` is not implemented yet. See docs/CI_PLAN.md §6."
         )
+      )
 
-        halt(2)
+      halt(2)
     end
+
+    code = apply(module, fun, [args])
+    halt(code)
   end
 
   defp run_legacy(args) do

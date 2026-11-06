@@ -154,6 +154,117 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
+### 3.1 Push review
+
+Review everything that landed on a branch. `fail-on: never` is the right
+default here — a red build on `main` for a style nit is noise, and the findings
+still reach the step summary.
+
+```yaml
+name: Review push
+on:
+  push:
+    branches: [main]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.20'
+          otp-version: '29'
+      - uses: Oeditus/yoke@v1
+        with:
+          command: review
+          # The action derives base/head from the push event's before/after.
+          fail-on: never
+          post: 'false'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+```
+
+### 3.2 Scheduled review
+
+A nightly sweep catches drift that per-PR review misses — a dependency that
+went stale, a pattern that accumulated. Use `--fail-on never` and read the
+artifact, or gate on `high` if you want it to open an issue.
+
+```yaml
+name: Nightly review
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.20'
+          otp-version: '29'
+      - uses: Oeditus/yoke@v1
+        with:
+          command: review
+          # Compare the last 7 days of commits against main.
+          base: HEAD~7
+          head: HEAD
+          fail-on: never
+          post: 'false'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+```
+
+### 3.3 Validating the pipeline without spending credits
+
+Before trusting a real review, exercise the action end-to-end with no model
+call. `yoke lint` needs no provider credentials, so this proves install,
+checksum verification, dispatch, and the sinks all work:
+
+```bash
+gh workflow run yoke-review.yml -f dry-run=true
+```
+
+That runs the `dry-run` job only: `command: lint`, no `DEEPSEEK_API_KEY`. If it
+passes, the plumbing is sound and a real review failure is a *model* problem,
+not an infrastructure one.
+
+### 3.4 Lint only (no model call)
+
+`yoke lint` needs no provider credentials and runs in seconds. This is the
+cheapest useful CI job:
+
+```yaml
+name: Lint
+on: [push, pull_request]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.20'
+          otp-version: '29'
+      - uses: Oeditus/yoke@v1
+        with:
+          command: lint
+          fail-on: high
+```
+
 ---
 
 ## 4. `yoke review`
@@ -254,7 +365,223 @@ evidence of how far it got rather than failing silently.
 
 ---
 
-## 6. The Action
+## 6. `yoke lint`
+
+Runs the project's static-analysis tools as **one annotated report**, in the
+same shape `yoke review` produces:
+
+```
+yoke lint [--tool <name>]... [options]
+```
+
+| Flag | Meaning |
+| :--- | :--- |
+| `--tool <name>` | Run only this tool (repeatable) |
+| `--fail-on <level>` | `high` \| `medium` \| `low` \| `info` \| `never` |
+| `--format <fmt>` | `markdown` \| `json` \| `summary` |
+| `--output <path>` | Artifact path (default `$RUNNER_TEMP/yoke-lint.json`) |
+| `--timeout <ms>` | Per-tool timeout (default 300 000) |
+
+Tools: `format`, `credo`, `oeditus_credo`, `dialyzer`, `deps.audit`.
+
+### 6.1 Exit codes
+
+| Code | Meaning |
+| :--- | :--- |
+| `0` | All tools ran; nothing at or above `--fail-on` |
+| `1` | Findings at or above `--fail-on` |
+| `2` | Usage error |
+| `3` | A tool could not run |
+
+**Code 3 is deliberately distinct from 1.** A linter that did not run must not
+look like a linter that passed, and must not be confused with a real finding.
+
+### 6.2 Why an adapter layer
+
+The tools speak different dialects:
+
+| Tool | Native output | Parsed as |
+| :--- | :--- | :--- |
+| `credo`, `oeditus_credo` | JSON `{"issues": [...]}` | file, line, message, priority → severity |
+| `dialyzer` | `--format short` → `file:line: message` | file, line, message (`high`) |
+| `format` | bare paths, one per line | file (`low`) |
+| `deps.audit` | advisory blocks | dependency + title (`high`) |
+| `propwise` | unstructured prose | one informational finding |
+
+`Yoke.CI.Lint.Parser` is the single place that knows all of them, so the
+parsing is unit-testable without shelling out to `mix`.
+
+### 6.3 Exit codes are not failure signals
+
+Every one of these tools signals "issues found" through a **bitmask** exit
+code — `credo` 4, `oeditus_credo` 16, `dialyzer` 2, `format` 1. Treating a
+non-zero exit as a crash would report every successful run as a failure. The
+adapter instead looks for an Elixir stack trace (`** (`) in the output to
+distinguish a real crash from a normal findings report.
+
+---
+
+## 7. `yoke describe`
+
+A one-shot pull-request summary. Where `review` runs a read-only agent loop to
+find defects, `describe` makes a **single tool-free model call** to explain what
+a diff does.
+
+```
+yoke describe --base <rev> [--head <rev>] [options]
+yoke describe --pr <number> [options]
+```
+
+| Flag | Meaning |
+| :--- | :--- |
+| `--base` / `--head` / `--pr` | The range to describe |
+| `--model` / `--endpoint` | Provider overrides |
+| `--max-cost <usd>` | Hard USD budget |
+| `--format <fmt>` | `markdown` \| `json` \| `summary` |
+| `--output <path>` | Artifact path (default `$RUNNER_TEMP/yoke-describe.json`) |
+
+Exit codes: `0` summary produced, `2` usage error, `3` could not be produced
+(provider error, empty diff). An empty completion is an **error**, never a
+blank success.
+
+The prompt asks for 3–6 sentences covering what changed, why (inferred only
+from the diff — "unclear" is an acceptable answer), and what to look at first.
+It explicitly excludes defect review, which is `yoke review`'s job, and treats
+the diff as untrusted evidence.
+
+---
+
+## 8. `yoke audit`
+
+Emits the `Yoke.AIGuard` audit trail as a CI artifact and step summary.
+
+```
+yoke audit [options]
+```
+
+| Flag | Meaning |
+| :--- | :--- |
+| `--fail-on <level>` | `high` \| `medium` \| `low` \| `info` \| `never` |
+| `--since <iso8601>` | Only entries at or after this timestamp |
+| `--limit <n>` | Max findings rendered (default 50) |
+| `--format <fmt>` | `markdown` \| `json` \| `summary` |
+| `--output <path>` | Artifact path (default `$RUNNER_TEMP/yoke-audit.json`) |
+
+Exit codes: `0` nothing gating, `1` blocked/flagged at or above `--fail-on`,
+`2` usage error, `3` trail unreadable.
+
+### 8.1 What it reports
+
+`Yoke.AIGuard` already writes every guarded LLM call and tool execution to
+`.yoke/logs/ai_guard_audit.jsonl`. `yoke audit` turns that into:
+
+- **Counts** by phase (`input` / `output` / `tool_call`) and action
+  (`pass` / `flagged` / `blocked`).
+- **Findings** for anything `flagged` (`medium`) or `blocked` (`high`).
+- **The raw trail** in the artifact.
+
+`pass` entries are counted but never become findings — an audit trail is mostly
+evidence that things were fine.
+
+### 8.2 Two things that matter at scale
+
+**`--since`.** A trail accumulates across every local run. Without a window, a
+CI report on this repository produced **346 findings from 16 000 entries** —
+almost all of it stale test fixtures, not the run under review. Set
+`--since` (or `YOKE_AUDIT_SINCE`) to the job's start time.
+
+**`--limit`.** A 300-row step summary is unreadable. The rendered table is
+capped at 50 findings by default and says so explicitly
+("_Showing 5 of 346 findings_"); the artifact always contains every entry.
+
+---
+
+## 9. `yoke run <workflow>`
+
+Runs a workflow definition end-to-end with no TTY.
+
+```
+yoke run <workflow> [--prompt <text>] [--output <path>]
+yoke run --list
+```
+
+Exit codes: `0` completed, `1` halted (a step declined to continue),
+`2` usage error, `3` could not run.
+
+### 9.1 How the engine degrades in CI
+
+The workflow engine was written for an interactive REPL. Once
+`Yoke.Interaction.Policy` is installed it degrades without any workflow-specific
+code:
+
+| Step | Interactive | In CI |
+| :--- | :--- | :--- |
+| `task_split` | Asks; may fan out into parallel git worktrees | Policy answers `:deny` → **single task** |
+| `branch` | Asks before branching off an unexpected base | Policy answers `:deny` → **halts** with a clear message |
+
+Single-task is the correct behaviour: a CI job has one checkout and no
+worktrees to spare. Halting rather than branching is also correct — a runner
+should not create branches as a side effect of a review.
+
+### 9.2 A seam gap this closed
+
+`task_split` and `branch` called `Yoke.CLI.QuestionPrompt` **directly**, outside
+the seven call sites enumerated in `docs/CI_PLAN.md` §2.1. They are on the
+`yoke run` path, so they would have blocked forever in CI. Both now route
+through `Yoke.Interaction.ask(:workflow_confirm, ...)`, and
+`test/yoke/ci_run_test.exs` asserts they never regress to calling the prompt
+directly.
+
+This is worth noting because the original audit was scoped to
+`Yoke.Brain.Session` and `Yoke.CLI.Repl`; the workflow steps were missed.
+`Yoke.Linter.Interactive` still calls `QuestionPrompt` directly, but it is not
+reachable from any CI subcommand.
+
+---
+
+## 10. `yoke rag`
+
+Builds or inspects Ragex code intelligence. **Optional**, and the last Milestone
+2 command.
+
+```
+yoke rag --index [--strict] [--timeout <ms>]
+yoke rag --status
+```
+
+| Flag | Meaning |
+| :--- | :--- |
+| `--index` | Start Ragex and wait for indexing to finish |
+| `--status` | Report whether Ragex is running and whether a graph exists |
+| `--strict` | Exit `3` when Ragex is unavailable |
+| `--timeout <ms>` | Indexing timeout (default 600 000) |
+
+### 10.1 Why it is a separate command
+
+`yoke review` deliberately does **not** start Ragex (§4.2): starting it spawns a
+`dllb-server` and may download an embedding model — 2–4 minutes on a cold
+runner — for marginal benefit on a diff review. `yoke rag` exists so a
+repository that *does* want the graph can build it in a dedicated, cacheable
+step:
+
+```yaml
+- uses: actions/cache@v4
+  with:
+    path: .ragex
+    key: ragex-${{ hashFiles('**/*.ex', '**/*.exs', 'mix.lock') }}
+- run: yoke rag --index
+```
+
+### 10.2 Failure is not fatal
+
+Ragex is an **enhancement, not a dependency**. If it cannot start (no
+`dllb-server`, no model, no network), `yoke rag` reports why and exits `0` — a
+review that would merely have been slower must not fail because an optional
+accelerator was unavailable. `--strict` opts into failing instead.
+
+---
+
+## 11. The Action
 
 `action.yml` is a composite action. Inputs:
 
@@ -270,37 +597,7 @@ run. It never uses `sudo`.
 
 ---
 
-### 6.1 Why `:exla` is compile-only under `:test`
-
-`exla`'s NIF links against CUDA libraries (`libnccl`, `libcublas`, `libcudart`,
-…). A stock GitHub `ubuntu-latest` runner does not have them, and
-`EXLA.Application.start/2` **raises** when they are missing — which took the
-whole `:yoke` application down, so `mix test` could not run in CI at all.
-
-Three dependency edges had to be cut for `:test`:
-
-| Dependency | Why |
-| :--- | :--- |
-| `:exla` | The NIF itself |
-| `:image` | Declares `:exla` as a dependency |
-| `:ragex` | Declares `:exla` as an *optional* dependency |
-
-Each is declared `runtime: false` under `MIX_ENV=test` in `mix.exs`, so it is
-still compiled and available on the code path but never **started**. Nothing in
-the test suite needs the NIF: every embeddings-dependent test is tagged
-`ragex: true` and excluded in CI, and `Nx.BinaryBackend` is the configured
-default backend.
-
-`:dev` and `:prod` are unaffected and keep full embeddings support.
-
-> **Note:** the `EXLA_BUILD: "false"` environment variable that appears in
-> several workflows is read by nothing — neither `exla` nor `yoke` consults it.
-> It is dead configuration; the `runtime: false` declarations above are what
-> actually prevent the NIF from loading.
-
----
-
-### 6.1 `:exla` and CUDA libraries on CI runners
+### 11.1 `:exla` and CUDA libraries on CI runners
 
 `exla` downloads a **prebuilt XLA binary** at compile time, and which one it
 fetches is decided by the `XLA_TARGET` environment variable:
@@ -358,7 +655,7 @@ libraries and run `mix test` — the `cuda13` build will fail to start `:exla`.
 
 ---
 
-## 7. Verifying headlessly
+## 12. Verifying headlessly
 
 The exit test for the seams is that nothing hangs and nothing emits ANSI:
 
@@ -370,7 +667,7 @@ echo "" | MIX_ENV=prod yoke "hello"
 MIX_ENV=prod yoke review --base <sha> --head <sha> </dev/null
 ```
 
-### 7.1 Testing convention: declare your output mode
+### 12.1 Testing convention: declare your output mode
 
 Because `Yoke.CLI.Formatter`'s colour helpers now return `""` when output is
 not a terminal, **any test that asserts on ANSI output must pin the mode**:
@@ -399,7 +696,7 @@ This is deliberate: it forces every test to say *which* rendering it is
 asserting, instead of silently depending on whether the suite happens to run
 in CI.
 
-### 7.2 One width algorithm
+### 12.2 One width algorithm
 
 `Yoke.CLI.Output.display_width/1` is the single implementation of
 ANSI-aware display width; `Yoke.CLI.Formatter.display_width/1` delegates to
@@ -407,9 +704,38 @@ it. Do not reintroduce a second copy — an earlier draft had `Formatter`
 delegate *to* `Output` while `Output` delegated back to `Formatter` in `:tty`
 mode, which recursed infinitely and hung the suite.
 
+### 12.3 Golden-file review tests
+
+`test/yoke/golden_review_test.exs` pins the rendered output of the review
+sinks over **5 real pull requests**. The fixtures are genuine merge commits
+from a sibling checkout (`../muex` by default, or `YOKE_GOLDEN_REPO`), with
+base/head SHAs pinned so they stay stable as that repository grows.
+
+Each PR captures two artefacts under `test/support/golden/`:
+
+| File | Contents |
+| :--- | :--- |
+| `<label>.report.golden` | The rendered step-summary Markdown |
+| `<label>.annotations.golden` | The GitHub workflow commands |
+
+Only run UIDs and timestamps are normalised away; everything else — ordering,
+wording, escaping, severity→level mapping — must match byte for byte.
+
+```bash
+# Run them
+mix test test/yoke/golden_review_test.exs
+
+# Regenerate after an intentional change — review the diff before committing
+YOKE_UPDATE_GOLDEN=1 mix test test/yoke/golden_review_test.exs
+```
+
+The tests **skip rather than fail** when the sibling checkout is absent, so a
+fresh clone stays green. To verify they actually catch regressions, tamper with
+a `.golden` file and confirm the test fails.
+
 ---
 
-## 8. Further reading
+## 13. Further reading
 
 * [`CI_PLAN.md`](CI_PLAN.md) — the design record and full roadmap.
 * [`ARCHITECTURE.md`](ARCHITECTURE.md) — Brain/Hands/Plugins overview.

@@ -144,6 +144,57 @@ defmodule Yoke.Interaction.TTY do
     end
   end
 
+  def ask(:workflow_confirm, context) do
+    options = Map.get(context, :options, ["Yes", "No"])
+
+    answer =
+      Spinner.with_paused(fn ->
+        QuestionPrompt.ask_single_question(Map.get(context, :question, ""), options, false)
+      end)
+
+    case answer do
+      %{selected: [selection]} -> classify_yes_no(selection)
+      %{custom: custom} when is_binary(custom) -> classify_yes_no(custom)
+      _ -> :deny
+    end
+  end
+
+  # The lint fixer has three outcomes (apply one, apply all remaining, skip),
+  # which the binary decision vocabulary cannot express. "Apply all" is
+  # returned as `{:answer, "apply_all"}` so the caller can distinguish it from
+  # a single approval.
+  def ask(:lint_fix, context) do
+    options =
+      Map.get(context, :options, [
+        "Apply diff (Recommended)",
+        "Skip / Deny finding",
+        "Apply all remaining diffs"
+      ])
+
+    answer =
+      Spinner.with_paused(fn ->
+        QuestionPrompt.ask_single_question(
+          Map.get(context, :question, ""),
+          options,
+          false,
+          true,
+          progress: Map.get(context, :progress)
+        )
+      end)
+
+    case answer do
+      %{selected: [selection]} ->
+        cond do
+          String.contains?(selection, "all remaining") -> {:answer, "apply_all"}
+          String.contains?(selection, "Apply") -> :approve
+          true -> :deny
+        end
+
+      _ ->
+        :deny
+    end
+  end
+
   def ask(_kind, _context), do: :deny
 
   # The classification helpers below are the exact predicates the pre-seam

@@ -8,8 +8,6 @@ defmodule Yoke.Workflow.Steps.Branch do
   """
   @behaviour Yoke.Workflow.Step
 
-  alias Yoke.CLI.QuestionPrompt
-  alias Yoke.CLI.Spinner
   alias Yoke.Git
   alias Yoke.Workflow.Store
 
@@ -35,22 +33,14 @@ defmodule Yoke.Workflow.Steps.Branch do
       "Current branch is '#{current}', not one of the expected base branches (#{allowed}). " <>
         "Branch the '#{context.workflow.name}' workflow off '#{current}' anyway?"
 
-    answer =
-      Spinner.with_paused(fn ->
-        QuestionPrompt.ask_single_question(
-          question,
-          ["Yes, branch off '#{current}'", "Abort workflow"],
-          false
-        )
-      end)
-
-    case answer do
-      %{selected: [sel]} when is_binary(sel) ->
-        if String.starts_with?(sel, "Yes") do
-          create(context, prefix, current)
-        else
-          {:halt, "Workflow aborted before branching: user declined to branch off '#{current}'."}
-        end
+    case Yoke.Interaction.ask(:workflow_confirm, %{
+           question: question,
+           options: ["Yes, branch off '#{current}'", "Abort workflow"],
+           workflow: context.workflow.name,
+           cwd: Map.get(context, :cwd)
+         }) do
+      :approve ->
+        create(context, prefix, current)
 
       _ ->
         {:halt,

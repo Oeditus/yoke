@@ -49,6 +49,8 @@ defmodule Yoke.Interaction do
           | :max_depth
           | :tool_permission
           | :review_fix
+          | :workflow_confirm
+          | :lint_fix
 
   @typedoc "The answer to an interaction request."
   @type decision :: :approve | :deny | {:answer, String.t()}
@@ -102,7 +104,9 @@ defmodule Yoke.Interaction do
       :api_error,
       :max_depth,
       :tool_permission,
-      :review_fix
+      :review_fix,
+      :workflow_confirm,
+      :lint_fix
     ]
   end
 end

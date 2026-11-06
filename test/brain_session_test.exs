@@ -139,9 +139,26 @@ defmodule Yoke.BrainSessionTest do
     assert is_binary(content)
     assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, reason}, 5_000
     assert reason in [:normal, :noproc]
-    assert [] = Registry.lookup(Yoke.Registry, "session_" <> sub_id)
+
+    # The worker's `:DOWN` fires before `DynamicSupervisor` has finished
+    # terminating the child session it started, so the registry entry can
+    # still be present for a few milliseconds. Poll briefly rather than
+    # asserting immediately -- an unconditional assert here is a race that
+    # only shows up under full-suite load.
+    assert eventually(fn -> Registry.lookup(Yoke.Registry, "session_" <> sub_id) == [] end),
+           "subagent session #{sub_id} was still registered after the worker exited"
+
     refute Enum.any?(Yoke.TaskEngine.PackageTracker.list(), &(&1.id == sub_id))
     assert Session.pending_background_notice?(pid)
+  end
+
+  # Polls `fun` until it returns true or ~2s elapse.
+  defp eventually(fun, attempts \\ 100) do
+    cond do
+      fun.() -> true
+      attempts <= 0 -> false
+      true -> Process.sleep(20) && eventually(fun, attempts - 1)
+    end
   end
 
   test "compresses context via session actor", %{pid: pid} do

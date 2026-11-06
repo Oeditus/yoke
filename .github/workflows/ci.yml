@@ -19,7 +19,9 @@ jobs:
     strategy:
       matrix:
         elixir: ['1.19', '1.20']
-        otp: ['29']
+        # OTP 27 is deliberately not supported (see docs/CI_PLAN.md); 28 and 29
+        # are both validated so a regression on either is caught.
+        otp: ['28', '29']
     steps:
       - uses: actions/checkout@v3
       - uses: erlef/setup-beam@v1

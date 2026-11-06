@@ -1,0 +1,3 @@
+::error file=lib/muex/git_diff.ex,line=38,title=Golden finding 1::Golden finding 1
+::error file=lib/muex/git_diff.ex,line=39,title=Golden finding 2::Golden finding 2
+::warning file=lib/muex/git_diff.ex,line=40,title=Golden finding 3::Golden finding 3
