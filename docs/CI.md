@@ -680,59 +680,43 @@ skipped entirely when `dllb-version: skip` is set.
 
 ---
 
-### 11.1 `:exla` on CI runners — and why we leave it alone
+### 11.1 `:exla` on CI runners — native dependency compatibility
 
 `exla` downloads a prebuilt XLA binary chosen by `XLA_TARGET`, then compiles
-**its own** NIF from source. That compile fails on `exla` 1.0.0 with GCC 15:
+**its own** NIF from source. EXLA 1.0.0 uses Fine's `Decoder<T>::decode` API,
+but its `~> 0.1` dependency requirement also accepts Fine 0.2.0. Fine 0.2
+introduced a breaking change requiring `Decoder<T>::try_decode` instead.
+Combining those versions fails on a cold native build:
 
 ```
 deps/fine/c_include/fine.hpp:479: error: 'try_decode' is not a member of
   'fine::Decoder<xla::Shape>'
 ```
 
-`main` is green only because it never reaches that code path — it restores a
-`deps` cache containing a prebuilt `libexla.so`.
+This is an EXLA/Fine API incompatibility, not a GCC or OTP incompatibility,
+and installing more build tools does not fix it. A cached `libexla.so` can
+hide the problem until a dependency update or cache eviction triggers a rebuild.
 
-**The correct configuration is therefore `main`'s**, and `EXLA_TARGET` /
-`EXLA_BUILD` stay in place as harmless dead config. They are read by nothing,
-but they are not worth "fixing":
+`mix.exs` constrains Fine to `~> 0.1.6` alongside EXLA in `embeddings_deps/0`,
+and `mix.lock` locks Fine 0.1.6. The three-component requirement excludes 0.2,
+including during `mix deps.update --all`. Remove or revise this constraint
+only after upgrading EXLA to a version supporting Fine's new decoder API.
+Fine remains excluded from the escript dependency tree.
 
-| Change | Effect |
-| :--- | :--- |
-| Leave `EXLA_TARGET` (dead) | Cache hit, no compile, **green** |
-| Replace with `XLA_TARGET=cpu` | Cache key changes → cold compile → **red** |
+The CI, Ragex CI, and release workflows set `XLA_TARGET=cpu` to select the
+CPU-only XLA archive and `EXLA_CPU_ONLY=true` to skip CUDA detection during
+the NIF build. `EXLA_TARGET` and `EXLA_BUILD` are not supported settings.
+Native builds must work without a warm cache; caches are an optimization,
+not a compatibility workaround. The headless job sets `EXLA_FORCE_REBUILD=true`
+for compilation so a cached NIF cannot hide another decoder API mismatch.
 
-The second is what this branch did on its first CI run, and it made CI strictly
-worse. `XLA_TARGET=cpu` *does* download the CPU-only XLA archive correctly
-(the log confirms `Unpacking ... x86_64-linux-gnu-cpu.tar.gz`) — the failure is
-in `exla`'s own NIF compile, which happens either way on a cold cache.
+#### OTP matrix and native caches
 
-> **Lesson:** a dead environment variable is not automatically worth fixing.
-> Replacing `EXLA_TARGET` with the "real" `XLA_TARGET` looked like a clean fix
-> and broke the build. The cost was hidden in a cache key.
+The matrix remains OTP 29 only. The earlier `try_decode` failure on an OTP 28
+cold build was caused by the same Fine API mismatch, not evidence that OTP 28
+cannot build EXLA. Expanding supported OTP versions is a separate change.
 
-If a cold compile ever becomes unavoidable (cache eviction, an `exla` upgrade),
-the blocker is the `fine` / GCC 15 incompatibility, not the target selection.
-
-#### Why the matrix is OTP 29 only
-
-OTP 28 was added to the matrix and then removed. It has no deps cache of its
-own, so `exla` compiles its NIF from source and fails:
-
-```
-deps/fine/c_include/fine.hpp:479: error: 'try_decode' is not a member of
-  'fine::Decoder<xla::Shape>'
-```
-
-OTP 29 passes because it restores a cache containing a prebuilt
-`libexla.so`. `exla` keys its own NIF cache by `elixir-<v>-erts-<v>`, so it
-*would* handle the ERTS difference — if it could compile at all.
-
-This is an upstream `exla` 1.0.0 issue. Adding OTP 28 back requires either an
-`exla` release that builds under GCC 15, or excluding `exla` from that entry
-(`runtime: false` plus tagging the embeddings tests).
-
-A related note: the deps cache key includes the OTP version
+The CI deps cache key includes the OTP version
 (`-mix-otp<version>-`) in **both** `key` and `restore-keys`. Without that, a
 matrix entry restores another entry's cache and loads a NIF built for a
 different ERTS — which fails with `bad_lib: needs erts-14.0 or newer`.

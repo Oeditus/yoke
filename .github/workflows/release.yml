@@ -9,8 +9,8 @@ jobs:
     name: Test (Elixir ${{matrix.elixir}} / OTP ${{matrix.otp}})
     runs-on: ubuntu-latest
     env:
-      EXLA_TARGET: cpu
-      EXLA_BUILD: "false"
+      XLA_TARGET: cpu
+      EXLA_CPU_ONLY: "true"
       NX_DEFAULT_BACKEND: Nx.BinaryBackend
     strategy:
       matrix:
