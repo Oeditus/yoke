@@ -643,6 +643,29 @@ in `exla`'s own NIF compile, which happens either way on a cold cache.
 If a cold compile ever becomes unavoidable (cache eviction, an `exla` upgrade),
 the blocker is the `fine` / GCC 15 incompatibility, not the target selection.
 
+#### Why the matrix is OTP 29 only
+
+OTP 28 was added to the matrix and then removed. It has no deps cache of its
+own, so `exla` compiles its NIF from source and fails:
+
+```
+deps/fine/c_include/fine.hpp:479: error: 'try_decode' is not a member of
+  'fine::Decoder<xla::Shape>'
+```
+
+OTP 29 passes because it restores a cache containing a prebuilt
+`libexla.so`. `exla` keys its own NIF cache by `elixir-<v>-erts-<v>`, so it
+*would* handle the ERTS difference — if it could compile at all.
+
+This is an upstream `exla` 1.0.0 issue. Adding OTP 28 back requires either an
+`exla` release that builds under GCC 15, or excluding `exla` from that entry
+(`runtime: false` plus tagging the embeddings tests).
+
+A related note: the deps cache key includes the OTP version
+(`-mix-otp<version>-`) in **both** `key` and `restore-keys`. Without that, a
+matrix entry restores another entry's cache and loads a NIF built for a
+different ERTS — which fails with `bad_lib: needs erts-14.0 or newer`.
+
 ## 12. Verifying headlessly
 
 The exit test for the seams is that nothing hangs and nothing emits ANSI:

@@ -256,10 +256,13 @@ non-zero exit. Then confirm a clean PR passes.
 - [x] `AIGuard` in `:enforce` for anything written to the artifact sink.
 - [x] SIGTERM handler flushes the artifact sink before exit.
 - [x] Diff-size cap (yoke's existing 300 KB limit is a good default).
-- [x] CI matrix: Elixir 1.19/1.20 × OTP 28/29, `mix quality.ci`, `</dev/null` smoke test.
-      OTP 27 is deliberately **not** supported. The original plan named 27/29, which was
-      aspirational — `mix.exs` requires `elixir: "~> 1.19"` and nothing is validated against
-      27. The matrix now covers 28 and 29.
+- [x] CI matrix: Elixir 1.19/1.20 × OTP 29, `mix quality.ci`, `</dev/null` smoke test.
+      The original plan named OTP 27/29, which was aspirational — `mix.exs` requires
+      `elixir: "~> 1.19"` and nothing is validated against 27.
+      **OTP 28 was tried and removed.** It has no deps cache, so `exla` compiles its NIF
+      from source and fails on a `fine.hpp` / GCC 15 incompatibility. That is an upstream
+      `exla` 1.0.0 issue, not something the workflow can work around. OTP 29 passes because
+      it restores a cache containing a prebuilt `libexla.so`.
 - [x] `docs/CI.md` — copy-pasteable workflows for PR review, push review, and scheduled review.
       See §3 (quick start), §3.1 (push), §3.2 (scheduled), §3.3 (dry run), §3.4 (lint-only).
 
