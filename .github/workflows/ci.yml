@@ -45,7 +45,7 @@ jobs:
           # fails with `bad_lib`. With a single OTP version this was harmless;
           # with a matrix it silently poisons the shared cache.
           key: ${{ runner.os }}-mix-otp${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-mix-
+          restore-keys: ${{ runner.os }}-mix-otp${{ matrix.otp }}-
       - name: Install dependencies
         run: mix deps.get
       - name: Run tests with coverage
@@ -200,7 +200,7 @@ jobs:
           # fails with `bad_lib`. With a single OTP version this was harmless;
           # with a matrix it silently poisons the shared cache.
           key: ${{ runner.os }}-mix-otp${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-mix-
+          restore-keys: ${{ runner.os }}-mix-otp${{ matrix.otp }}-
       - name: Restore PLT cache
         uses: actions/cache@v3
         with:
