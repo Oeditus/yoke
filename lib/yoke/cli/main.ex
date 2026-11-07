@@ -28,6 +28,7 @@ defmodule Yoke.CLI.Main do
     "describe" => %{module: Yoke.CLI.CI, fun: :describe, status: :implemented},
     "run" => %{module: Yoke.CLI.CI, fun: :run_workflow, status: :implemented},
     "audit" => %{module: Yoke.CLI.CI, fun: :audit, status: :implemented},
+    "fix" => %{module: Yoke.CLI.Fix, fun: :fix, status: :implemented},
     "rag" => %{module: Yoke.CLI.CI, fun: :rag, status: :implemented}
   }
 
@@ -350,6 +351,13 @@ defmodule Yoke.CLI.Main do
       yoke --model deepseek-flash      Specify model (deepseek-flash, deepseek-v4-pro, or deepseek-reasoner)
       yoke --node brain_1 --connect hands@127.0.0.1   Distributed Brain/Hands mode
       yoke --plugin path/to/plugin.exs Load custom plugin on startup
+
+    SUBCOMMANDS:
+      yoke fix [options] ["<cmd>"]   Replay the last terminal command, analyse the
+                                     failure, and plan a fix (see `yoke fix --help`)
+      yoke review|lint|describe|run   CI code review, linting, description, workflows
+      yoke audit                     Emit the AI Guard audit trail as a CI artifact
+      yoke rag                       Query the Ragex knowledge graph
 
     OPTIONS:
       -c, --conversation STRING  Resume specific conversation ID

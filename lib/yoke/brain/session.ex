@@ -1425,6 +1425,7 @@ defmodule Yoke.Brain.Session do
               "SYSTEM NOTICE: Repetitive tool loop detected (period #{period}, repeated #{count} times):\n" <>
                 cycle_desc <>
                 "\n\n" <>
+                loop_guidance(loop_info) <>
                 "Do NOT repeat these tool calls with the same arguments. Synthesize your final answer using the results already provided, or state the specific different action required to make forward progress."
           }
 
@@ -1721,6 +1722,19 @@ defmodule Yoke.Brain.Session do
         {{:error, reason}, %{state | status: :idle, suppress_tools: false}}
     end
   end
+
+  # Extra, cycle-specific guidance appended to the loop-break notice. A
+  # `job_status` cycle is the most common false-positive-looking case: the
+  # model is waiting on a background job instead of doing useful work, so the
+  # notice tells it exactly what the harness contract already promises -- the
+  # job reports back on its own.
+  defp loop_guidance(%{waiting?: true}) do
+    "This cycle is waiting on a background job via `job_status`. Background jobs notify " <>
+      "this session automatically when they finish, so polling them adds no information. " <>
+      "End your turn (or continue with unrelated work) and let the completion message arrive.\n\n"
+  end
+
+  defp loop_guidance(_loop_info), do: ""
 
   defp handle_unyielding_loop(state, depth, loop_info) do
     if top_level_session?(state.session_id) do
@@ -2230,14 +2244,18 @@ defmodule Yoke.Brain.Session do
   # Applies a `{:allow, persistence}` decision: the persistence level decides
   # whether the choice is remembered for the session, the project config, the
   # global config, or just this one call.
+  #
+  # A failed write is surfaced to the user (rather than swallowed): "Allow
+  # always (save to project config)" that silently didn't persist is exactly
+  # the bug where the prompt reappears next session with no explanation.
   defp allow_tool_with_persistence(tool_name, persistence, state) do
     case persistence do
       :global ->
-        Config.set_global_tool_permission(tool_name, "allow")
+        report_persistence(Config.set_global_tool_permission(tool_name, "allow"), "global")
         remember_tool_permission(tool_name, "allow", state)
 
       :project ->
-        Config.set_tool_permission(tool_name, "allow", state.cwd)
+        report_persistence(Config.set_tool_permission(tool_name, "allow", state.cwd), "project")
         remember_tool_permission(tool_name, "allow", state)
 
       :session ->
@@ -2251,7 +2269,7 @@ defmodule Yoke.Brain.Session do
   defp deny_tool_with_persistence(tool_name, persistence, state) do
     case persistence do
       :global ->
-        Config.set_global_tool_permission(tool_name, "deny")
+        report_persistence(Config.set_global_tool_permission(tool_name, "deny"), "global")
 
         remember_tool_permission(
           tool_name,
@@ -2261,7 +2279,7 @@ defmodule Yoke.Brain.Session do
         )
 
       :project ->
-        Config.set_tool_permission(tool_name, "deny", state.cwd)
+        report_persistence(Config.set_tool_permission(tool_name, "deny", state.cwd), "project")
 
         remember_tool_permission(
           tool_name,
@@ -2273,6 +2291,32 @@ defmodule Yoke.Brain.Session do
       _ ->
         {:deny, "Tool execution denied by user.", state}
     end
+  end
+
+  # `{:ok, path}` for the global writer, `:ok` for the project writer.
+  defp report_persistence(:ok, scope) do
+    Logger.info("[Brain.Session] Tool permission persisted to #{scope} config.")
+    :ok
+  end
+
+  defp report_persistence({:ok, path}, _scope) do
+    Logger.info("[Brain.Session] Tool permission persisted to #{path}")
+    :ok
+  end
+
+  defp report_persistence({:error, reason}, scope) do
+    Logger.warning(
+      "[Brain.Session] Could not persist tool permission to #{scope} config: #{reason}"
+    )
+
+    IO.puts(
+      Formatter.format_warning(
+        "Could not save this permission to the #{scope} config: #{reason}\n" <>
+          "It still applies for the rest of this session."
+      )
+    )
+
+    :error
   end
 
   defp remember_tool_permission(tool_name, policy, state, deny_reason \\ nil) do

@@ -11,8 +11,8 @@ jobs:
     name: Code Quality & Security Audit (Ragex dogfooding)
     runs-on: ubuntu-latest
     env:
-      EXLA_TARGET: cpu
-      EXLA_BUILD: "false"
+      XLA_TARGET: cpu
+      EXLA_CPU_ONLY: "true"
       NX_DEFAULT_BACKEND: Nx.BinaryBackend
     steps:
       - uses: actions/checkout@v3

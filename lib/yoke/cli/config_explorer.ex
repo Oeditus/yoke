@@ -548,8 +548,10 @@ defmodule Yoke.CLI.ConfigExplorer do
           val = Map.get(state.tree.config, key)
 
           if is_boolean(val) do
-            updated_config = Map.put(state.tree.config, key, not val)
-            Config.save_config(updated_config, state.cwd)
+            # Patch only this key in the on-disk file: `state.tree.config` is a
+            # *merged* global+local snapshot, so writing it back would copy
+            # every global setting into the project config.
+            Config.put_local(key, not val, state.cwd)
             refresh_state(state, "Toggled setting '#{key}' -> #{not val}")
           else
             %{state | view_mode: :detail, detail_scroll: 0}
@@ -873,8 +875,7 @@ defmodule Yoke.CLI.ConfigExplorer do
             input
         end
 
-      updated_config = Map.put(state.tree.config, key, new_val)
-      Config.save_config(updated_config, state.cwd)
+      Config.put_local(key, new_val, state.cwd)
       refresh_state(state, "Updated '#{key}' -> #{inspect(new_val)}")
     else
       state

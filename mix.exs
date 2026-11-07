@@ -127,6 +127,9 @@ defmodule Yoke.MixProject do
         {:bumblebee, "~> 0.5"},
         {:nx, "~> 1.0", override: true},
         {:exla, "~> 1.0", override: true},
+        # EXLA 1.0 uses Decoder.decode; Fine 0.2 requires Decoder.try_decode.
+        # Keep the 0.1 API even when updating all dependencies.
+        {:fine, "~> 0.1.6", runtime: false},
         {:image, "~> 0.54"}
       ]
     end

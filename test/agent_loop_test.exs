@@ -205,6 +205,115 @@ defmodule Yoke.Brain.AgentLoopTest do
       assert AgentLoop.duplicate_tool_calls?(messages, candidate_c) == true
     end
 
+    test "detects period 1 loop for job_status polling after 2 identical calls" do
+      poll_call = %{
+        "role" => "assistant",
+        "tool_calls" => [
+          %{
+            "id" => "call_1",
+            "function" => %{
+              "name" => "job_status",
+              "arguments" => "{\"job_id\":\"job_1\",\"tail\":30}"
+            }
+          }
+        ]
+      }
+
+      messages = [
+        %{"role" => "user", "content" => "Run the tests"},
+        poll_call,
+        %{"role" => "tool", "content" => "running"}
+      ]
+
+      new_tool_calls = [
+        %{id: "call_2", name: "job_status", arguments: %{"job_id" => "job_1", "tail" => 30}}
+      ]
+
+      # `job_status` is a terminal probe, not a live one: waiting on the same
+      # job twice in a row is already a loop (the job notifies on completion).
+      assert {:loop, loop_info} = AgentLoop.detect_tool_loop(messages, new_tool_calls)
+      assert loop_info.period == 1
+      assert loop_info.count == 2
+      assert loop_info.waiting? == true
+      assert AgentLoop.duplicate_tool_calls?(messages, new_tool_calls) == true
+    end
+
+    test "job_status is not in the repeatable tool list" do
+      refute "job_status" in AgentLoop.repeatable_tools()
+      assert "job_status" in AgentLoop.non_cycling_tools()
+      assert "bash" in AgentLoop.repeatable_tools()
+    end
+
+    test "flags a mixed bash/job_status period 2 cycle as a waiting loop" do
+      compile = %{
+        "role" => "assistant",
+        "tool_calls" => [
+          %{
+            "id" => "c1",
+            "function" => %{"name" => "bash", "arguments" => "{\"command\":\"mix test\"}"}
+          }
+        ]
+      }
+
+      poll = %{
+        "role" => "assistant",
+        "tool_calls" => [
+          %{
+            "id" => "c2",
+            "function" => %{
+              "name" => "job_status",
+              "arguments" => "{\"job_id\":\"job_1\"}"
+            }
+          }
+        ]
+      }
+
+      messages = [
+        %{"role" => "user", "content" => "Run the tests"},
+        compile,
+        %{"role" => "tool", "content" => "job_1"},
+        poll,
+        %{"role" => "tool", "content" => "running"},
+        compile,
+        %{"role" => "tool", "content" => "job_2"}
+      ]
+
+      candidate = [%{id: "c4", name: "job_status", arguments: %{"job_id" => "job_1"}}]
+
+      assert {:loop, loop_info} = AgentLoop.detect_tool_loop(messages, candidate)
+      assert loop_info.period == 2
+      assert loop_info.waiting? == true
+    end
+
+    test "does not flag a productive bash cycle as waiting" do
+      make_step = fn id, cmd ->
+        %{
+          "role" => "assistant",
+          "tool_calls" => [
+            %{
+              "id" => id,
+              "function" => %{"name" => "bash", "arguments" => Yoke.Json.encode!(%{command: cmd})}
+            }
+          ]
+        }
+      end
+
+      messages = [
+        %{"role" => "user", "content" => "Check"},
+        make_step.("c1", "wc -l log"),
+        %{"role" => "tool", "content" => "10"},
+        make_step.("c2", "tail log"),
+        %{"role" => "tool", "content" => "ok"},
+        make_step.("c3", "wc -l log"),
+        %{"role" => "tool", "content" => "10"}
+      ]
+
+      candidate = [%{id: "c4", name: "bash", arguments: %{command: "tail log"}}]
+
+      assert {:loop, loop_info} = AgentLoop.detect_tool_loop(messages, candidate)
+      assert loop_info.waiting? == false
+    end
+
     test "does not flag alternating commands when arguments vary" do
       step_a1 = %{
         "role" => "assistant",
