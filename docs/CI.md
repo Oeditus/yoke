@@ -641,8 +641,13 @@ Two details that matter:
   set `EXLA_TARGET`, which nothing reads — so `exla` fell back to auto-detection
   and pulled the CUDA build. The same applies to `EXLA_BUILD`, which is also
   read by nothing; both have been removed.
-* **The dependency cache key includes `XLA_TARGET`.** Without it, a runner that
-  cached a CUDA build would keep reusing it even after the variable changed.
+* **The dependency cache key *and* `restore-keys` must include `XLA_TARGET`.**
+  Including it in `key` alone is not enough: a bare `restore-keys: ${os}-mix-`
+  prefix still matches caches written before the target was part of the key,
+  so a `cpu` job restores a `cuda13` build and fails exactly as before. The
+  first real CI run failed for this reason — the key was correct, the fallback
+  was not. Both now read
+  `${{ runner.os }}-mix-${{ env.XLA_TARGET }}-`.
 
 #### Verifying locally
 

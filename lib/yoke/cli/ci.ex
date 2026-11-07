@@ -664,7 +664,7 @@ defmodule Yoke.CLI.CI do
         fail_on: opts[:fail_on],
         timeout: parse_timeout(opts[:timeout]) || 300_000
       ]
-      |> maybe_put(:tools, nonempty(normalize_tools(Keyword.get_values(opts, :tool))))
+      |> maybe_put(:tools, nonempty(Keyword.get_values(opts, :tool)))
 
     {:ok, report} = Yoke.CI.Lint.run(lint_opts)
 
@@ -756,12 +756,9 @@ defmodule Yoke.CLI.CI do
     Map.new(finding, fn {k, v} -> {to_string(k), v} end)
   end
 
-  # `OptionParser` with `:keep` returns a bare value when the flag appears
-  # once and a list when it repeats, so normalise before validating.
-  defp validate_tools(nil), do: nil
-
-  defp validate_tools(tools) do
-    unknown = Enum.reject(normalize_tools(tools), &(&1 in Yoke.CI.Lint.tools()))
+  # `Keyword.get_values/2` always returns a list, so this only ever sees one.
+  defp validate_tools(tools) when is_list(tools) do
+    unknown = Enum.reject(tools, &(&1 in Yoke.CI.Lint.tools()))
 
     if unknown == [] do
       nil
@@ -771,9 +768,8 @@ defmodule Yoke.CLI.CI do
     end
   end
 
-  defp normalize_tools(tool) when is_binary(tool), do: [tool]
-  defp normalize_tools(tools) when is_list(tools), do: tools
-  defp normalize_tools(_), do: []
+  # `Keyword.get_values/2` always returns a list, so no normalisation of a
+  # bare value is needed here.
 
   # ---------------------------------------------------------------------
   # review

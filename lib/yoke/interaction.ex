@@ -52,8 +52,22 @@ defmodule Yoke.Interaction do
           | :workflow_confirm
           | :lint_fix
 
-  @typedoc "The answer to an interaction request."
-  @type decision :: :approve | :deny | {:answer, String.t()}
+  @typedoc """
+  A tool-permission answer, carrying the persistence level the user chose.
+
+  `:once` applies the decision to this call only; `:session`, `:project` and
+  `:global` remember it at increasing scopes. `Yoke.Interaction.TTY` returns
+  this shape for `:tool_permission`; `Yoke.Interaction.Policy` returns a plain
+  `:approve`/`:deny`, which callers must also handle.
+  """
+  @type persistence :: :once | :session | :project | :global
+
+  @type decision ::
+          :approve
+          | :deny
+          | {:answer, String.t()}
+          | {:allow, persistence()}
+          | {:deny, persistence()}
 
   @typedoc """
   Context handed to the implementation.

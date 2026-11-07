@@ -38,7 +38,10 @@ jobs:
         with:
           path: deps
           key: ${{ runner.os }}-mix-${{ env.XLA_TARGET }}-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-mix-
+          # Scoped to XLA_TARGET: a bare `Linux-mix-` prefix matches caches
+          # built before the target was part of the key, restoring a cuda13
+          # exla build into a cpu job. See docs/CI.md §10.1.
+          restore-keys: ${{ runner.os }}-mix-${{ env.XLA_TARGET }}-
       - name: Install dependencies
         run: mix deps.get
       - name: Run tests with coverage
@@ -75,16 +78,25 @@ jobs:
         with:
           path: deps
           key: ${{ runner.os }}-mix-${{ env.XLA_TARGET }}-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-mix-
+          # Scoped to XLA_TARGET: a bare `Linux-mix-` prefix matches caches
+          # built before the target was part of the key, restoring a cuda13
+          # exla build into a cpu job. See docs/CI.md §10.1.
+          restore-keys: ${{ runner.os }}-mix-${{ env.XLA_TARGET }}-
       - name: Install dependencies
         run: mix deps.get
 
       # The exit test from docs/CI_PLAN.md Phase 1.0: the CLI must complete
       # with stdin closed and no TTY, and must not hang.
+      # Compile as its own step: a cold compile of the full dependency tree
+      # (ragex alone is ~205 modules) takes minutes, so a timeout meant to
+      # catch a *hang* must not also have to cover compilation.
+      - name: Compile
+        run: MIX_ENV=test mix compile
+
       - name: One-shot prompt completes with stdin closed
         run: |
           set -o pipefail
-          timeout 120 mix run --no-start -e '
+          timeout 120 mix run --no-start --no-compile -e '
             Application.put_env(:yoke, :system_halt_enabled, false)
             Yoke.CLI.Main.main(["--help"])
           ' </dev/null | tee /tmp/help.txt
@@ -100,7 +112,7 @@ jobs:
       # The blocking seam must answer immediately, never prompt.
       - name: Interaction seam answers without blocking
         run: |
-          timeout 60 mix run --no-start -e '
+          timeout 60 mix run --no-start --no-compile -e '
             Yoke.Config.CI.install_headless_seams(".")
             for kind <- Yoke.Interaction.kinds() do
               decision = Yoke.Interaction.ask(kind, %{cwd: "."})
@@ -115,7 +127,7 @@ jobs:
       # The CI Hands target must refuse writes.
       - name: CI Hands refuses writes
         run: |
-          timeout 60 mix run --no-start -e '
+          timeout 60 mix run --no-start --no-compile -e '
             executor = %Yoke.Hands.Executor{mode: :ci, cwd: "."}
             case Yoke.Hands.Executor.execute(executor, "write_file", %{"path" => "/tmp/x", "content" => "y"}) do
               {:error, reason} ->
@@ -133,7 +145,7 @@ jobs:
       # See docs/CI.md §6.1.
       - name: Application boots on a GPU-less runner
         run: |
-          timeout 120 mix run --no-start -e '
+          timeout 120 mix run --no-start --no-compile -e '
             case Application.ensure_all_started(:yoke, :temporary) do
               {:ok, apps} ->
                 IO.puts("yoke booted; exla started?: #{:exla in apps}")
@@ -174,7 +186,10 @@ jobs:
         with:
           path: deps
           key: ${{ runner.os }}-mix-${{ env.XLA_TARGET }}-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-mix-
+          # Scoped to XLA_TARGET: a bare `Linux-mix-` prefix matches caches
+          # built before the target was part of the key, restoring a cuda13
+          # exla build into a cpu job. See docs/CI.md §10.1.
+          restore-keys: ${{ runner.os }}-mix-${{ env.XLA_TARGET }}-
       - name: Restore PLT cache
         uses: actions/cache@v3
         with:
