@@ -105,6 +105,12 @@ defmodule Yoke.CLI.Main do
   defp dispatch_subcommand(subcommand, args) do
     %{module: module, fun: fun} = Map.fetch!(@subcommands, subcommand)
 
+    # `function_exported?/3` returns false for a module that is not yet
+    # loaded, which in a freshly-booted escript is the normal state. Ensure
+    # the module is loaded first, otherwise every command reports as
+    # "not implemented" -- which is exactly what happened in CI.
+    _ = Code.ensure_loaded(module)
+
     unless function_exported?(module, fun, 1) do
       IO.puts(
         Yoke.CLI.Formatter.format_warning(

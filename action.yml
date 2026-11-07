@@ -63,6 +63,13 @@ inputs:
     description: 'yoke release tag to install, e.g. v0.21.1. Defaults to the latest release.'
     required: false
     default: ''
+  build-from-source:
+    description: >
+      Build the escript from the checked-out tree instead of downloading a
+      release. Use for dogfooding: a released binary may predate the command
+      under test, which makes a passing run meaningless.
+    required: false
+    default: 'false'
   elixir-version:
     description: 'Elixir version to install.'
     required: false
@@ -100,8 +107,22 @@ runs:
       shell: bash
       env:
         YOKE_VERSION: ${{ inputs.yoke-version }}
+        BUILD_FROM_SOURCE: ${{ inputs.build-from-source }}
       run: |
-        "${{ github.action_path }}/scripts/install.sh"
+        set -euo pipefail
+
+        if [ "$BUILD_FROM_SOURCE" = "true" ]; then
+          # Build the escript from the checked-out tree. Used for dogfooding:
+          # the released binary may predate the command being tested, which
+          # makes a "passing" run meaningless.
+          echo "Building yoke from source…"
+          MIX_ENV=escript mix deps.get
+          MIX_ENV=escript mix escript.build
+          install -m 0755 yoke_escript "$HOME/.local/bin/yoke"
+        else
+          "${{ github.action_path }}/scripts/install.sh"
+        fi
+
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
     - name: Resolve review range
@@ -191,6 +212,21 @@ runs:
             echo "run-uid="
           fi
         } >> "$GITHUB_OUTPUT"
+
+        # Fail the step when `yoke` failed. Without this the job passes on any
+        # non-zero exit -- including a usage error or a missing binary -- and
+        # "green" means nothing. Exit 1 (findings at or above --fail-on) is a
+        # legitimate gating outcome, so it is reported but not treated as an
+        # infrastructure failure.
+        if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
+          echo "::error title=yoke $INPUT_COMMAND failed::exit status $status"
+          exit "$status"
+        fi
+
+        if [ ! -f "$report" ]; then
+          echo "::error title=yoke $INPUT_COMMAND produced no artifact::expected $report"
+          exit 3
+        fi
 
         exit "$status"
 

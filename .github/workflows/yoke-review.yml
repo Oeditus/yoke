@@ -36,6 +36,7 @@ jobs:
         uses: ./
         with:
           command: lint
+          build-from-source: 'true'
           fail-on: never
           post: 'false'
           # No DEEPSEEK_API_KEY: `lint` must work without one.
@@ -57,6 +58,9 @@ jobs:
         uses: ./
         with:
           command: review
+          # Build from the checked-out tree. The released binary may predate
+          # the command under test, which makes a passing run meaningless.
+          build-from-source: 'true'
           # Ship `never` as the default for the first release so a noisy
           # reviewer cannot block merges before anyone has seen its output.
           # Opt into gating once the signal is trusted (docs/CI_PLAN.md §8).
