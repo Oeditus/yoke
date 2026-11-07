@@ -609,84 +609,39 @@ run. It never uses `sudo`.
 
 ---
 
-### 11.1 `:exla` and CUDA libraries on CI runners
+### 11.1 `:exla` on CI runners — and why we leave it alone
 
-`exla` downloads a **prebuilt XLA binary** at compile time, and which one it
-fetches is decided by the `XLA_TARGET` environment variable:
+`exla` downloads a prebuilt XLA binary chosen by `XLA_TARGET`, then compiles
+**its own** NIF from source. That compile fails on `exla` 1.0.0 with GCC 15:
 
-| `XLA_TARGET` | Prebuilt binary | GPU libraries needed? |
-| :--- | :--- | :--- |
-| `cpu` (default) | CPU-only | **No** |
-| `cuda12` / `cuda13` | CUDA-linked | Yes — cuBLAS, cuDNN, NCCL, nvshmem, … |
-
-If a CUDA installation is detected on the build machine, `exla` **overrides the
-default** and downloads the CUDA build. That build's NIF links against ~20 GPU
-libraries (`libcublas.so.13`, `libcudnn*.so.9`, `libnccl.so.2`, …), and
-`EXLA.Application.start/2` raises when they are absent — taking the whole
-`:yoke` application down, so `mix test` cannot run at all.
-
-#### The fix
-
-Pin the CPU build explicitly. This is what `ci.yml` does:
-
-```yaml
-env:
-  XLA_TARGET: cpu          # CPU-only prebuilt binary, no CUDA linkage
-  NX_DEFAULT_BACKEND: Nx.BinaryBackend
+```
+deps/fine/c_include/fine.hpp:479: error: 'try_decode' is not a member of
+  'fine::Decoder<xla::Shape>'
 ```
 
-Two details that matter:
+`main` is green only because it never reaches that code path — it restores a
+`deps` cache containing a prebuilt `libexla.so`.
 
-* **The variable is `XLA_TARGET`, not `EXLA_TARGET`.** The workflows previously
-  set `EXLA_TARGET`, which nothing reads — so `exla` fell back to auto-detection
-  and pulled the CUDA build. The same applies to `EXLA_BUILD`, which is also
-  read by nothing; both have been removed.
-* **The dependency cache key *and* `restore-keys` must include `XLA_TARGET`.**
-  Including it in `key` alone is not enough: a bare `restore-keys: ${os}-mix-`
-  prefix still matches caches written before the target was part of the key,
-  so a `cpu` job restores a `cuda13` build and fails exactly as before. The
-  first real CI run failed for this reason — the key was correct, the fallback
-  was not. Both now read
-  `${{ runner.os }}-mix-${{ env.XLA_TARGET }}-`.
+**The correct configuration is therefore `main`'s**, and `EXLA_TARGET` /
+`EXLA_BUILD` stay in place as harmless dead config. They are read by nothing,
+but they are not worth "fixing":
 
-#### Verifying locally
+| Change | Effect |
+| :--- | :--- |
+| Leave `EXLA_TARGET` (dead) | Cache hit, no compile, **green** |
+| Replace with `XLA_TARGET=cpu` | Cache key changes → cold compile → **red** |
 
-```bash
-# Which prebuilt binary was downloaded:
-cat deps/exla/cache/xla_snapshot.txt
-# .../xla_extension-0.10.0-x86_64-linux-gnu-cuda13.tar.gz   <- CUDA build
-# .../xla_extension-0.10.0-x86_64-linux-gnu-cpu.tar.gz      <- CPU build
+The second is what this branch did on its first CI run, and it made CI strictly
+worse. `XLA_TARGET=cpu` *does* download the CPU-only XLA archive correctly
+(the log confirms `Unpacking ... x86_64-linux-gnu-cpu.tar.gz`) — the failure is
+in `exla`'s own NIF compile, which happens either way on a cold cache.
 
-# How many GPU libraries the NIF expects but cannot find:
-ldd deps/exla/cache/libexla.so | grep -c "not found"
-# 20 for the cuda13 build on a machine without CUDA; expected 0 for cpu
-```
+> **Lesson:** a dead environment variable is not automatically worth fixing.
+> Replacing `EXLA_TARGET` with the "real" `XLA_TARGET` looked like a clean fix
+> and broke the build. The cost was hidden in a cache key.
 
-To reproduce the CI failure locally, point `LD_LIBRARY_PATH` away from your CUDA
-libraries and run `mix test` — the `cuda13` build will fail to start `:exla`.
-
-The selection logic is in `deps/xla/lib/xla.ex`:
-
-```elixir
-target = System.get_env("XLA_TARGET") || infer_xla_target() || "cpu"
-```
-
-so an unset `XLA_TARGET` falls back to *inference*, which is why the wrongly
-named `EXLA_TARGET` had no effect. The `cpu` artifact for the pinned version
-was confirmed present upstream:
-
-```bash
-curl -sIL -o /dev/null -w "%{http_code}\n" \
-  https://github.com/elixir-nx/xla/releases/download/v0.10.0/xla_extension-0.10.0-x86_64-linux-gnu-cpu.tar.gz
-# 200
-```
-
-> **Note:** a machine with CUDA installed will try to *rebuild* the NIF from
-> source when `deps/exla/cache` is removed, which needs `XLA_BUILD=true` and a
-> C++ toolchain. On a clean CI runner, `XLA_TARGET=cpu` avoids that path — it
-> downloads a prebuilt binary instead.
-
----
+If a cold compile ever becomes unavoidable (cache eviction, an `exla` upgrade),
+the blocker is the `fine` / GCC 15 incompatibility, not the target selection.
 
 ## 12. Verifying headlessly
 

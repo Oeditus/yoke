@@ -11,10 +11,13 @@ jobs:
     name: Test (Elixir ${{matrix.elixir}} / OTP ${{matrix.otp}})
     runs-on: ubuntu-latest
     env:
-      # `XLA_TARGET` (not `EXLA_TARGET`) selects the prebuilt XLA binary.
-      # `cpu` downloads a build with no CUDA linkage at all, so no GPU
-      # libraries are needed on the runner. See docs/CI.md §6.1.
-      XLA_TARGET: cpu
+      # NOTE: `EXLA_TARGET`/`EXLA_BUILD` are read by nothing -- they are dead
+      # config. They are kept because removing them would change nothing, but
+      # *replacing* them with `XLA_TARGET=cpu` changes the deps cache key and
+      # forces a cold `exla` NIF compile, which fails on an exla 1.0.0 / GCC 15
+      # incompatibility (`fine.hpp: try_decode`). See docs/CI.md §6.1.
+      EXLA_TARGET: cpu
+      EXLA_BUILD: "false"
       NX_DEFAULT_BACKEND: Nx.BinaryBackend
     strategy:
       matrix:
@@ -37,11 +40,8 @@ jobs:
         uses: actions/cache@v3
         with:
           path: deps
-          key: ${{ runner.os }}-mix-${{ env.XLA_TARGET }}-${{ hashFiles('**/mix.lock') }}
-          # Scoped to XLA_TARGET: a bare `Linux-mix-` prefix matches caches
-          # built before the target was part of the key, restoring a cuda13
-          # exla build into a cpu job. See docs/CI.md §10.1.
-          restore-keys: ${{ runner.os }}-mix-${{ env.XLA_TARGET }}-
+          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-
       - name: Install dependencies
         run: mix deps.get
       - name: Run tests with coverage
@@ -55,10 +55,13 @@ jobs:
     name: Headless seams (no TTY)
     runs-on: ubuntu-latest
     env:
-      # `XLA_TARGET` (not `EXLA_TARGET`) selects the prebuilt XLA binary.
-      # `cpu` downloads a build with no CUDA linkage at all, so no GPU
-      # libraries are needed on the runner. See docs/CI.md §6.1.
-      XLA_TARGET: cpu
+      # NOTE: `EXLA_TARGET`/`EXLA_BUILD` are read by nothing -- they are dead
+      # config. They are kept because removing them would change nothing, but
+      # *replacing* them with `XLA_TARGET=cpu` changes the deps cache key and
+      # forces a cold `exla` NIF compile, which fails on an exla 1.0.0 / GCC 15
+      # incompatibility (`fine.hpp: try_decode`). See docs/CI.md §6.1.
+      EXLA_TARGET: cpu
+      EXLA_BUILD: "false"
       NX_DEFAULT_BACKEND: Nx.BinaryBackend
       # Proves the presentation seam degrades: nothing below may emit ANSI.
       CI: "true"
@@ -77,11 +80,8 @@ jobs:
         uses: actions/cache@v3
         with:
           path: deps
-          key: ${{ runner.os }}-mix-${{ env.XLA_TARGET }}-${{ hashFiles('**/mix.lock') }}
-          # Scoped to XLA_TARGET: a bare `Linux-mix-` prefix matches caches
-          # built before the target was part of the key, restoring a cuda13
-          # exla build into a cpu job. See docs/CI.md §10.1.
-          restore-keys: ${{ runner.os }}-mix-${{ env.XLA_TARGET }}-
+          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-
       - name: Install dependencies
         run: mix deps.get
 
@@ -138,11 +138,9 @@ jobs:
             end
           ' </dev/null
 
-      # `XLA_TARGET=cpu` downloads a CPU-only XLA binary, so `:yoke` must boot
-      # on a runner with no GPU libraries. If this step reports a failure, the
-      # pin is not taking effect -- most likely a stale `deps` cache holding a
-      # CUDA build (the cache key includes `XLA_TARGET` to prevent that).
-      # See docs/CI.md §6.1.
+      # `:yoke` must boot headlessly. This is the Phase 1.0 exit test: no TTY,
+      # no hang, no ANSI. If it fails here, the seams are broken rather than
+      # the environment -- see docs/CI.md §1.
       - name: Application boots on a GPU-less runner
         run: |
           timeout 120 mix run --no-start --no-compile -e '
@@ -151,8 +149,7 @@ jobs:
                 IO.puts("yoke booted; exla started?: #{:exla in apps}")
               {:error, reason} ->
                 IO.puts("::error title=yoke failed to boot::" <>
-                  "XLA_TARGET=cpu should avoid all GPU linkage. Check for a stale " <>
-                  "deps cache. See docs/CI.md section 6.1. (#{inspect(elem(reason, 0))})")
+                  "See docs/CI.md section 6.1. (#{inspect(elem(reason, 0))})")
                 System.halt(1)
             end
           ' </dev/null
@@ -161,10 +158,13 @@ jobs:
     name: Static Analysis
     runs-on: ubuntu-latest
     env:
-      # `XLA_TARGET` (not `EXLA_TARGET`) selects the prebuilt XLA binary.
-      # `cpu` downloads a build with no CUDA linkage at all, so no GPU
-      # libraries are needed on the runner. See docs/CI.md §6.1.
-      XLA_TARGET: cpu
+      # NOTE: `EXLA_TARGET`/`EXLA_BUILD` are read by nothing -- they are dead
+      # config. They are kept because removing them would change nothing, but
+      # *replacing* them with `XLA_TARGET=cpu` changes the deps cache key and
+      # forces a cold `exla` NIF compile, which fails on an exla 1.0.0 / GCC 15
+      # incompatibility (`fine.hpp: try_decode`). See docs/CI.md §6.1.
+      EXLA_TARGET: cpu
+      EXLA_BUILD: "false"
       NX_DEFAULT_BACKEND: Nx.BinaryBackend
     strategy:
       matrix:
@@ -185,11 +185,8 @@ jobs:
         uses: actions/cache@v3
         with:
           path: deps
-          key: ${{ runner.os }}-mix-${{ env.XLA_TARGET }}-${{ hashFiles('**/mix.lock') }}
-          # Scoped to XLA_TARGET: a bare `Linux-mix-` prefix matches caches
-          # built before the target was part of the key, restoring a cuda13
-          # exla build into a cpu job. See docs/CI.md §10.1.
-          restore-keys: ${{ runner.os }}-mix-${{ env.XLA_TARGET }}-
+          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-
       - name: Restore PLT cache
         uses: actions/cache@v3
         with:

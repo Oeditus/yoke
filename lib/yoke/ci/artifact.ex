@@ -103,12 +103,16 @@ defmodule Yoke.CI.Artifact do
   # Internals
   # ---------------------------------------------------------------------
 
+  # `branch` is what Phase 3.2's `GET /v1/baselines?repo=&branch=` keys on, so
+  # it must be present even though nothing in v1 consumes it yet. Adding it now
+  # costs nothing; retrofitting it would mean every stored run lacks the field.
   defp normalize_identity(identity) when is_map(identity) do
     %{
       "base_sha" => identity[:base_sha],
       "head_sha" => identity[:head_sha],
       "pr_number" => identity[:pr_number],
-      "repository" => identity[:repository]
+      "repository" => identity[:repository],
+      "branch" => identity[:branch]
     }
   end
 

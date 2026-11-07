@@ -242,7 +242,9 @@ defmodule Yoke.CI.Review do
       base_sha: context.base_sha,
       head_sha: context.head_sha,
       pr_number: context.pr_number,
-      repository: context.repository
+      repository: context.repository,
+      # `branch` is what Phase 3.2's baseline-suppression endpoint keys on.
+      branch: Map.get(context, :head)
     }
   end
 
