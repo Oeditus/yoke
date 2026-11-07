@@ -87,7 +87,9 @@ defmodule Yoke.MCP.ServerManager do
 
   @impl true
   def init(_opts) do
-    state = %{servers: %{}, waiting_callers: [], dllb_projects: MapSet.new()}
+    Process.flag(:trap_exit, true)
+
+    state = %{servers: %{}, waiting_callers: [], dllb_projects: MapSet.new(), ragex_task: nil}
 
     if Application.get_env(:yoke, :auto_start_ragex, true) do
       send(self(), :auto_start_ragex)
@@ -98,20 +100,14 @@ defmodule Yoke.MCP.ServerManager do
   end
 
   @impl true
+  def handle_info(:auto_start_ragex, %{ragex_status: :stopped} = state) do
+    {:noreply, state}
+  end
+
   def handle_info(:auto_start_ragex, state) do
     cwd = project_dir()
-
-    Task.start(fn ->
-      case do_start_ragex(cwd, []) do
-        {:ok, dir, tools_registered} ->
-          GenServer.cast(@name, {:ragex_started, dir, tools_registered})
-
-        {:error, reason} ->
-          GenServer.cast(@name, {:ragex_failed, reason})
-      end
-    end)
-
-    {:noreply, %{state | ragex_status: :starting}}
+    task = start_ragex_task(cwd, [])
+    {:noreply, %{state | ragex_status: :starting, ragex_task: task}}
   end
 
   def handle_info(msg, state) do
@@ -120,6 +116,10 @@ defmodule Yoke.MCP.ServerManager do
   end
 
   @impl true
+  def handle_cast({:ragex_started, _dir, _tools}, %{ragex_status: :stopped} = state) do
+    {:noreply, state}
+  end
+
   def handle_cast({:ragex_started, dir, tools_registered}, state) do
     new_servers =
       Map.put(state.servers, "ragex", %{
@@ -135,10 +135,15 @@ defmodule Yoke.MCP.ServerManager do
       caller -> GenServer.reply(caller, :ok)
     end)
 
-    {:noreply, %{state | servers: new_servers, ragex_status: :ready, waiting_callers: []}}
+    {:noreply,
+     %{state | servers: new_servers, ragex_status: :ready, waiting_callers: [], ragex_task: nil}}
   end
 
   @impl true
+  def handle_cast({:ragex_failed, _reason}, %{ragex_status: :stopped} = state) do
+    {:noreply, state}
+  end
+
   def handle_cast({:ragex_failed, reason}, state) do
     Logger.warning("󱐋🔌 Ragex auto-start notice: #{inspect(reason)}")
 
@@ -147,7 +152,7 @@ defmodule Yoke.MCP.ServerManager do
       caller -> GenServer.reply(caller, {:error, reason})
     end)
 
-    {:noreply, %{state | ragex_status: :ready, waiting_callers: []}}
+    {:noreply, %{state | ragex_status: :ready, waiting_callers: [], ragex_task: nil}}
   end
 
   @impl true
@@ -208,18 +213,15 @@ defmodule Yoke.MCP.ServerManager do
         {:noreply, %{state | waiting_callers: [{:start, from} | state.waiting_callers]}}
 
       _ ->
-        Task.start(fn ->
-          case do_start_ragex(target_dir, opts) do
-            {:ok, dir, tools_registered} ->
-              GenServer.cast(@name, {:ragex_started, dir, tools_registered})
+        task = start_ragex_task(target_dir, opts)
 
-            {:error, reason} ->
-              GenServer.cast(@name, {:ragex_failed, reason})
-          end
-        end)
-
-        {:noreply, %{state | ragex_status: :starting, waiting_callers: [{:start, from}]}}
+        {:noreply,
+         %{state | ragex_status: :starting, waiting_callers: [{:start, from}], ragex_task: task}}
     end
+  end
+
+  def handle_call({:activate_dllb_project, _target_dir}, _from, %{ragex_status: :stopped} = state) do
+    {:reply, {:error, :shutting_down}, state}
   end
 
   def handle_call({:activate_dllb_project, target_dir}, _from, state) do
@@ -238,10 +240,23 @@ defmodule Yoke.MCP.ServerManager do
 
   @impl true
   def handle_call(:stop_ragex, _from, state) do
+    stop_ragex_task(state.ragex_task)
     Enum.each(state.dllb_projects, &stop_dllb_project/1)
 
+    Enum.each(state.waiting_callers, fn
+      {_tag, caller} -> GenServer.reply(caller, {:error, :shutting_down})
+      caller -> GenServer.reply(caller, {:error, :shutting_down})
+    end)
+
     {:reply, :ok,
-     %{state | servers: Map.delete(state.servers, "ragex"), dllb_projects: MapSet.new()}}
+     %{
+       state
+       | servers: Map.delete(state.servers, "ragex"),
+         dllb_projects: MapSet.new(),
+         ragex_status: :stopped,
+         ragex_task: nil,
+         waiting_callers: []
+     }}
   end
 
   @impl true
@@ -281,6 +296,37 @@ defmodule Yoke.MCP.ServerManager do
       end)
 
     {:reply, {:ok, results}, state}
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    stop_ragex_task(state.ragex_task)
+    Enum.each(state.dllb_projects, &stop_dllb_project/1)
+    :ok
+  end
+
+  defp start_ragex_task(target_dir, opts) do
+    {:ok, pid} =
+      Task.start(fn ->
+        case do_start_ragex(target_dir, opts) do
+          {:ok, dir, tools_registered} ->
+            GenServer.cast(@name, {:ragex_started, dir, tools_registered})
+
+          {:error, reason} ->
+            GenServer.cast(@name, {:ragex_failed, reason})
+        end
+      end)
+
+    pid
+  end
+
+  defp stop_ragex_task(nil), do: :ok
+
+  defp stop_ragex_task(pid) do
+    # Cancel indexing before removing its instances. Late activation calls
+    # are rejected once the manager enters :stopped.
+    Process.exit(pid, :kill)
+    :ok
   end
 
   defp do_start_ragex(target_dir, opts) do

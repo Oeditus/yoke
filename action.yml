@@ -162,9 +162,12 @@ runs:
         path: |
           .ragex
           .yoke
-        key: ${{ runner.os }}-ragex-${{ hashFiles('**/*.ex', '**/*.exs', 'mix.lock', '.yoke/config.json', '.yoke/policy.json') }}
+          !.ragex/**/dllb.instance.json
+          !.ragex/**/*.sock
+        # v2 must not restore old archives containing runner-local PIDs/ports.
+        key: ${{ runner.os }}-ragex-v2-${{ hashFiles('**/*.ex', '**/*.exs', 'mix.lock', '.yoke/config.json', '.yoke/policy.json') }}
         restore-keys: |
-          ${{ runner.os }}-ragex-
+          ${{ runner.os }}-ragex-v2-
 
     - name: Resolve review range
       id: range

@@ -68,9 +68,11 @@ jobs:
           path: |
             .ragex
             .yoke
-          key: ${{ runner.os }}-ragex-${{ hashFiles('**/*.ex', '**/*.exs', 'mix.lock', '.yoke/config.json', '.yoke/policy.json') }}
+            !.ragex/**/dllb.instance.json
+            !.ragex/**/*.sock
+          key: ${{ runner.os }}-ragex-v2-${{ hashFiles('**/*.ex', '**/*.exs', 'mix.lock', '.yoke/config.json', '.yoke/policy.json') }}
           restore-keys: |
-            ${{ runner.os }}-ragex-
+            ${{ runner.os }}-ragex-v2-
 
       - name: Run tests with coverage
         env:

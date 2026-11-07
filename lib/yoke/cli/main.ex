@@ -37,6 +37,12 @@ defmodule Yoke.CLI.Main do
   def subcommands, do: @subcommands
 
   def main(args) do
+    run(args)
+  after
+    shutdown_ragex()
+  end
+
+  defp run(args) do
     # Probe terminal capability FIRST, before anything else can write output.
     # `Application.ensure_all_started/1` below logs startup lines through
     # `Yoke.CLI.LogFormatter`, so priming after it would let ANSI escapes
@@ -78,6 +84,14 @@ defmodule Yoke.CLI.Main do
       nil ->
         run_legacy(args)
     end
+  end
+
+  defp shutdown_ragex do
+    Yoke.MCP.ServerManager.stop_ragex()
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
   end
 
   @doc """
@@ -262,12 +276,6 @@ defmodule Yoke.CLI.Main do
 
     result = Repl.handle_input(prompt, session_pid, session_id)
 
-    try do
-      Yoke.MCP.ServerManager.stop_ragex()
-    catch
-      _, _ -> :ok
-    end
-
     Repl.print_resume_banner(session_id)
 
     case result do
@@ -281,6 +289,9 @@ defmodule Yoke.CLI.Main do
   # Real CLI invocations always halt; tests set
   # `Application.put_env(:yoke, :system_halt_enabled, false)`.
   defp halt(code) do
+    # System.halt skips `after` blocks and OTP terminate callbacks.
+    shutdown_ragex()
+
     if Application.get_env(:yoke, :system_halt_enabled, true) do
       System.halt(code)
     else

@@ -44,5 +44,6 @@ oeditus_credo-*.tar
 # Local Ragex knowledge-graph/dllb database for this project (generated data).
 /.ragex/
 
-# Yoke local session checkpoints and config
-/.yoke/
+# Yoke local session checkpoints and config, except the shared CI policy
+/.yoke/*
+!/.yoke/policy.json

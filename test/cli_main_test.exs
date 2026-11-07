@@ -1,5 +1,5 @@
 defmodule Yoke.CLIMainTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Yoke.CLI.Main
 

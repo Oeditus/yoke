@@ -607,13 +607,29 @@ step:
     path: |
       .ragex
       .yoke
-    key: ragex-${{ hashFiles('**/*.ex', '**/*.exs', 'mix.lock') }}
+      !.ragex/**/dllb.instance.json
+      !.ragex/**/*.sock
+    key: ragex-v2-${{ hashFiles('**/*.ex', '**/*.exs', 'mix.lock') }}
 - run: yoke rag --index
 ```
 
 `.ragex` holds the knowledge graph (`dllb.redb` plus its tantivy search index);
 `.yoke` holds the repo config/policy and session checkpoints. Both are keyed on
 the sources they describe, so a stale graph is never reused after a code change.
+
+`dllb.instance.json` is runtime metadata (PID and TCP port), not knowledge-graph
+data. It and Unix sockets must never be cached between runners. The `ragex-v2`
+cache namespace deliberately does not fall back to old `ragex-` archives, which
+may contain stale PIDs. The database remains cached.
+
+Every CLI exit, including subcommands, one-shot prompts, usage errors, and
+exceptions, stops Ragex instances activated by Yoke before the VM exits.
+Pending background startup is cancelled before cleanup and late activations
+are rejected, so it cannot recreate the instance file during shutdown.
+Owned daemons are stopped and their instance metadata removed; borrowed
+daemons are only disconnected, and unrelated instances are left alone.
+Uncatchable termination such as `SIGKILL` can still leave runtime metadata,
+which is another reason it must not enter the cache.
 
 ### 10.1.1 `dllb-server` is not in the dependency tree
 
