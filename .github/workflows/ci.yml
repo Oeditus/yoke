@@ -40,7 +40,11 @@ jobs:
         uses: actions/cache@v3
         with:
           path: deps
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          # The OTP version is part of the key: `exla`'s NIF is compiled
+          # against a specific ERTS, and loading an OTP 29 build under OTP 28
+          # fails with `bad_lib`. With a single OTP version this was harmless;
+          # with a matrix it silently poisons the shared cache.
+          key: ${{ runner.os }}-mix-otp${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: ${{ runner.os }}-mix-
       - name: Install dependencies
         run: mix deps.get
@@ -65,6 +69,9 @@ jobs:
       NX_DEFAULT_BACKEND: Nx.BinaryBackend
       # Proves the presentation seam degrades: nothing below may emit ANSI.
       CI: "true"
+      # Every step in this job must use the same env, otherwise `Compile`
+      # builds :test beams and the `mix run` steps look for :dev ones.
+      MIX_ENV: test
     steps:
       - uses: actions/checkout@v3
       - uses: erlef/setup-beam@v1
@@ -80,8 +87,11 @@ jobs:
         uses: actions/cache@v3
         with:
           path: deps
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-mix-
+          # The OTP version is part of the key: `exla`'s NIF is compiled
+          # against a specific ERTS, and loading an OTP 29 build under OTP 28
+          # fails with `bad_lib`. This job pins OTP 29 (no matrix).
+          key: ${{ runner.os }}-mix-otp29-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-otp29-
       - name: Install dependencies
         run: mix deps.get
 
@@ -91,7 +101,7 @@ jobs:
       # (ragex alone is ~205 modules) takes minutes, so a timeout meant to
       # catch a *hang* must not also have to cover compilation.
       - name: Compile
-        run: MIX_ENV=test mix compile
+        run: mix compile
 
       - name: One-shot prompt completes with stdin closed
         run: |
@@ -185,7 +195,11 @@ jobs:
         uses: actions/cache@v3
         with:
           path: deps
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          # The OTP version is part of the key: `exla`'s NIF is compiled
+          # against a specific ERTS, and loading an OTP 29 build under OTP 28
+          # fails with `bad_lib`. With a single OTP version this was harmless;
+          # with a matrix it silently poisons the shared cache.
+          key: ${{ runner.os }}-mix-otp${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: ${{ runner.os }}-mix-
       - name: Restore PLT cache
         uses: actions/cache@v3
