@@ -177,11 +177,8 @@ defmodule Yoke.Config do
 
   @doc "Loads combined configuration (global + workspace override)."
   def load_config(cwd \\ ".") do
-    global_path = Path.expand("~/.yoke/config.json")
-    local_path = Path.join(cwd, ".yoke/config.json")
-
-    global_cfg = read_json_config(global_path)
-    local_cfg = read_json_config(local_path)
+    global_cfg = read_json_config(global_config_path())
+    local_cfg = read_json_config(local_config_path(cwd))
 
     merged_cfg = Map.merge(global_cfg, local_cfg)
 
@@ -228,34 +225,116 @@ defmodule Yoke.Config do
     end
   end
 
-  def save_global_config(new_config) do
-    global_path = Path.expand("~/.yoke/config.json")
+  @doc """
+  Returns the path of the workspace-local config file for `cwd`.
 
-    with :ok <- global_path |> Path.dirname() |> File.mkdir_p(),
-         {:ok, json} <- Yoke.Json.encode(new_config, pretty: true),
-         :ok <- File.write(global_path, json) do
-      {:ok, global_path}
+  `cwd` is expanded first: callers that pass `"."` (the common case) must not
+  have their writes land in the *process* working directory when it differs
+  from the workspace the user is looking at, and an unexpanded relative path
+  would make `Path.dirname/1` create `.yoke/` relative to wherever the VM
+  happens to be.
+  """
+  @spec local_config_path(String.t()) :: String.t()
+  def local_config_path(cwd \\ ".") do
+    Path.join(Path.expand(cwd), ".yoke/config.json")
+  end
+
+  @doc "Returns the path of the global config file (`~/.yoke/config.json`)."
+  @spec global_config_path() :: String.t()
+  def global_config_path, do: Path.expand("~/.yoke/config.json")
+
+  @doc """
+  Persists a single key/value pair into the workspace-local config
+  (`.yoke/config.json`) and returns `{:ok, path}`.
+
+  Unlike `save_config/2`, this performs a read-modify-write of the *raw file
+  on disk* rather than dumping a merged snapshot. That distinction matters:
+  `load_config/1` merges `~/.yoke/config.json` into the result, so writing a
+  loaded snapshot back into the workspace file silently copies every global
+  setting into the project (and freezes it there, shadowing later global
+  changes). It also means a concurrent writer's keys are preserved instead of
+  being clobbered by a stale in-memory copy.
+
+  Writes are atomic (temp file + rename) and the parent directory is created
+  on demand, so a crash mid-write can never leave a truncated config behind.
+  """
+  @spec put_local(String.t(), term(), String.t()) :: {:ok, String.t()} | {:error, String.t()}
+  def put_local(key, value, cwd \\ ".") when is_binary(key) do
+    path = local_config_path(cwd)
+    current = read_json_config(path)
+    write_json_atomic(path, Map.put(current, key, value))
+  end
+
+  @doc """
+  Persists a single key/value pair into the global config
+  (`~/.yoke/config.json`) and returns `{:ok, path}`.
+  """
+  @spec put_global(String.t(), term()) :: {:ok, String.t()} | {:error, String.t()}
+  def put_global(key, value) when is_binary(key) do
+    path = global_config_path()
+    current = read_json_config(path)
+    write_json_atomic(path, Map.put(current, key, value))
+  end
+
+  @doc """
+  Writes `config` to `path` atomically: encode, write to a sibling temp file,
+  `fsync`, then rename over the target.
+
+  A plain `File.write/2` truncates the destination before writing, so a crash,
+  a full disk, or a kill signal in between leaves an empty or half-written
+  JSON file — which `load_config/1` then silently treats as `%{}`, i.e. every
+  setting the user saved is gone. Rename is atomic on POSIX, so the target is
+  either the old file or the complete new one, never a partial.
+  """
+  @spec write_json_atomic(String.t(), map()) :: {:ok, String.t()} | {:error, String.t()}
+  def write_json_atomic(path, config) when is_map(config) do
+    tmp = "#{path}.#{System.unique_integer([:positive])}.tmp"
+
+    with :ok <- path |> Path.dirname() |> File.mkdir_p(),
+         {:ok, json} <- Yoke.Json.encode(config, pretty: true),
+         :ok <- File.write(tmp, json),
+         :ok <- fsync(tmp),
+         :ok <- File.rename(tmp, path) do
+      {:ok, path}
     else
-      err -> {:error, "Failed to save config to #{global_path}: #{inspect(err)}"}
+      err ->
+        _ = File.rm(tmp)
+        {:error, "Failed to save config to #{path}: #{inspect(err)}"}
+    end
+  end
+
+  defp fsync(path) do
+    case File.open(path, [:read, :write, :binary]) do
+      {:ok, io} ->
+        result = :file.sync(io)
+        File.close(io)
+        result
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  def save_global_config(new_config) do
+    global_path = global_config_path()
+
+    case write_json_atomic(global_path, new_config) do
+      {:ok, path} -> {:ok, path}
+      {:error, reason} -> {:error, reason}
     end
   end
 
   @doc "Saves workspace local configuration file (.yoke/config.json)."
   def save_config(config, cwd \\ ".") do
-    local_path = Path.join(cwd, ".yoke/config.json")
-
-    with :ok <- local_path |> Path.dirname() |> File.mkdir_p(),
-         {:ok, json} <- Yoke.Json.encode(config, pretty: true),
-         :ok <- File.write(local_path, json) do
-      :ok
-    else
-      err -> {:error, "Failed to save local config: #{inspect(err)}"}
+    case write_json_atomic(local_config_path(cwd), config) do
+      {:ok, _path} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
   @doc "Persists a per-tool permission policy override in global system config (~/.yoke/config.json)."
   def set_global_tool_permission(tool_name, policy) do
-    global_path = Path.expand("~/.yoke/config.json")
+    global_path = global_config_path()
     global_cfg = read_json_config(global_path)
     perms = Map.get(global_cfg, "tool_permissions", %{})
     updated_perms = Map.put(perms, tool_name, policy)
@@ -263,13 +342,26 @@ defmodule Yoke.Config do
     save_global_config(updated_cfg)
   end
 
-  @doc "Persists a per-tool permission policy override in local workspace config (.yoke/config.json)."
+  @doc """
+  Persists a per-tool permission policy override in local workspace config
+  (`.yoke/config.json`).
+
+  This is the "Allow/Deny always (save to project config)" path. It used to
+  write back a `load_config/1` snapshot — i.e. the whole merged global+local
+  config — which both copied global settings into the project file and could
+  resurrect stale values. It now patches only the `tool_permissions` map in
+  the on-disk file.
+  """
   def set_tool_permission(tool_name, policy, cwd \\ ".") do
-    current_cfg = load_config(cwd)
+    path = local_config_path(cwd)
+    current_cfg = read_json_config(path)
     perms = Map.get(current_cfg, "tool_permissions", %{})
     updated_perms = Map.put(perms, tool_name, policy)
-    updated_cfg = Map.put(current_cfg, "tool_permissions", updated_perms)
-    save_config(updated_cfg, cwd)
+
+    case write_json_atomic(path, Map.put(current_cfg, "tool_permissions", updated_perms)) do
+      {:ok, _path} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp read_json_config(path) do

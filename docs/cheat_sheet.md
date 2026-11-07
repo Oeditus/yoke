@@ -41,6 +41,11 @@ yoke --model deepseek-reasoner "Diagnose race condition in @lib/worker.ex"
 # Run in background self-update mode
 yoke --update
 
+# Replay the last terminal command, analyse the failure, and plan a fix
+yoke fix
+yoke fix --apply
+yoke fix --no-run "mix test test/foo_test.exs:42"
+
 # Display CLI help menu
 yoke --help
 ```
@@ -56,6 +61,19 @@ yoke --help
 | `--node <name>` | — | Start local Erlang distributed node |
 | `--connect <node>`| — | Connect to remote Erlang Hands worker node |
 | `--plugin <path>` | — | Load external Elixir plugin script (`.ex` or `.exs`) |
+
+### CLI Subcommands
+| Subcommand | Description |
+| :--- | :--- |
+| `yoke review` | CI code review of a branch range |
+| `yoke lint` | Run the project's linters in CI mode |
+| `yoke describe` | Summarize the change set |
+| `yoke run <workflow> "<task>"` | Run a named workflow end-to-end |
+| `yoke audit` | Emit the AI Guard audit trail as a CI artifact |
+| `yoke fix [options] ["<command>"]` | Replay the last terminal command, analyse the failure, and plan a fix |
+| `yoke rag` | Query the Ragex knowledge graph |
+
+`yoke fix` options: `-n/--no-run` (plan only), `-a/--apply` (let the agent fix it), `-p/--previous` (use the command before the last one), `--command <cmd>`, `--history-file <path>`, `--timeout <ms>`, `--session <id>`. Exit codes: `0` succeeded, `1` failed and a plan was produced, `2` usage error, `3` no command found in history.
 
 ---
 
@@ -124,6 +142,8 @@ my_app deepseek-chat >
 | `/subagent <prompt>` | Spawn a background subagent worker for heavy sub-tasks | `/subagent "Search all TODOs"` |
 | `/jobs [kill <id>|kill all]` | List running background jobs or kill specific/all jobs | `/jobs kill all` |
 | `/workflow [cmd]` | Run customizable multi-step workflows: `list\|run\|status\|resume\|abort\|init` | `/workflow run elixir Add dark mode` |
+| `/audit [code\|ux]` | Whole-project audit: strong parts, weaknesses & glitches, codebase + UX improvement ideas | `/audit` |
+| `/linter <tool> [project\|diff\|cr]` | Run `oeditus_credo`, `propwise`, `credo`, or `dialyzer` (alias: `/lint`) | `/linter credo diff` |
 | `/cb` \| `/clipboard` | Copy latest assistant response to system clipboard | `/cb` |
 | `/clear` | Clear terminal output screen | `/clear` |
 | `/reset` | Reset conversation context, history, checkpoints, and clear screen | `/reset` |

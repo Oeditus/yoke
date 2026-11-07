@@ -127,6 +127,7 @@ defmodule Yoke.CLI.Formatter do
       #{cyan()}!command#{reset()}                 Execute shell command directly (e.g. !ls -la or !git status)
       #{cyan()}!!#{reset()}                      Flip into/out of pure console mode (plain shell passthrough, no #{name}/tooling)
       #{cyan()}/alias [list|show|add|rm|run]#{reset()} Manage or execute custom session command aliases (or /<alias>)
+      #{cyan()}/audit [code|ux]#{reset()}     Audit the whole project: strong parts, weaknesses, codebase & UX improvements
       #{cyan()}/bash [stats|export|clear]#{reset()} View bash command calls, counts, frequencies & export Ragex tool analogs
       #{cyan()}/cb#{reset()} or #{cyan()}/clipboard#{reset()}       Copy latest #{name} response to system clipboard (Markdown)
       #{cyan()}/checkpoint [label]#{reset()}     Create a temporal state snapshot

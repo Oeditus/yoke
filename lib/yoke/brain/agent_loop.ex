@@ -29,7 +29,27 @@ defmodule Yoke.Brain.AgentLoop do
     mcp_ragex_structure
   )
 
-  @repeatable_tools ~w(bash cmd run_command shell exec job_status ask_question user_input read_file read_files list_dir grep_search glob_search git_status git_diff git_root mcp_ragex_grep mcp_ragex_search_code mcp_ragex_view mcp_ragex_structure)
+  # Tools whose repeated invocation with identical arguments is *legitimate*
+  # because the point of the repeat is to observe changing external state
+  # (a running process, a mutated workspace, a fresh listing). For a period-1
+  # cycle of only these tools the threshold is 3 identical calls instead of 2.
+  #
+  # `job_status` is deliberately absent: it is a *terminal* status probe, not a
+  # live one. The documented contract (see the `bash`/`job_status` tool
+  # descriptions) is that background jobs notify the session automatically on
+  # completion, so a model that calls `job_status` with the same `job_id` and
+  # `tail` over and over is polling a value that will not change until the job
+  # ends -- the textbook infinite tool loop. Treating it as repeatable gave
+  # such a loop one extra free iteration and, worse, made the loop notice read
+  # as a false positive to reviewers. It is now a plain (non-repeatable) tool.
+  @repeatable_tools ~w(bash cmd run_command shell exec ask_question user_input read_file read_files list_dir grep_search glob_search git_status git_diff git_root mcp_ragex_grep mcp_ragex_search_code mcp_ragex_view mcp_ragex_structure)
+
+  # Tools that are never part of a *productive* cycle, regardless of period.
+  # A period-N cycle containing one of these is always a stall: e.g.
+  # `bash(compile) -> job_status(job_1) -> bash(compile) -> job_status(job_1)`
+  # would otherwise slip past the period-2 threshold (which is 2) even though
+  # the `job_status` half of the cycle is pure waiting.
+  @non_cycling_tools ~w(job_status job_info)
 
   @doc """
   Detects whether the sequence of tool calls in the current turn exhibits a repeating cycle.
@@ -39,7 +59,13 @@ defmodule Yoke.Brain.AgentLoop do
   - Period 1 repeatable tools (e.g. bash probes): allows up to 2 calls, triggers on 3.
   - Period >= 2 (e.g. A -> B -> A -> B): triggers after 2 complete repetitions (>= 4 calls).
 
-  Returns `{:loop, %{period: p, count: c, cycle: pattern}}` or `:ok`.
+  `job_status` is intentionally NOT repeatable: waiting on a background job with
+  the same `job_id` yields no new information (the job notifies the session on
+  completion), so two identical `job_status` calls in a row are already a loop.
+
+  Returns `{:loop, %{period: p, count: c, cycle: pattern, waiting?: boolean}}`
+  or `:ok`. `waiting?` is true when the cycle contains a pure-waiting probe
+  (`job_status`), which callers use to pick a more specific loop notice.
   """
   def detect_tool_loop(messages, new_tool_calls, opts \\ [])
 
@@ -47,6 +73,7 @@ defmodule Yoke.Brain.AgentLoop do
       when is_list(messages) and is_list(new_tool_calls) and new_tool_calls != [] do
     max_period = Keyword.get(opts, :max_period, 4)
     repeatable_tools = Keyword.get(opts, :repeatable_tools, @repeatable_tools)
+    non_cycling_tools = Keyword.get(opts, :non_cycling_tools, @non_cycling_tools)
 
     history_steps = extract_turn_tool_steps(messages)
     current_step = normalize_tool_calls(new_tool_calls)
@@ -55,11 +82,26 @@ defmodule Yoke.Brain.AgentLoop do
       :ok
     else
       full_sequence = history_steps ++ [current_step]
-      check_cycles(full_sequence, max_period, repeatable_tools)
+      check_cycles(full_sequence, max_period, repeatable_tools, non_cycling_tools)
     end
   end
 
   def detect_tool_loop(_messages, _new_tool_calls, _opts), do: :ok
+
+  @doc """
+  Returns the default list of tools whose identical repetition is tolerated
+  (they observe changing external state), i.e. the tools that get a period-1
+  threshold of 3 instead of 2.
+  """
+  @spec repeatable_tools() :: [String.t()]
+  def repeatable_tools, do: @repeatable_tools
+
+  @doc """
+  Returns the default list of tools that must never appear in a detected
+  cycle (pure-waiting probes such as `job_status`).
+  """
+  @spec non_cycling_tools() :: [String.t()]
+  def non_cycling_tools, do: @non_cycling_tools
 
   @doc "Detects whether the exact same tool calls with identical arguments were executed in the previous turn or form a repeating cycle."
   def duplicate_tool_calls?(messages, new_tool_calls, opts \\ []) do
@@ -173,7 +215,7 @@ defmodule Yoke.Brain.AgentLoop do
 
   defp format_args_for_display(args), do: inspect(args)
 
-  defp check_cycles(sequence, max_period, repeatable_tools) do
+  defp check_cycles(sequence, max_period, repeatable_tools, non_cycling_tools) do
     seq_len = length(sequence)
 
     Enum.find_value(1..max_period, :ok, fn period ->
@@ -183,7 +225,13 @@ defmodule Yoke.Brain.AgentLoop do
         threshold = repetition_threshold(candidate_cycle, period, repeatable_tools)
 
         if repeats >= threshold do
-          {:loop, %{period: period, count: repeats, cycle: candidate_cycle}}
+          {:loop,
+           %{
+             period: period,
+             count: repeats,
+             cycle: candidate_cycle,
+             waiting?: cycle_contains?(candidate_cycle, non_cycling_tools)
+           }}
         else
           nil
         end
@@ -205,6 +253,12 @@ defmodule Yoke.Brain.AgentLoop do
 
   defp repetition_threshold(_cycle, _period, _repeatable_tools) do
     2
+  end
+
+  defp cycle_contains?(cycle, tool_names) do
+    Enum.any?(cycle, fn step ->
+      Enum.any?(step, fn {name, _args} -> name in tool_names end)
+    end)
   end
 
   defp count_cycle_repeats(sequence, cycle, period) do

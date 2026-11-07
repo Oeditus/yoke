@@ -57,6 +57,38 @@ defmodule Yoke.CLIReplTest do
     assert :continue = Repl.handle_input("/jobs", pid, id)
   end
 
+  describe "/audit command surface" do
+    test "is advertised in the help menu" do
+      assert Yoke.CLI.Formatter.help_menu() =~ "/audit"
+    end
+
+    test "does not fall through to the unknown-command handler" do
+      # `/audit` must be a real clause in `handle_input/3`, not swallowed by
+      # the generic `"/" <> command` catch-all (which would print
+      # "Unknown command"). We assert on the dispatch itself rather than on
+      # the agent turn, which would need a live API key.
+      #
+      # `function_exported?/3` is false for an unloaded module, so load first
+      # rather than depending on some earlier test having touched `Repl`.
+      _ = Code.ensure_loaded(Repl)
+      assert function_exported?(Repl, :handle_input, 3)
+
+      out =
+        ExUnit.CaptureIO.capture_io(fn ->
+          # The audit turn will fail without an API key; what matters is that
+          # we got past dispatch into the audit path (which prints the
+          # measured facts) instead of the unknown-command error.
+          try do
+            Repl.handle_input("/audit", self(), "audit_test_session")
+          catch
+            _, _ -> :ok
+          end
+        end)
+
+      refute out =~ "Unknown command '/audit'"
+    end
+  end
+
   describe "/jobs command surface" do
     test "lists running jobs when empty or active", %{session_pid: pid, session_id: id} do
       Yoke.TaskEngine.JobManager.kill_all_jobs()

@@ -148,6 +148,119 @@ defmodule Yoke.ConfigTest do
     assert File.read!(config_path) == original_content
   end
 
+  describe "project config persistence (issue: 'save to project config')" do
+    setup do
+      tmp_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "config_persist_test_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp_dir)
+      on_exit(fn -> File.rm_rf!(tmp_dir) end)
+      {:ok, tmp_dir: tmp_dir}
+    end
+
+    test "put_local/3 writes the key immediately to .yoke/config.json", %{tmp_dir: dir} do
+      assert {:ok, path} = Config.put_local("god_mode", true, dir)
+      assert path == Path.join(Path.expand(dir), ".yoke/config.json")
+      assert File.exists?(path)
+
+      # Readable straight from disk -- no session state involved.
+      on_disk = Config.read_json_file(path)
+      assert on_disk["god_mode"] == true
+    end
+
+    test "put_local/3 survives a 'new session' (fresh load_config)", %{tmp_dir: dir} do
+      assert {:ok, _} = Config.put_local("plan_gate_enabled", false, dir)
+      assert {:ok, _} = Config.put_local("assistant_name", "Persisted", dir)
+
+      # A new session only sees what load_config/1 reads back from disk.
+      reloaded = Config.load_config(dir)
+      assert reloaded["plan_gate_enabled"] == false
+      assert reloaded["assistant_name"] == "Persisted"
+    end
+
+    test "put_local/3 does not copy global settings into the project file", %{tmp_dir: dir} do
+      # Seed a project file with exactly one key.
+      assert {:ok, _} = Config.put_local("model", "project-model", dir)
+
+      # A second, unrelated write must not pull in every default/global key.
+      assert {:ok, _} = Config.put_local("god_mode", true, dir)
+
+      on_disk = Config.read_json_file(Config.local_config_path(dir))
+      assert on_disk == %{"model" => "project-model", "god_mode" => true}
+    end
+
+    test "put_local/3 preserves keys written by a concurrent writer", %{tmp_dir: dir} do
+      assert {:ok, _} = Config.put_local("model", "a", dir)
+      assert {:ok, _} = Config.put_local("god_mode", true, dir)
+      assert {:ok, _} = Config.put_local("plan_gate_enabled", false, dir)
+
+      on_disk = Config.read_json_file(Config.local_config_path(dir))
+      assert on_disk["model"] == "a"
+      assert on_disk["god_mode"] == true
+      assert on_disk["plan_gate_enabled"] == false
+    end
+
+    test "put_local/3 creates the .yoke directory on demand", %{tmp_dir: dir} do
+      refute File.exists?(Path.join(dir, ".yoke"))
+      assert {:ok, _} = Config.put_local("god_mode", true, dir)
+      assert File.dir?(Path.join(dir, ".yoke"))
+    end
+
+    test "write_json_atomic/2 leaves no temp file behind", %{tmp_dir: dir} do
+      path = Path.join(dir, ".yoke/config.json")
+      assert {:ok, ^path} = Config.write_json_atomic(path, %{"a" => 1})
+
+      leftovers = Path.wildcard(Path.join(dir, ".yoke/*.tmp"))
+      assert leftovers == []
+    end
+
+    test "write_json_atomic/2 replaces an existing file completely", %{tmp_dir: dir} do
+      path = Path.join(dir, ".yoke/config.json")
+      assert {:ok, _} = Config.write_json_atomic(path, %{"a" => 1, "b" => 2})
+      assert {:ok, _} = Config.write_json_atomic(path, %{"c" => 3})
+
+      assert Config.read_json_file(path) == %{"c" => 3}
+    end
+
+    test "set_tool_permission/3 persists immediately and survives a reload", %{tmp_dir: dir} do
+      assert :ok = Config.set_tool_permission("bash", "allow", dir)
+
+      on_disk = Config.read_json_file(Config.local_config_path(dir))
+      assert on_disk["tool_permissions"] == %{"bash" => "allow"}
+
+      assert Config.load_config(dir)["tool_permissions"]["bash"] == "allow"
+    end
+
+    test "set_tool_permission/3 does not copy global settings into the project file",
+         %{tmp_dir: dir} do
+      assert :ok = Config.set_tool_permission("bash", "allow", dir)
+
+      on_disk = Config.read_json_file(Config.local_config_path(dir))
+      assert Map.keys(on_disk) == ["tool_permissions"]
+    end
+
+    test "set_tool_permission/3 keeps previously saved permissions", %{tmp_dir: dir} do
+      assert :ok = Config.set_tool_permission("bash", "allow", dir)
+      assert :ok = Config.set_tool_permission("write_file", "deny", dir)
+
+      perms = Config.load_config(dir)["tool_permissions"]
+      assert perms["bash"] == "allow"
+      assert perms["write_file"] == "deny"
+    end
+
+    test "local_config_path/1 expands relative cwds", %{tmp_dir: dir} do
+      assert Config.local_config_path(dir) == Path.join(Path.expand(dir), ".yoke/config.json")
+      assert Path.type(Config.local_config_path(dir)) == :absolute
+    end
+
+    test "global_config_path/0 points at ~/.yoke/config.json" do
+      assert Config.global_config_path() == Path.expand("~/.yoke/config.json")
+    end
+  end
+
   test "sets per-tool permission policy in config" do
     tmp_dir =
       Path.join(
@@ -173,6 +286,19 @@ defmodule Yoke.ConfigTest do
       )
 
     File.mkdir_p!(tmp_dir)
+
+    # `set_global_tool_permission/2` writes the *real* `~/.yoke/config.json`.
+    # Snapshot it first and restore it afterwards, so this test can never leak
+    # a `glob_tool_test` key into the developer's (or another test's) config.
+    global_path = Config.global_config_path()
+    original_global = if File.exists?(global_path), do: File.read!(global_path), else: nil
+
+    on_exit(fn ->
+      case original_global do
+        nil -> File.rm(global_path)
+        content -> File.write!(global_path, content)
+      end
+    end)
 
     # Save to global config
     assert {:ok, _} = Config.set_global_tool_permission("glob_tool_test", "allow")

@@ -17,6 +17,8 @@ defmodule Yoke.CLI.Repl do
   alias Yoke.CLI.LineEditor
   alias Yoke.TaskEngine.JobManager
 
+  require Logger
+
   def start(opts \\ []) do
     LineEditor.disable_flow_control()
     MCPServerManager.await_ragex()
@@ -635,6 +637,21 @@ defmodule Yoke.CLI.Repl do
 
     IO.puts("\n" <> Formatter.format_info(msg) <> "\n")
     :continue
+  end
+
+  def handle_input("/audit " <> focus, session_pid, _session_id) do
+    focus_atom =
+      case String.trim(focus) do
+        "code" -> :code
+        "ux" -> :ux
+        _ -> :all
+      end
+
+    run_project_audit(session_pid, focus_atom)
+  end
+
+  def handle_input("/audit", session_pid, _session_id) do
+    run_project_audit(session_pid, :all)
   end
 
   def handle_input("/audit-thoughts", _session_pid, _session_id) do
@@ -1480,10 +1497,7 @@ defmodule Yoke.CLI.Repl do
 
   def handle_input("/config style " <> style, _session_pid, _session_id) do
     s = String.trim(style)
-    cfg = Yoke.Config.load_config()
-    updated = Map.put(cfg, "prompt_style", s)
-    Yoke.Config.save_config(updated)
-    IO.puts(Formatter.format_success("Prompt style set to '#{s}'"))
+    persist_local("prompt_style", s, "Prompt style set to '#{s}'")
     :continue
   end
 
@@ -1495,10 +1509,15 @@ defmodule Yoke.CLI.Repl do
 
   def handle_input("/config prompt " <> format_str, _session_pid, _session_id) do
     fmt = String.trim(format_str)
-    cfg = Yoke.Config.load_config()
-    updated = Map.merge(cfg, %{"prompt_style" => "custom", "prompt_format" => fmt})
-    Yoke.Config.save_config(updated)
-    IO.puts(Formatter.format_success("Custom prompt format set to '#{fmt}'"))
+
+    case Yoke.Config.put_local("prompt_format", fmt, ".") do
+      {:ok, _} ->
+        persist_local("prompt_style", "custom", "Custom prompt format set to '#{fmt}'")
+
+      {:error, reason} ->
+        IO.puts(Formatter.format_error(reason))
+    end
+
     :continue
   end
 
@@ -1516,11 +1535,7 @@ defmodule Yoke.CLI.Repl do
     k = String.trim(key)
     cfg = Yoke.Config.load_config()
     current = Map.get(cfg, k, true)
-    updated = Map.put(cfg, k, not current)
-    Yoke.Config.save_config(updated)
-
-    IO.puts(Formatter.format_success("Toggled config setting '#{k}' to #{not current}"))
-
+    persist_local(k, not current, "Toggled config setting '#{k}' to #{not current}")
     :continue
   end
 
@@ -1536,11 +1551,8 @@ defmodule Yoke.CLI.Repl do
 
   def handle_input("/config assistant_name " <> name, _session_pid, _session_id) do
     n = String.trim(name)
-    cfg = Yoke.Config.load_config()
-    updated = Map.put(cfg, "assistant_name", n)
-    Yoke.Config.save_config(updated)
+    persist_local("assistant_name", n, "Assistant name set to '#{n}'")
     Application.put_env(:yoke, :assistant_name, n)
-    IO.puts(Formatter.format_success("Assistant name set to '#{n}'"))
     :continue
   end
 
@@ -1558,9 +1570,7 @@ defmodule Yoke.CLI.Repl do
   end
 
   def handle_input("/config default_branch auto", _session_pid, _session_id) do
-    cfg = Yoke.Config.load_config()
-    updated = Map.put(cfg, "default_branch", nil)
-    Yoke.Config.save_config(updated)
+    persist_local("default_branch", nil, nil)
     Application.delete_env(:yoke, :default_branch)
     auto_resolved = Git.default_base_branch()
 
@@ -1587,11 +1597,8 @@ defmodule Yoke.CLI.Repl do
         )
       )
     else
-      cfg = Yoke.Config.load_config()
-      updated = Map.put(cfg, "default_branch", b)
-      Yoke.Config.save_config(updated)
+      persist_local("default_branch", b, "Configured default base branch to '#{b}'")
       Yoke.Config.set_default_branch(b)
-      IO.puts(Formatter.format_success("Configured default base branch to '#{b}'"))
     end
 
     :continue
@@ -1630,9 +1637,7 @@ defmodule Yoke.CLI.Repl do
   end
 
   def handle_input("/config languages auto", _session_pid, _session_id) do
-    cfg = Yoke.Config.load_config()
-    updated = Map.put(cfg, "languages", nil)
-    Yoke.Config.save_config(updated)
+    persist_local("languages", nil, nil)
     detected = Yoke.Practices.detect_languages()
 
     IO.puts(
@@ -1656,10 +1661,7 @@ defmodule Yoke.CLI.Repl do
         )
       )
     else
-      cfg = Yoke.Config.load_config()
-      updated = Map.put(cfg, "languages", langs)
-      Yoke.Config.save_config(updated)
-      IO.puts(Formatter.format_success("Configured project languages: #{inspect(langs)}"))
+      persist_local("languages", langs, "Configured project languages: #{inspect(langs)}")
     end
 
     :continue
@@ -1913,23 +1915,18 @@ defmodule Yoke.CLI.Repl do
 
   def handle_input("/plan on", _session_pid, _session_id) do
     cfg = Yoke.Config.load_config()
-    updated = Map.put(cfg, "plan_gate_enabled", true)
-    Yoke.Config.save_config(updated)
 
-    IO.puts(
-      Formatter.format_success(
-        "Plan gate ENABLED (threshold: #{cfg["plan_gate_threshold"]} modifying tool calls)"
-      )
+    persist_local(
+      "plan_gate_enabled",
+      true,
+      "Plan gate ENABLED (threshold: #{cfg["plan_gate_threshold"]} modifying tool calls)"
     )
 
     :continue
   end
 
   def handle_input("/plan off", _session_pid, _session_id) do
-    cfg = Yoke.Config.load_config()
-    updated = Map.put(cfg, "plan_gate_enabled", false)
-    Yoke.Config.save_config(updated)
-    IO.puts(Formatter.format_success("Plan gate DISABLED"))
+    persist_local("plan_gate_enabled", false, "Plan gate DISABLED")
     :continue
   end
 
@@ -1956,26 +1953,19 @@ defmodule Yoke.CLI.Repl do
   end
 
   def handle_input("/god on", _session_pid, _session_id) do
-    cfg = Yoke.Config.load_config()
-    updated = Map.put(cfg, "god_mode", true)
-    Yoke.Config.save_config(updated)
-    Application.put_env(:yoke, :god_mode, true)
-
-    IO.puts(
-      Formatter.format_success(
-        "God mode ENABLED (all model questions and confirmations will be auto-answered without user input)"
-      )
+    persist_local(
+      "god_mode",
+      true,
+      "God mode ENABLED (all model questions and confirmations will be auto-answered without user input)"
     )
 
+    Application.put_env(:yoke, :god_mode, true)
     :continue
   end
 
   def handle_input("/god off", _session_pid, _session_id) do
-    cfg = Yoke.Config.load_config()
-    updated = Map.put(cfg, "god_mode", false)
-    Yoke.Config.save_config(updated)
+    persist_local("god_mode", false, "God mode DISABLED")
     Application.put_env(:yoke, :god_mode, false)
-    IO.puts(Formatter.format_success("God mode DISABLED"))
     :continue
   end
 
@@ -1989,14 +1979,12 @@ defmodule Yoke.CLI.Repl do
     cfg = Yoke.Config.load_config()
     current = Map.get(cfg, "god_mode", false)
     new_mode = not current
-    updated = Map.put(cfg, "god_mode", new_mode)
-    Yoke.Config.save_config(updated)
-    Application.put_env(:yoke, :god_mode, new_mode)
 
     status_str =
       if new_mode, do: "ENABLED (all questions & confirmations auto-answered)", else: "DISABLED"
 
-    IO.puts(Formatter.format_success("God mode #{status_str}"))
+    persist_local("god_mode", new_mode, "God mode #{status_str}")
+    Application.put_env(:yoke, :god_mode, new_mode)
     :continue
   end
 
@@ -3105,6 +3093,38 @@ defmodule Yoke.CLI.Repl do
     end
   end
 
+  # `/audit` — whole-project audit. Deterministic facts are gathered locally
+  # (fast, no network), rendered for the user, and then handed to the Brain
+  # actor as a grounded prompt so the narrative audit cites real evidence.
+  defp run_project_audit(session_pid, focus) do
+    facts = Yoke.Audit.collect(".")
+
+    IO.puts("\n" <> Yoke.Audit.format_header(facts) <> "\n")
+    IO.puts(Formatter.format_markdown(Yoke.Audit.format_facts(facts)) <> "\n")
+
+    prompt = Yoke.Audit.build_prompt(facts, focus: focus)
+
+    res =
+      Yoke.CLI.Spinner.run(
+        fn ->
+          Yoke.CLI.Interrupt.run(session_pid, fn -> try_send_message(session_pid, prompt) end)
+        end,
+        title: "Auditing the project… (Ctrl+Q to interrupt)"
+      )
+
+    case res do
+      {:ok, %{content: content}} ->
+        Formatter.safe_puts("\n" <> Formatter.format_agent_response(content) <> "\n")
+        Formatter.flush()
+
+      {:error, reason} ->
+        IO.puts(Formatter.format_error("Audit turn failed: #{reason}"))
+        Formatter.flush()
+    end
+
+    :continue
+  end
+
   defp handle_copy_clipboard(session_pid, _session_id) do
     case Session.get_latest_response(session_pid) do
       {:ok, content} ->
@@ -3125,6 +3145,30 @@ defmodule Yoke.CLI.Repl do
     end
 
     :continue
+  end
+
+  # Persists a single setting to the workspace config (`.yoke/config.json`)
+  # and reports the outcome.
+  #
+  # Every `/config`, `/plan` and `/god` handler used to do
+  # `load_config() |> Map.put(...) |> save_config()`, which writes the *merged*
+  # global+local snapshot back into the project file. That is the root cause
+  # of settings appearing to "get lost between sessions": the project file
+  # gained a stale copy of every global key, so a later global change was
+  # silently shadowed, and a partial/failed write was never reported at all.
+  # `Config.put_local/3` patches only the one key in the on-disk file, writes
+  # atomically, and returns a result we surface here.
+  defp persist_local(key, value, success_message) do
+    case Yoke.Config.put_local(key, value, ".") do
+      {:ok, path} ->
+        if success_message, do: IO.puts(Formatter.format_success(success_message))
+        Logger.debug("[CLI.Repl] Persisted '#{key}' to #{path}")
+        :ok
+
+      {:error, reason} ->
+        IO.puts(Formatter.format_error(reason))
+        :error
+    end
   end
 
   defp plan_gate_status(cfg) do

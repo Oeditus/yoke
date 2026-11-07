@@ -271,7 +271,12 @@ Run `yoke` completely offline against local LLM servers without requiring API ke
 - **Socratic & Adversarial Sparring (`/spar [soc|adv] <topic>`)**: Pressure-tests new feature designs turn-by-turn with Socratic requirement probing and blunt Adversarial counter-arguments.
 - **Structured Memory Architecture**: Transient scratch notes (`/scrap`), operational lessons learned (`/lessons`), and automated close-out gates.
 
-### 13. Session Command Aliases (`/alias`, `/<name>`)
+### 13. Whole-Project Audit (`/audit`)
+- `/audit` measures the project first (languages, source/test file counts, line counts, largest modules, `TODO`/`FIXME` markers, formatter/credo/dialyzer/CI/lockfile/docs presence, test-to-source ratio, source files with no matching test) and then hands those facts to the agent for a grounded narrative audit.
+- The report has four sections: **strong parts** (with the mechanism that keeps them strong), **weaknesses & glitches to fix** (worst first, each with a location and a fix), **codebase improvement ideas**, and **UX improvement ideas**.
+- Narrow the scope with `/audit code` or `/audit ux`. The deterministic half never calls the network, so the measured facts are reproducible run to run.
+
+### 14. Session Command Aliases (`/alias`, `/<name>`)
 - Declare custom command sequences (slash commands, shell commands `!cmd`, or LLM agent prompts) that execute sequentially within the current active session.
 - Stored in `.yoke/aliases.json` (workspace), `~/.yoke/aliases.json` (global), or under `"aliases"` in `.yoke/config.json`.
 - Supports parameter placeholders (`{{args}}`, `$@`, `$1`), auto-appended arguments, and conditionals (`{{#if_args}}...{{/if_args}}`, `{{#if_commit_only}}...{{/if_commit_only}}`).
@@ -498,6 +503,7 @@ The full reference lives in [`docs/cheat_sheet.md`](docs/cheat_sheet.md); the es
 | `/finish [files] [--commit-only]` \| `/pr` | Complete work: auto-format, write 5-section structured commit, and create GitHub PR (or commit only with `--commit-only`) |
 | `/commit-structured [files]` \| `/cpr` | Commit staged changes with the 5 structured PR sections without creating a PR |
 | `/linter <tool> [project\|diff\|cr]` | Run `oeditus_credo`, `propwise`, `credo`, or `dialyzer` (alias: `/lint`) |
+| `/audit [code\|ux]` | Whole-project audit: strong parts, weaknesses & glitches, codebase + UX improvement ideas (grounded in measured facts) |
 
 Review commands inspect **committed branch changes**, not staged, unstaged, or
 untracked workspace edits. The default compares the configured base branch with
@@ -550,6 +556,36 @@ memory updates are also opt-in and happen after fix handling.
 | `/clear` | Clear terminal output |
 | `/help` | Display help menu |
 | `/exit` \| `/quit` | Exit Yoke and print conversation resume banner |
+
+---
+
+## CLI Subcommands
+
+Besides the interactive REPL, `yoke` dispatches a handful of one-shot subcommands (`yoke <subcommand> ...`):
+
+| Subcommand | Action |
+| :--- | :--- |
+| `yoke review` | CI code review of a branch range |
+| `yoke lint` | Run the project's linters in CI mode |
+| `yoke describe` | Summarize the change set |
+| `yoke run <workflow> "<task>"` | Run a named workflow end-to-end |
+| `yoke audit` | Emit the AI Guard audit trail as a CI artifact |
+| `yoke fix [options] ["<command>"]` | Replay the last terminal command, analyse the failure, and plan a fix |
+| `yoke rag` | Query the Ragex knowledge graph |
+
+### `yoke fix`
+
+`yoke fix` reads the most recent command from your shell history (zsh extended format, bash, or fish -- Yoke's own invocations are skipped), re-runs it here, captures the output and exit status, and asks the agent to diagnose the root cause(s) and propose a concrete fix plan.
+
+```bash
+$ mix test test/foo_test.exs:42     # fails in your shell
+$ yoke fix                          # replays it, triages, and plans the fix
+$ yoke fix --apply                  # ...and lets the agent apply it
+$ yoke fix --no-run                 # plan only, execute nothing
+$ yoke fix "mix compile"            # explicit command instead of history
+```
+
+Options: `-n/--no-run`, `-a/--apply`, `-p/--previous`, `--command <cmd>`, `--history-file <path>`, `--timeout <ms>`, `--session <id>`, `-h/--help`. Exit codes: `0` the command succeeded, `1` it failed and a plan was produced, `2` usage error, `3` no command found in history.
 
 ---
 

@@ -1818,9 +1818,11 @@ defmodule Yoke.CLI.LineEditor do
     Map.put(state, :context, Map.put(context, :expand_tool_calls, new_val))
   end
 
+  # Patches only this key in the workspace config file. Writing back a
+  # `load_config/1` snapshot would copy every global setting into the project
+  # file and freeze it there.
   defp persist_compact_status_bar(value) do
-    cfg = Config.load_config()
-    Config.save_config(Map.put(cfg, "compact_status_bar", value))
+    Config.put_local("compact_status_bar", value)
   rescue
     _ -> :ok
   end

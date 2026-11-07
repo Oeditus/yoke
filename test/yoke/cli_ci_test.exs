@@ -150,6 +150,15 @@ defmodule Yoke.CLI.CITest do
         assert is_atom(spec.fun) and not is_nil(spec.fun),
                "#{name} is marked implemented but has no function"
 
+        # `function_exported?/3` returns false for a module that has not been
+        # loaded yet -- which is the normal state in a freshly-booted escript
+        # and also here, in the test VM, for a module nothing else has touched.
+        # `Main.dispatch_subcommand/2` guards against exactly this with
+        # `Code.ensure_loaded/1` before checking; without the same guard the
+        # assertion below fails for a perfectly valid subcommand purely because
+        # of load order. Load first, then assert.
+        _ = Code.ensure_loaded(spec.module)
+
         assert function_exported?(spec.module, spec.fun, 1),
                "#{name} points at #{inspect(spec.module)}.#{spec.fun}/1, which is not exported"
       end
