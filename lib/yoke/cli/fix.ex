@@ -40,7 +40,8 @@ defmodule Yoke.CLI.Fix do
     timeout: :integer,
     agent_timeout: :integer,
     help: :boolean,
-    session: :string
+    session: :string,
+    provider: :string
   ]
 
   @aliases [h: :help, n: :no_run, a: :apply, p: :previous]
@@ -430,7 +431,7 @@ defmodule Yoke.CLI.Fix do
     session_id = opts[:session] || Yoke.CLI.Main.generate_uuid()
     timeout = opts[:agent_timeout] || @default_agent_timeout_ms
 
-    case start_session(session_id) do
+    case start_session(session_id, opts) do
       {:ok, session_pid} ->
         try do
           run_turn(session_pid, prompt, timeout)
@@ -444,8 +445,8 @@ defmodule Yoke.CLI.Fix do
     end
   end
 
-  defp start_session(session_id) do
-    Yoke.Brain.SessionSupervisor.start_session(session_id: session_id)
+  defp start_session(session_id, opts) do
+    Yoke.Brain.SessionSupervisor.start_session(session_id: session_id, provider: opts[:provider])
   catch
     :exit, reason -> {:error, reason}
   end

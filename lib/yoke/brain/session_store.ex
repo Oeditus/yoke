@@ -80,6 +80,10 @@ defmodule Yoke.Brain.SessionStore do
       session_state
       |> Map.delete(:images)
       |> Map.delete("images")
+      |> Map.delete(:api_key)
+      |> Map.delete("api_key")
+      |> Map.update(:provider_options, %{}, &Yoke.Provider.public_options/1)
+      |> Map.delete("provider_options")
       |> Yoke.Json.sanitize_utf8()
 
     cond do

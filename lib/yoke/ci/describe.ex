@@ -60,6 +60,21 @@ defmodule Yoke.CI.Describe do
     end
   end
 
+  defp resolved_provider(opts, cwd) do
+    if opts[:provider] || System.get_env("YOKE_PROVIDER") do
+      Yoke.Provider.resolve(Keyword.put(provider_opts(opts), :cwd, cwd))
+    else
+      config = CIConfig.load_ci_config(cwd, provider_opts(opts))
+
+      Yoke.Provider.resolve(
+        model: config["model"],
+        endpoint: config["endpoint"],
+        api_key: config["api_key"],
+        cwd: cwd
+      )
+    end
+  end
+
   @doc """
   Builds the prompt sent to the model.
 
@@ -130,13 +145,7 @@ defmodule Yoke.CI.Describe do
   # A summary that did not happen must not look green, so a missing provider is
   # an error rather than a silently empty description.
   defp validate_provider(opts, cwd) do
-    config = CIConfig.load_ci_config(cwd, provider_opts(opts))
-
-    DeepSeekAPI.validate_live_config(
-      model: config["model"],
-      api_key: config["api_key"],
-      endpoint: config["endpoint"]
-    )
+    DeepSeekAPI.validate_live_config(resolved_provider(opts, cwd))
   end
 
   defp check_budget(opts, cwd) do
@@ -149,20 +158,12 @@ defmodule Yoke.CI.Describe do
   end
 
   defp call_model(context, opts, cwd) do
-    config = CIConfig.load_ci_config(cwd, provider_opts(opts))
+    call_opts = resolved_provider(opts, cwd)
 
     messages = [
       %{"role" => "system", "content" => system_prompt()},
       %{"role" => "user", "content" => prompt(context)}
     ]
-
-    call_opts =
-      [
-        model: config["model"],
-        api_key: config["api_key"],
-        endpoint: config["endpoint"]
-      ]
-      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
     case DeepSeekAPI.chat_completion(messages, [], call_opts) do
       {:ok, %{content: content}} when is_binary(content) -> {:ok, String.trim(content)}
@@ -173,6 +174,7 @@ defmodule Yoke.CI.Describe do
 
   defp provider_opts(opts) do
     [
+      provider: opts[:provider],
       model: opts[:model],
       endpoint: opts[:endpoint],
       api_key: opts[:api_key]

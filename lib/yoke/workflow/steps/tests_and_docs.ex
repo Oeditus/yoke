@@ -29,7 +29,7 @@ defmodule Yoke.Workflow.Steps.TestsAndDocs do
 
   @impl true
   def run(context, _params) do
-    case run_for(context.cwd, context.run_id, "workflow") do
+    case run_for(context.cwd, context.run_id, "workflow", Map.get(context, :provider_options, [])) do
       {:ok, summary} -> {:ok, Map.update(context, :notes, [summary], &(&1 ++ [summary]))}
       {:error, reason} -> {:error, reason}
     end
@@ -40,10 +40,12 @@ defmodule Yoke.Workflow.Steps.TestsAndDocs do
   add/update tests and documentation for whatever changed there, then
   runs `mix test` to actually verify the claim.
   """
-  def run_for(cwd, run_id, label) do
+  def run_for(cwd, run_id, label, provider_opts \\ []) do
     session_id = "workflow-#{run_id}-tests-#{label}-#{System.unique_integer([:positive])}"
 
-    with {:ok, pid} <- SessionSupervisor.start_session(session_id: session_id, cwd: cwd),
+    opts = Keyword.merge(provider_opts, session_id: session_id, cwd: cwd)
+
+    with {:ok, pid} <- SessionSupervisor.start_session(opts),
          {:ok, response} <- Session.send_user_message(pid, @instruction) do
       SessionSupervisor.stop_session(pid)
 

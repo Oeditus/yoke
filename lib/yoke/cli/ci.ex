@@ -47,6 +47,7 @@ defmodule Yoke.CLI.CI do
     output: :string,
     post: :boolean,
     model: :string,
+    provider: :string,
     endpoint: :string,
     max_cost: :string,
     max_diff_bytes: :string,
@@ -129,6 +130,7 @@ defmodule Yoke.CLI.CI do
       head: :string,
       pr: :string,
       model: :string,
+      provider: :string,
       endpoint: :string,
       max_cost: :string,
       max_diff_bytes: :string,
@@ -195,6 +197,7 @@ defmodule Yoke.CLI.CI do
         head: opts[:head] || "HEAD",
         pr: opts[:pr],
         model: opts[:model],
+        provider: opts[:provider],
         endpoint: opts[:endpoint],
         max_cost: parse_cost(opts[:max_cost])
       ]
@@ -427,6 +430,7 @@ defmodule Yoke.CLI.CI do
   def run_workflow(args) do
     switches = [
       prompt: :string,
+      provider: :string,
       list: :boolean,
       output: :string,
       # Accepted for parity with the other subcommands, because `action.yml`
@@ -505,7 +509,11 @@ defmodule Yoke.CLI.CI do
   end
 
   defp execute_workflow(workflow, opts) do
-    case Yoke.CI.Run.run(workflow, seed_prompt: opts[:prompt] || "", cwd: File.cwd!()) do
+    case Yoke.CI.Run.run(workflow,
+           seed_prompt: opts[:prompt] || "",
+           cwd: File.cwd!(),
+           provider: opts[:provider]
+         ) do
       {:ok, %{status: :completed} = result} ->
         emit_run_result(result, opts)
         0
@@ -854,6 +862,7 @@ defmodule Yoke.CLI.CI do
       output: opts[:output],
       post: opts[:post] || false,
       model: opts[:model],
+      provider: opts[:provider],
       endpoint: opts[:endpoint],
       max_diff_bytes: parse_int(opts[:max_diff_bytes])
     ]

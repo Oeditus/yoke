@@ -476,9 +476,10 @@ defmodule Yoke.Practices do
     )
 
     code_samples = collect_exemplary_snippets(project_paths, lang_slug)
+    provider_opts = Yoke.Provider.resolve(Keyword.put(opts, :cwd, cwd))
 
     items =
-      if code_samples != "" and api_key_available?() do
+      if code_samples != "" and provider_opts[:api_key] not in [nil, ""] do
         prompt = """
         You are an expert software architect in #{lang_slug}.
         Walk through the following exemplary project snippets and structure, and squeeze a concise list of 5-10 actionable, high-value "Good Practices" for writing clean, idiomatic, high-quality #{lang_slug} code in this ecosystem.
@@ -489,16 +490,10 @@ defmodule Yoke.Practices do
         #{code_samples}
         """
 
-        target_model =
-          Keyword.get(opts, :model) ||
-            System.get_env("DEEPSEEK_MODEL") ||
-            Map.get(Yoke.Config.load_config(cwd), "model", "deepseek-flash")
-
         case Yoke.Client.DeepSeekAPI.chat_completion(
                [%{"role" => "user", "content" => prompt}],
                [],
-               model: target_model,
-               temperature: 0.3
+               Keyword.put(provider_opts, :temperature, 0.3)
              ) do
           {:ok, %{content: response_text}} ->
             extracted = extract_items_from_markdown(response_text)
@@ -594,10 +589,6 @@ defmodule Yoke.Practices do
       _ ->
         []
     end
-  end
-
-  defp api_key_available? do
-    System.get_env("DEEPSEEK_API_KEY") != nil and System.get_env("DEEPSEEK_API_KEY") != ""
   end
 
   @doc """

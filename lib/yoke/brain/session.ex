@@ -58,7 +58,7 @@ defmodule Yoke.Brain.Session do
   def default_system_prompt(cwd \\ ".") do
     name = Config.assistant_name(cwd)
 
-    "You are #{name}, an expert agentic coding assistant powered by DeepSeek.\n" <>
+    "You are #{name}, an expert agentic coding assistant.\n" <>
       @default_system_prompt_body
   end
 
@@ -128,6 +128,24 @@ defmodule Yoke.Brain.Session do
   @doc "Gets the API endpoint URL for the session."
   def get_endpoint(pid) do
     GenServer.call(pid, :get_endpoint, :infinity)
+  end
+
+  @doc "Get resolved options for auxiliary calls and child sessions. Contains credentials; do not print."
+  def provider_options(pid), do: GenServer.call(pid, :provider_options)
+
+  @doc "Switch model, endpoint, and credentials atomically while idle."
+  def set_provider(pid, name), do: GenServer.call(pid, {:set_provider, name})
+
+  @doc false
+  def call_options(state) do
+    Keyword.merge(state.provider_options,
+      model: state.model,
+      endpoint: state.endpoint,
+      api_key: state.api_key,
+      cwd: state.cwd,
+      session_id: state.session_id,
+      max_tokens: state.max_tokens
+    )
   end
 
   @doc "Sets the DeepSeek model ('deepseek-flash', 'deepseek-v4-pro', 'deepseek-reasoner', etc.)."
@@ -260,6 +278,7 @@ defmodule Yoke.Brain.Session do
 
   @impl true
   def init(opts) do
+    provider_opts = Yoke.Provider.resolve(opts)
     session_id = opts[:session_id] || "default"
     base_sys_prompt = opts[:system_prompt] || default_system_prompt(opts[:cwd] || ".")
 
@@ -282,36 +301,13 @@ defmodule Yoke.Brain.Session do
 
     state = %{
       session_id: session_id,
-      model:
-        opts[:model] ||
-          System.get_env("DEEPSEEK_MODEL") ||
-          Map.get(
-            Config.load_config(cwd),
-            "model",
-            "deepseek-flash"
-          ),
-      endpoint:
-        opts[:endpoint] ||
-          System.get_env("DEEPSEEK_ENDPOINT") ||
-          System.get_env("OPENROUTER_BASE_URL") ||
-          System.get_env("OPENCODE_BASE_URL") ||
-          System.get_env("OLLAMA_HOST") ||
-          Map.get(
-            Config.load_config(cwd),
-            "endpoint",
-            "https://api.deepseek.com/chat/completions"
-          ),
+      model: provider_opts[:model],
+      endpoint: provider_opts[:endpoint],
+      provider_options: provider_opts,
       permission_mode: opts[:permission_mode] || :ask_confirm,
       sandbox_workspace: opts[:sandbox_workspace] || false,
       session_tool_permissions: %{},
-      api_key:
-        opts[:api_key] ||
-          System.get_env("DEEPSEEK_API_KEY") ||
-          System.get_env("OPENROUTER_API_KEY") ||
-          System.get_env("OPENCODE_API_KEY") ||
-          System.get_env("OPENCODE_ZEN_API_KEY") ||
-          System.get_env("LLM_API_KEY") ||
-          Map.get(Config.load_config(cwd), "api_key"),
+      api_key: provider_opts[:api_key],
       hands: %HandsExecutor{mode: :local},
       messages: initial_messages,
       tools: tools,
@@ -350,6 +346,7 @@ defmodule Yoke.Brain.Session do
       max_tokens: opts[:max_tokens] || Map.get(Config.load_config(cwd), "max_tokens"),
       total_prompt_tokens: 0,
       total_completion_tokens: 0,
+      estimated_cost_usd: 0.0,
       turn_history: [],
       cwd: cwd,
       status: :idle,
@@ -372,6 +369,30 @@ defmodule Yoke.Brain.Session do
       case SessionStore.load_session(session_id, state.cwd) do
         {:ok, saved_data} ->
           Logger.info("[Brain.Session] Restored persisted session state for '#{session_id}'")
+
+          state =
+            if Enum.all?(
+                 [
+                   opts[:provider],
+                   opts[:model],
+                   opts[:endpoint],
+                   System.get_env("YOKE_PROVIDER")
+                 ],
+                 &is_nil/1
+               ) and
+                 is_map(saved_data["provider_options"]) do
+              restored = Yoke.Provider.restore(saved_data["provider_options"], cwd)
+
+              %{
+                state
+                | model: restored[:model],
+                  endpoint: restored[:endpoint],
+                  api_key: restored[:api_key],
+                  provider_options: restored
+              }
+            else
+              state
+            end
 
           %{
             state
@@ -502,14 +523,74 @@ defmodule Yoke.Brain.Session do
   end
 
   @impl true
+  def handle_call(:provider_options, _from, state) do
+    {:reply, call_options(state), state}
+  end
+
+  @impl true
+  def handle_call({:set_provider, _name}, _from, %{active_turn: active} = state)
+      when not is_nil(active) do
+    {:reply, {:error, "Cannot switch provider while a turn is running."}, state}
+  end
+
+  @impl true
+  def handle_call({:set_provider, name}, _from, state) do
+    opts =
+      Yoke.Provider.resolve(
+        Keyword.merge(Keyword.take(state.provider_options, [:mock]),
+          provider: name,
+          cwd: state.cwd
+        )
+      )
+
+    new_state = %{
+      state
+      | model: opts[:model],
+        endpoint: opts[:endpoint],
+        api_key: opts[:api_key],
+        provider_options: opts
+    }
+
+    SessionStore.save_session(new_state, state.cwd)
+    {:reply, {:ok, Yoke.Provider.describe(opts)}, new_state}
+  rescue
+    e in ArgumentError -> {:reply, {:error, Exception.message(e)}, state}
+  end
+
+  @impl true
+  def handle_call({:set_endpoint, _value}, _from, %{active_turn: active} = state)
+      when not is_nil(active) do
+    {:reply, {:error, "Cannot change endpoint while a turn is running."}, state}
+  end
+
+  @impl true
   def handle_call({:set_model, model}, _from, state) do
-    new_state = %{state | model: model}
+    new_state = %{
+      state
+      | model: model,
+        provider_options: Keyword.put(state.provider_options, :model, model)
+    }
+
     {:reply, {:ok, model}, new_state}
   end
 
   @impl true
   def handle_call({:set_endpoint, endpoint}, _from, state) do
-    new_state = %{state | endpoint: endpoint}
+    opts =
+      Yoke.Provider.resolve(
+        provider: false,
+        endpoint: endpoint,
+        model: state.model,
+        cwd: state.cwd
+      )
+
+    new_state = %{
+      state
+      | endpoint: opts[:endpoint],
+        api_key: opts[:api_key],
+        provider_options: Keyword.put(opts, :provider, nil)
+    }
+
     {:reply, {:ok, endpoint}, new_state}
   end
 
@@ -534,12 +615,7 @@ defmodule Yoke.Brain.Session do
 
   @impl true
   def handle_call(:compact_context, _from, state) do
-    opts = [
-      model: state.model,
-      api_key: state.api_key,
-      endpoint: state.endpoint,
-      session_id: state.session_id
-    ]
+    opts = call_options(state)
 
     opts =
       if is_integer(state.max_tokens) and state.max_tokens > 0 do
@@ -585,6 +661,7 @@ defmodule Yoke.Brain.Session do
         session_tool_permissions: %{},
         total_prompt_tokens: 0,
         total_completion_tokens: 0,
+        estimated_cost_usd: 0.0,
         step_count: 0,
         plan_approved_for_turn: false,
         suppress_tools: false,
@@ -601,6 +678,7 @@ defmodule Yoke.Brain.Session do
 
     snapshot = %{
       id: "cp_#{System.unique_integer([:positive])}",
+      provider_options: Yoke.Provider.public_options(call_options(state)),
       label: label,
       timestamp: DateTime.utc_now(),
       messages: state.messages,
@@ -618,10 +696,20 @@ defmodule Yoke.Brain.Session do
       [latest | rest] ->
         Logger.info("[Brain.Session] Rolling back state to snapshot: #{latest.label}")
 
+        provider_opts =
+          if is_map(latest[:provider_options]) do
+            Yoke.Provider.restore(latest.provider_options, state.cwd)
+          else
+            Keyword.put(call_options(state), :model, latest.model)
+          end
+
         new_state = %{
           state
           | messages: latest.messages,
-            model: latest.model,
+            model: provider_opts[:model],
+            endpoint: provider_opts[:endpoint],
+            api_key: provider_opts[:api_key],
+            provider_options: provider_opts,
             snapshots: rest
         }
 
@@ -652,9 +740,7 @@ defmodule Yoke.Brain.Session do
 
         try do
           case Yoke.Brain.SessionSupervisor.start_session(
-                 session_id: sub_id,
-                 model: state.model,
-                 cwd: state.cwd
+                 Keyword.put(call_options(state), :session_id, sub_id)
                ) do
             {:ok, sub_pid} ->
               res = send_user_message(sub_pid, prompt)
@@ -679,9 +765,7 @@ defmodule Yoke.Brain.Session do
 
       try do
         case Yoke.Brain.SessionSupervisor.start_session(
-               session_id: sub_id,
-               model: state.model,
-               cwd: state.cwd
+               Keyword.put(call_options(state), :session_id, sub_id)
              ) do
           {:ok, sub_pid} ->
             case send_user_message(sub_pid, prompt) do
@@ -728,11 +812,7 @@ defmodule Yoke.Brain.Session do
 
     with {:ok, context} <- context_result,
          :ok <-
-           DeepSeekAPI.validate_live_config(
-             model: state.model,
-             api_key: state.api_key,
-             endpoint: state.endpoint
-           ) do
+           DeepSeekAPI.validate_live_config(call_options(state)) do
       start_review_turn(state, from, context, opts)
     else
       {:error, err} ->
@@ -746,18 +826,22 @@ defmodule Yoke.Brain.Session do
     completion_tokens = state.total_completion_tokens
     total = prompt_tokens + completion_tokens
 
-    total_cost = estimate_cost(state, prompt_tokens, completion_tokens)
+    total_cost = state.estimated_cost_usd
 
     proc_status = Yoke.process_status()
 
     stats = %{
       model: state.model,
+      provider: state.provider_options[:provider],
+      endpoint: state.endpoint,
+      max_context_tokens: state.provider_options[:max_context_tokens],
       hands_mode: state.hands.mode,
       permission_mode: state.permission_mode,
       sandbox_workspace: state.sandbox_workspace,
       tracked_prompt_tokens: prompt_tokens,
       tracked_completion_tokens: completion_tokens,
       total_tokens: total,
+      context_tokens: current_context_tokens(state),
       estimated_cost_usd: Float.round(total_cost, 6),
       serving_processes: proc_status.total_serving_processes,
       active_task_workers: proc_status.active_task_workers,
@@ -774,6 +858,9 @@ defmodule Yoke.Brain.Session do
     info = %{
       session_id: state.session_id,
       model: state.model,
+      provider: state.provider_options[:provider],
+      endpoint: state.endpoint,
+      max_context_tokens: state.provider_options[:max_context_tokens],
       permission_mode: state.permission_mode,
       cwd: state.cwd,
       message_count: length(state.messages),
@@ -840,6 +927,9 @@ defmodule Yoke.Brain.Session do
     stats = %{
       session_id: state.session_id,
       model: state.model,
+      endpoint: state.endpoint,
+      provider: state.provider_options[:provider],
+      max_context_tokens: state.provider_options[:max_context_tokens],
       permission_mode: state.permission_mode,
       sandbox_workspace: state.sandbox_workspace,
       message_count: length(state.messages),
@@ -856,6 +946,7 @@ defmodule Yoke.Brain.Session do
       mcp_servers_count: Enum.count(mcp_servers),
       turns_count: length(state.turn_history),
       max_tool_depth: state.max_tool_depth,
+      context_tokens: current_context_tokens(state),
       bash_calls_count: bash_stats.total_calls,
       ineffective_bash_calls_count: bash_stats.ineffective_calls,
       ineffective_bash_percentage: bash_stats.ineffective_percentage,
@@ -1025,6 +1116,7 @@ defmodule Yoke.Brain.Session do
             | messages: state.messages ++ Enum.drop(new_turn_state.messages, count),
               total_prompt_tokens: new_turn_state.total_prompt_tokens,
               total_completion_tokens: new_turn_state.total_completion_tokens,
+              estimated_cost_usd: new_turn_state.estimated_cost_usd,
               turn_history: new_turn_state.turn_history,
               status: :idle,
               active_turn: nil
@@ -1166,6 +1258,7 @@ defmodule Yoke.Brain.Session do
           state
           | total_prompt_tokens: reviewed_state.total_prompt_tokens,
             total_completion_tokens: reviewed_state.total_completion_tokens,
+            estimated_cost_usd: reviewed_state.estimated_cost_usd,
             turn_history: reviewed_state.turn_history,
             status: :idle
         }
@@ -1311,12 +1404,21 @@ defmodule Yoke.Brain.Session do
     end
   end
 
-  defp handle_api_error(%{review_context: _} = state, _depth, retries, reason)
+  defp handle_api_error(state, depth, retries, reason) do
+    if Yoke.Provider.location(state.endpoint) == "LOCAL" do
+      {{:error, "Local provider request failed (no remote fallback): #{reason}"},
+       %{state | status: :idle}}
+    else
+      handle_remote_api_error(state, depth, retries, reason)
+    end
+  end
+
+  defp handle_remote_api_error(%{review_context: _} = state, _depth, retries, reason)
        when retries >= 3 do
     {{:error, "Review provider request failed: #{reason}"}, %{state | status: :idle}}
   end
 
-  defp handle_api_error(state, depth, retries, reason) do
+  defp handle_remote_api_error(state, depth, retries, reason) do
     max_retries = 3
 
     if retries < max_retries do
@@ -1504,7 +1606,7 @@ defmodule Yoke.Brain.Session do
     task_text = latest_user_request(state)
 
     plan =
-      case WorkflowPlan.draft(task_text, model: state.model, api_key: state.api_key) do
+      case WorkflowPlan.draft(task_text, call_options(state)) do
         {:ok, plan} -> plan
         {:error, reason} -> %{"summary" => "(plan drafting failed: #{reason})", "steps" => []}
       end
@@ -1863,6 +1965,7 @@ defmodule Yoke.Brain.Session do
       state
       | total_prompt_tokens: state.total_prompt_tokens + p,
         total_completion_tokens: state.total_completion_tokens + c,
+        estimated_cost_usd: state.estimated_cost_usd + estimate_cost(state, p, c),
         turn_history: state.turn_history ++ [turn_entry]
     }
     |> record_budget_usage(usage)
@@ -1928,8 +2031,15 @@ defmodule Yoke.Brain.Session do
   # (.yoke/config.json). Falls back to DeepSeek's published V3 rates
   # (prompt $0.14/1M, completion $0.28/1M) when unset, so existing
   # installations without the new keys keep their previous estimates.
+  defp current_context_tokens(state) do
+    case List.last(state.turn_history) do
+      nil -> 0
+      turn -> turn.total_tokens
+    end
+  end
+
   defp estimate_cost(state, prompt_tokens, completion_tokens) do
-    config = Config.load_config(state.cwd)
+    config = Map.new(state.provider_options, fn {k, v} -> {to_string(k), v} end)
 
     prompt_per_million =
       Map.get(config, "price_per_million_prompt_tokens", 0.14) / 1_000_000
@@ -2489,6 +2599,7 @@ defmodule Yoke.Brain.Session do
   defp auto_checkpoint(state, label) do
     snapshot = %{
       id: "auto_#{System.unique_integer([:positive])}",
+      provider_options: Yoke.Provider.public_options(call_options(state)),
       label: label,
       timestamp: DateTime.utc_now(),
       messages: state.messages,

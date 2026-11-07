@@ -18,7 +18,13 @@ defmodule Yoke.Workflow.Steps.Prompt do
     text = interpolate(template, context)
     session_id = "workflow-#{context.run_id}-prompt-#{System.unique_integer([:positive])}"
 
-    with {:ok, pid} <- SessionSupervisor.start_session(session_id: session_id, cwd: context.cwd),
+    opts =
+      Keyword.merge(Map.get(context, :provider_options, []),
+        session_id: session_id,
+        cwd: context.cwd
+      )
+
+    with {:ok, pid} <- SessionSupervisor.start_session(opts),
          {:ok, response} <- Session.send_user_message(pid, text) do
       SessionSupervisor.stop_session(pid)
 

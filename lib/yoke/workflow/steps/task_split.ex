@@ -176,7 +176,13 @@ defmodule Yoke.Workflow.Steps.TaskSplit do
   defp run_single(context, description) do
     Store.write_split_plan!(context.run_id, %{"accepted" => false, "subtasks" => []}, context.cwd)
 
-    case execute_agent_task(context.run_id, description, context.cwd, "main") do
+    case execute_agent_task(
+           context.run_id,
+           description,
+           context.cwd,
+           "main",
+           Map.get(context, :provider_options, [])
+         ) do
       {:ok, result} ->
         {:ok, Map.put(context, :subtasks, [%{"id" => "main", "result" => result}])}
 
@@ -248,8 +254,20 @@ defmodule Yoke.Workflow.Steps.TaskSplit do
            :ok <-
              Store.write_subtask_field!(context.run_id, id, "worktree", worktree, context.cwd),
            {:ok, exec_result} <-
-             execute_agent_task(context.run_id, subtask["summary"], worktree, id),
-           {:ok, _tests_summary} <- TestsAndDocs.run_for(worktree, context.run_id, id) do
+             execute_agent_task(
+               context.run_id,
+               subtask["summary"],
+               worktree,
+               id,
+               Map.get(context, :provider_options, [])
+             ),
+           {:ok, _tests_summary} <-
+             TestsAndDocs.run_for(
+               worktree,
+               context.run_id,
+               id,
+               Map.get(context, :provider_options, [])
+             ) do
         Store.write_subtask_result!(context.run_id, id, exec_result, context.cwd)
 
         {:ok, %{"id" => id, "branch" => branch, "worktree" => worktree, "result" => exec_result}}
@@ -294,10 +312,12 @@ defmodule Yoke.Workflow.Steps.TaskSplit do
   # Shared: spawn a one-off Brain.Session to actually perform a task
   # ---------------------------------------------------------------------
 
-  defp execute_agent_task(run_id, description, cwd, label) do
+  defp execute_agent_task(run_id, description, cwd, label, provider_opts) do
     session_id = "workflow-#{run_id}-#{label}-#{System.unique_integer([:positive])}"
 
-    with {:ok, pid} <- SessionSupervisor.start_session(session_id: session_id, cwd: cwd),
+    opts = Keyword.merge(provider_opts, session_id: session_id, cwd: cwd)
+
+    with {:ok, pid} <- SessionSupervisor.start_session(opts),
          {:ok, response} <- Session.send_user_message(pid, description) do
       SessionSupervisor.stop_session(pid)
 

@@ -964,7 +964,7 @@ defmodule Yoke.Plugin.DefaultTools do
     cwd = Map.get(args, "_session_cwd", ".")
 
     Task.start(fn ->
-      result = run_subagent_turn(sub_id, model, cwd, prompt)
+      result = run_subagent_turn(sub_id, model, cwd, prompt, parent_provider_options(args))
       notify_parent_session(parent_session_id, sub_id, result)
     end)
 
@@ -977,14 +977,14 @@ defmodule Yoke.Plugin.DefaultTools do
     model = Map.get(args, "_session_model")
     cwd = Map.get(args, "_session_cwd", ".")
 
-    case run_subagent_turn(sub_id, model, cwd, prompt) do
+    case run_subagent_turn(sub_id, model, cwd, prompt, parent_provider_options(args)) do
       {:ok, %{content: content}} -> {:ok, content}
       {:ok, text} when is_binary(text) -> {:ok, text}
       {:error, err} -> {:error, err}
     end
   end
 
-  defp run_subagent_turn(sub_id, model, cwd, prompt) do
+  defp run_subagent_turn(sub_id, model, cwd, prompt, provider_opts) do
     # Register this subagent as a running "package" so the status bar & spinner
     # surface it while it works; registration is process-linked to this Task, so
     # it auto-unregisters when the turn finishes (or crashes).
@@ -995,11 +995,10 @@ defmodule Yoke.Plugin.DefaultTools do
     )
 
     try do
-      case Yoke.Brain.SessionSupervisor.start_session(
-             session_id: sub_id,
-             model: model,
-             cwd: cwd
-           ) do
+      opts = Keyword.merge(provider_opts, session_id: sub_id, cwd: cwd)
+      opts = if model, do: Keyword.put(opts, :model, model), else: opts
+
+      case Yoke.Brain.SessionSupervisor.start_session(opts) do
         {:ok, sub_pid} ->
           result = Yoke.Brain.Session.send_user_message(sub_pid, prompt)
           Yoke.Brain.SessionSupervisor.stop_session(sub_pid)
@@ -1023,9 +1022,25 @@ defmodule Yoke.Plugin.DefaultTools do
 
   defp notify_parent_session(_parent_session_id, _sub_id, _result), do: :ok
 
-  def run_workflow(%{"workflow" => name, "task_description" => description})
+  defp parent_provider_options(args) do
+    case Map.get(args, "_session_id") do
+      nil ->
+        []
+
+      id ->
+        case Registry.lookup(Yoke.Registry, "session_" <> id) do
+          [{pid, _}] -> Yoke.Brain.Session.provider_options(pid)
+          [] -> raise ArgumentError, "Parent session unavailable; refusing to guess a provider."
+        end
+    end
+  end
+
+  def run_workflow(%{"workflow" => name, "task_description" => description} = args)
       when is_binary(name) and is_binary(description) do
-    case Yoke.Workflow.Engine.run(name, seed_prompt: description) do
+    case Yoke.Workflow.Engine.run(name,
+           seed_prompt: description,
+           provider_options: parent_provider_options(args)
+         ) do
       {:ok, context} ->
         {:ok, "Workflow '#{name}' completed successfully (run '#{context.run_id}')."}
 
@@ -1087,8 +1102,12 @@ defmodule Yoke.Plugin.DefaultTools do
     end
   end
 
-  def linter_tool(%{"args" => args}) do
-    case Yoke.Linter.run(args) do
+  def linter_tool(%{"args" => args} = tool_args) do
+    case Yoke.Linter.run(
+           args,
+           Map.get(tool_args, "_session_cwd", "."),
+           parent_provider_options(tool_args)
+         ) do
       {:ok, out} -> {:ok, out}
       {:error, err} -> {:error, err}
     end

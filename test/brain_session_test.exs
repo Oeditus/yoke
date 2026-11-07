@@ -102,6 +102,8 @@ defmodule Yoke.BrainSessionTest do
 
     System.put_env("DEEPSEEK_API_KEY", "")
     System.put_env("DEEPSEEK_ENDPOINT", "https://api.deepseek.com/chat/completions")
+    # Children now inherit the parent's resolved credentials, not ambient env.
+    :sys.replace_state(pid, &%{&1 | api_key: ""})
     stats = Session.get_token_stats(pid)
     assert is_integer(stats.total_tokens)
     # Observe the real worker and completion message without changing the public API.
@@ -309,16 +311,17 @@ defmodule Yoke.BrainSessionTest do
     {:ok, pid} =
       SessionSupervisor.start_session(session_id: sess_id, model: "deepseek-chat", cwd: tmp_dir)
 
-    # 1,000,000 prompt tokens + 1,000,000 completion tokens => $1.00 + $2.00 = $3.00
-    :sys.replace_state(pid, fn state ->
-      %{state | total_prompt_tokens: 1_000_000, total_completion_tokens: 1_000_000}
-    end)
+    assert {:ok, _} = Session.send_user_message(pid, "Hello")
 
     token_stats = Session.get_token_stats(pid)
-    assert Float.round(token_stats.estimated_cost_usd, 4) == 3.0
+
+    expected =
+      (token_stats.tracked_prompt_tokens + 2 * token_stats.tracked_completion_tokens) / 1_000_000
+
+    assert_in_delta token_stats.estimated_cost_usd, expected, 0.000001
 
     stats = Session.get_stats(pid)
-    assert Float.round(stats.estimated_cost_usd, 4) == 3.0
+    assert_in_delta stats.estimated_cost_usd, expected, 0.000001
 
     File.rm_rf!(tmp_dir)
   end
@@ -337,13 +340,15 @@ defmodule Yoke.BrainSessionTest do
     {:ok, pid} =
       SessionSupervisor.start_session(session_id: sess_id, model: "deepseek-chat", cwd: tmp_dir)
 
-    # 1,000,000 prompt + 1,000,000 completion => $0.14 + $0.28 = $0.42
-    :sys.replace_state(pid, fn state ->
-      %{state | total_prompt_tokens: 1_000_000, total_completion_tokens: 1_000_000}
-    end)
+    assert {:ok, _} = Session.send_user_message(pid, "Hello")
 
     token_stats = Session.get_token_stats(pid)
-    assert Float.round(token_stats.estimated_cost_usd, 4) == 0.42
+
+    expected =
+      (0.14 * token_stats.tracked_prompt_tokens + 0.28 * token_stats.tracked_completion_tokens) /
+        1_000_000
+
+    assert_in_delta token_stats.estimated_cost_usd, expected, 0.000001
 
     File.rm_rf!(tmp_dir)
   end

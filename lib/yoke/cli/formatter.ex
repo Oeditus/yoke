@@ -153,6 +153,7 @@ defmodule Yoke.CLI.Formatter do
       #{cyan()}/permissions [auto|ask]#{reset()} Set tool execution safety mode
       #{cyan()}/plugins [reload]#{reset()}       List tools or hot-reload plugins live without dropping state
       #{cyan()}/prboard#{reset()}                 Live PR review queue board (alias for /review queue)
+      #{cyan()}/provider [local|local-qwen|deepseek]#{reset()} Select generation provider atomically; show local/remote status
       #{cyan()}/ragex#{reset()}                  Mount first-class Ragex code analysis & refactoring MCP tools (@../ragex)
       #{cyan()}/reset#{reset()}                  Reset conversation context, history, and clear screen
       #{cyan()}/review [queue|next|skip|patterns|<pr>]#{reset()} Interactive PR review, queue triage, atomic inline comments, living memory
@@ -356,7 +357,7 @@ defmodule Yoke.CLI.Formatter do
     rendered = format_markdown(safe_content)
 
     header =
-      "#{cyan()}#{bold()}✦ DeepSeek >#{reset()} #{dim()}─────────────────────────────────────────────────#{reset()}"
+      "#{cyan()}#{bold()}Yoke >#{reset()} #{dim()}─────────────────────────────────────────────────#{reset()}"
 
     "\n#{header}\n\n#{rendered}\n"
   end

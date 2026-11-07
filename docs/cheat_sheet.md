@@ -27,6 +27,11 @@ Launch `yoke` from any directory in interactive REPL mode, one-shot mode, or res
 # Launch interactive REPL mode (generates new UUID session)
 yoke
 
+# Explicit generation providers (independent of Hands /mode)
+yoke --provider local
+yoke --provider local-qwen
+yoke --provider deepseek
+
 # Resume specific conversation ID across CLI restarts
 yoke -c df97eb34-cb33-4f21-bada-2e9c3cf75d46
 yoke --conversation=df97eb34-cb33-4f21-bada-2e9c3cf75d46
@@ -57,6 +62,7 @@ yoke --help
 | `--resume <id>` | `-r <id>` | Alias for `--conversation` |
 | `--prompt <str>` | `-p <str>` | Input prompt string for one-shot execution |
 | `--model <name>` | `-m <name>` | Select model (`deepseek-chat`, `deepseek-coder`, `deepseek-reasoner`) |
+| `--provider <name>` | — | Select model and endpoint together: `local` (Devstral), `local-qwen`, `deepseek` |
 | `--update` | `-u` | Trigger background release update to latest git codebase |
 | `--node <name>` | — | Start local Erlang distributed node |
 | `--connect <node>`| — | Connect to remote Erlang Hands worker node |
@@ -122,6 +128,7 @@ my_app deepseek-chat >
 | `/resume [id]` | Resume specific session ID or open interactive conversation picker modal | `/resume` |
 | `/rules [add\|delete]` | List, add, or open checkbox modal to delete prompt rules | `/rules add cr: format tables 80 cols` |
 | `/model <alias>` | Switch model (`chat`, `coder`, `reasoner`, `openrouter-r1`, `ollama-r1`) | `/model reasoner` |
+| `/provider [name]` | Show transport or atomically select `local`, `local-qwen`, or `deepseek` | `/provider local` |
 | `/mode <target>` | Set execution target (`local`, `docker <id>`, `remote <node>`) | `/mode local` |
 | `/compact` | Compress conversation context window to save tokens | `/compact` |
 | `/undo` | Roll back conversation state to previous temporal checkpoint | `/undo` |

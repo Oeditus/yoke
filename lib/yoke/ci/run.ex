@@ -41,7 +41,7 @@ defmodule Yoke.CI.Run do
 
     with :ok <- install_seams(cwd),
          :ok <- check_budget(cwd),
-         {:ok, result} <- execute(workflow_name, cwd, seed_prompt) do
+         {:ok, result} <- execute(workflow_name, cwd, seed_prompt, opts) do
       {:ok, normalize_result(result)}
     end
   end
@@ -84,8 +84,8 @@ defmodule Yoke.CI.Run do
     end
   end
 
-  defp execute(workflow_name, cwd, seed_prompt) do
-    Engine.run(workflow_name, cwd: cwd, seed_prompt: seed_prompt)
+  defp execute(workflow_name, cwd, seed_prompt, opts) do
+    Engine.run(workflow_name, Keyword.merge(opts, cwd: cwd, seed_prompt: seed_prompt))
   rescue
     e -> {:error, "Workflow '#{workflow_name}' crashed: #{Exception.message(e)}"}
   catch

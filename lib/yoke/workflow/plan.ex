@@ -82,40 +82,10 @@ defmodule Yoke.Workflow.Plan do
       %{"role" => "user", "content" => user_prompt}
     ]
 
-    default_model =
-      System.get_env("DEEPSEEK_MODEL") ||
-        Map.get(Yoke.Config.load_config("."), "model", "deepseek-flash")
-
-    call_opts =
-      [model: Keyword.get(opts, :model, default_model)]
-      |> maybe_put(:api_key, opts)
-      |> maybe_put(:endpoint, opts)
-      |> maybe_put(:session_id, opts)
-      |> maybe_put(:max_tokens, opts)
-      |> maybe_put_mock(opts)
-
-    case DeepSeekAPI.chat_completion(messages, [], call_opts) do
+    case DeepSeekAPI.chat_completion(messages, [], opts) do
       {:ok, %{content: content}} when is_binary(content) -> {:ok, content}
       {:ok, %{content: nil}} -> {:ok, ""}
       {:error, reason} -> {:error, reason}
     end
-  end
-
-  # Threads an optional keyword through to the API call only when the caller
-  # supplied it (so live sessions can pass their own api_key / max_tokens).
-  # Piped as `acc |> maybe_put(:key, opts)`, so the accumulator comes first.
-  defp maybe_put(list, key, opts) do
-    if Keyword.has_key?(opts, key) and not is_nil(Keyword.get(opts, key)) do
-      Keyword.put(list, key, Keyword.get(opts, key))
-    else
-      list
-    end
-  end
-
-  # Only thread an explicit `:mock` through when the caller supplied one, so
-  # `DeepSeekAPI.build_config/1`'s automatic `Mix.env() == :test` mock still
-  # kicks in for offline tests that don't pass it.
-  defp maybe_put_mock(list, opts) do
-    if Keyword.has_key?(opts, :mock), do: Keyword.put(list, :mock, opts[:mock]), else: list
   end
 end
