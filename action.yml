@@ -44,9 +44,17 @@ inputs:
     required: false
     default: 'true'
   with-ragex:
-    description: 'Enable Ragex code intelligence (slower; requires a cache).'
+    description: >
+      Enable Ragex code intelligence (slower; requires a cache). When true,
+      dllb-server and the .ragex/.yoke caches are wired up as well.
     required: false
     default: 'false'
+  dllb-version:
+    description: >
+      dllb-server release tag to install, e.g. v1.0.2. Defaults to the latest
+      release. Set to 'skip' to install nothing.
+    required: false
+    default: ''
   upload:
     description: 'Upload the review artifact at the end of the run.'
     required: false
@@ -126,6 +134,37 @@ runs:
         fi
 
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    # Ragex's per-project store backend spawns a `dllb-server` OS process
+    # against `<repo>/.ragex/dllb.redb`. That binary is a Rust executable and
+    # is not part of the Elixir dependency tree, so without this step every
+    # run logs `:dllb_binary_not_found` and falls back to the ETS backend.
+    # The installer never fails the job on its own: dllb is an accelerator.
+    - name: Install dllb-server
+      id: dllb
+      if: ${{ inputs.dllb-version != 'skip' }}
+      shell: bash
+      env:
+        DLLB_VERSION: ${{ inputs.dllb-version }}
+      run: |
+        set -euo pipefail
+        "${{ github.action_path }}/scripts/install-dllb.sh"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    # `.ragex` holds the Ragex knowledge graph (dllb.redb) and `.yoke` holds
+    # the repo's config, policy and session checkpoints. Restoring them turns
+    # a 2-4 minute cold index into a warm start. Both are keyed on the sources
+    # they describe, so a stale graph is never reused after a code change.
+    - name: Restore Ragex and yoke caches
+      if: ${{ inputs.with-ragex == 'true' }}
+      uses: actions/cache@v4
+      with:
+        path: |
+          .ragex
+          .yoke
+        key: ${{ runner.os }}-ragex-${{ hashFiles('**/*.ex', '**/*.exs', 'mix.lock', '.yoke/config.json', '.yoke/policy.json') }}
+        restore-keys: |
+          ${{ runner.os }}-ragex-
 
     - name: Resolve review range
       id: range

@@ -40,13 +40,26 @@ defmodule Mix.Tasks.Yoke.Install do
     set -e
     export YOKE_WORKSPACE="$PWD"
     export YOKE_REPO_DIR="#{repo_dir}"
+    # Ragex's per-project store backend spawns `dllb-server` as an OS process.
+    # Resolve it here so a globally installed `yoke` finds a binary that is not
+    # on PATH -- otherwise every run logs `:dllb_binary_not_found` and falls
+    # back to the slower ETS backend. Mirrors the search in the repo launcher.
     export DLLB_DIR="${DLLB_DIR:-$(cd "#{repo_dir}/../dllb" 2>/dev/null && pwd || echo "#{repo_dir}/../dllb")}"
-    if [ -z "${DLLB_SERVER_BIN:-}" ]; then
-      if [ -f "$DLLB_DIR/target/release/dllb-server" ]; then
-        export DLLB_SERVER_BIN="$DLLB_DIR/target/release/dllb-server"
-      elif [ -f "$DLLB_DIR/target/debug/dllb-server" ]; then
-        export DLLB_SERVER_BIN="$DLLB_DIR/target/debug/dllb-server"
-      fi
+    if [ -z "${DLLB_SERVER_BIN:-}" ] || [ ! -f "${DLLB_SERVER_BIN}" ]; then
+      for candidate in \\
+        "$DLLB_DIR/target/release/dllb-server" \\
+        "$DLLB_DIR/target/debug/dllb-server" \\
+        "$HOME/.local/bin/dllb-server" \\
+        "$HOME/.cargo/bin/dllb-server" \\
+        "/usr/local/bin/dllb-server"; do
+        if [ -f "$candidate" ]; then
+          export DLLB_SERVER_BIN="$candidate"
+          break
+        fi
+      done
+    fi
+    if [ -z "${DLLB_SERVER_BIN:-}" ] && command -v dllb-server >/dev/null 2>&1; then
+      export DLLB_SERVER_BIN="$(command -v dllb-server)"
     fi
     cd "$PWD"
     exec "#{yoke_launcher}" --prod "$@"

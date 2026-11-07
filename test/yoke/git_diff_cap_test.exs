@@ -64,8 +64,35 @@ defmodule Yoke.Git.DiffCapTest do
       Policy.write(repo, %{"max_diff_bytes" => 1_000})
 
       assert {:error, reason} = Git.diff_branches("main", "feature", repo)
-      assert reason =~ "exceeds"
+      assert reason =~ "over the"
       assert reason =~ "KB"
+      # The message must say how to proceed, not just that it failed.
+      assert reason =~ "max_diff_bytes"
+    end
+
+    test "an application-env override beats the policy file", %{tmp_dir: dir} do
+      repo = Path.join(dir, "repo")
+      File.mkdir_p!(repo)
+
+      git!(repo, ["init", "-q", "-b", "main"])
+      git!(repo, ["config", "user.email", "cap@example.invalid"])
+      git!(repo, ["config", "user.name", "Cap Test"])
+      File.write!(Path.join(repo, "big.txt"), "small\n")
+      git!(repo, ["add", "."])
+      git!(repo, ["commit", "-q", "-m", "initial"])
+
+      git!(repo, ["checkout", "-q", "-b", "feature"])
+      File.write!(Path.join(repo, "big.txt"), String.duplicate("x", 5_000) <> "\n")
+      git!(repo, ["add", "."])
+      git!(repo, ["commit", "-q", "-m", "big change"])
+
+      Policy.write(repo, %{"max_diff_bytes" => 1_000})
+      on_exit(fn -> Application.delete_env(:yoke, :max_diff_bytes_override) end)
+
+      # Policy would reject it; the override raises the ceiling for this run.
+      Application.put_env(:yoke, :max_diff_bytes_override, 1_000_000)
+      assert {:ok, data} = Git.diff_branches("main", "feature", repo)
+      assert data.raw_diff =~ "big.txt"
     end
 
     test "allows a diff within the cap", %{tmp_dir: dir} do

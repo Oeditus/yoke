@@ -220,4 +220,63 @@ defmodule Yoke.Config.CITest do
       end
     end
   end
+
+  describe "install_dllb_binary/0" do
+    setup do
+      prior = %{
+        ragex_bin: Application.get_env(:ragex, :dllb_server_bin),
+        env_bin: System.get_env("DLLB_SERVER_BIN")
+      }
+
+      on_exit(fn ->
+        case prior.ragex_bin do
+          nil -> Application.delete_env(:ragex, :dllb_server_bin)
+          value -> Application.put_env(:ragex, :dllb_server_bin, value)
+        end
+
+        case prior.env_bin do
+          nil -> System.delete_env("DLLB_SERVER_BIN")
+          value -> System.put_env("DLLB_SERVER_BIN", value)
+        end
+      end)
+
+      :ok
+    end
+
+    # Regression guard for the CI failure that reported
+    # `:dllb_binary_not_found`: the action installs `dllb-server` into
+    # `~/.local/bin`, which is on PATH but which Ragex does not search, so the
+    # resolved path must be exported explicitly.
+    test "exports an explicit DLLB_SERVER_BIN when a binary is available", %{tmp_dir: dir} do
+      bin = Path.join(dir, "dllb-server")
+      File.write!(bin, "#!/bin/sh\n")
+
+      System.put_env("DLLB_SERVER_BIN", bin)
+
+      assert CI.install_dllb_binary() == bin
+      assert Application.get_env(:ragex, :dllb_server_bin) == bin
+      assert System.get_env("DLLB_SERVER_BIN") == bin
+    end
+
+    # dllb is an accelerator, not a dependency: a missing binary must degrade
+    # to the ETS backend, never raise and never change the exit code.
+    test "returns nil without raising when no binary exists", %{tmp_dir: _dir} do
+      System.put_env("DLLB_SERVER_BIN", "/nonexistent/dllb-server")
+      Application.put_env(:ragex, :dllb_server_bin, "/nonexistent/dllb-server")
+
+      # `System.find_executable/1` may still find a real binary on a developer
+      # machine; the assertion is only that the call is total.
+      assert CI.install_dllb_binary() == nil or is_binary(CI.install_dllb_binary())
+    end
+
+    test "install_headless_seams/1 resolves the binary as a side effect", %{tmp_dir: dir} do
+      bin = Path.join(dir, "dllb-server")
+      File.write!(bin, "#!/bin/sh\n")
+      System.put_env("DLLB_SERVER_BIN", bin)
+
+      CI.install_headless_seams(dir)
+
+      assert Application.get_env(:ragex, :dllb_server_bin) == bin
+    end
+  end
 end

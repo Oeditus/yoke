@@ -1,5 +1,8 @@
 defmodule Yoke.HandsExecutorTest do
-  use ExUnit.Case, async: true
+  # Not async: the setup pins the global `:yoke, :output_mode` app env, and
+  # other modules (cli_output_test, formatter_test) mutate the same key. Under
+  # `async: true` they race and this module's ANSI assertions see plain output.
+  use ExUnit.Case, async: false
 
   alias Yoke.Hands.Executor
 

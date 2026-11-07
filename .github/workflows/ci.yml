@@ -56,12 +56,39 @@ jobs:
           restore-keys: ${{ runner.os }}-mix-otp${{ matrix.otp }}-
       - name: Install dependencies
         run: mix deps.get
+
+      # Ragex's per-project store backend spawns a `dllb-server` OS process
+      # against `<repo>/.ragex/dllb.redb`. That binary is a Rust executable and
+      # is not part of the Elixir dependency tree, so without this step every
+      # run logs `:dllb_binary_not_found` and falls back to the ETS backend.
+      # The installer never fails the job on its own: dllb is an accelerator.
+      - name: Install dllb-server
+        run: |
+          ./scripts/install-dllb.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # `.ragex` holds the Ragex knowledge graph (dllb.redb); `.yoke` holds the
+      # repo config/policy and session checkpoints. Restoring them turns a
+      # cold index into a warm start. Keyed on the sources they describe, so a
+      # stale graph is never reused after a code change.
+      - name: Restore Ragex and yoke caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ragex
+            .yoke
+          key: ${{ runner.os }}-ragex-${{ hashFiles('**/*.ex', '**/*.exs', 'mix.lock', '.yoke/config.json', '.yoke/policy.json') }}
+          restore-keys: |
+            ${{ runner.os }}-ragex-
+
       - name: Run tests with coverage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: mix coveralls.github --exclude ragex
       - name: Run yoke launcher tests
         run: bash test/yoke_release_test.sh
+      - name: Run dllb install script tests
+        run: bash test/install_dllb_test.sh
 
   headless:
     name: Headless seams (no TTY)

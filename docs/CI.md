@@ -297,9 +297,34 @@ yoke review --pr <number> [options]
 | `--post` | Post the review to the PR via `gh` |
 | `--model` / `--endpoint` | Provider overrides |
 | `--max-cost <usd>` | Hard USD budget |
+| `--max-diff-bytes <n>` | Override the review diff cap (default 300 KB) |
 | `--dry-run` | Resolve the context and exit without a model call |
 
-### 4.1 Exit codes are policy
+### 4.1 Large pull requests
+
+A diff over 300 KB is refused rather than partially reviewed — a truncated
+review would silently miss files. This is the cap working as designed, but it
+means a legitimately large PR cannot be reviewed as-is. The error says so and
+names both ways forward:
+
+```
+Review diff is 423 KB, over the 300 KB limit. No partial review was generated.
+Either review a smaller commit range, or raise the limit with `max_diff_bytes`
+in .yoke/policy.json.
+```
+
+```bash
+# One run, no config change
+yoke review --base main --head HEAD --max-diff-bytes 1000000
+
+# Or persistently, for a repository whose PRs are routinely large
+# .yoke/policy.json: { "max_diff_bytes": 1000000 }
+```
+
+Raising the cap raises the model's context cost proportionally — the budget in
+`Yoke.CI.Budget` still applies, so a runaway review is bounded either way.
+
+### 4.2 Exit codes are policy
 
 | Code | Meaning |
 | :--- | :--- |
@@ -314,7 +339,7 @@ reviewer is expected to block a PR, but a red build on `main` would be noise.
 **Fail-open on infrastructure, fail-closed on findings.** A model failure or a
 failed post exits `3` — a review that did not happen must never look green.
 
-### 4.2 The findings pipeline
+### 4.3 The findings pipeline
 
 ```
 model output
@@ -328,7 +353,7 @@ Endorsements are observations, never requests for changes: they are reported
 in the summary and artifact, but they **never** gate and never count toward
 `findings-count`.
 
-### 4.3 Sinks
+### 4.4 Sinks
 
 | Sink | Destination | Notes |
 | :--- | :--- | :--- |
@@ -579,10 +604,53 @@ step:
 ```yaml
 - uses: actions/cache@v4
   with:
-    path: .ragex
+    path: |
+      .ragex
+      .yoke
     key: ragex-${{ hashFiles('**/*.ex', '**/*.exs', 'mix.lock') }}
 - run: yoke rag --index
 ```
+
+`.ragex` holds the knowledge graph (`dllb.redb` plus its tantivy search index);
+`.yoke` holds the repo config/policy and session checkpoints. Both are keyed on
+the sources they describe, so a stale graph is never reused after a code change.
+
+### 10.1.1 `dllb-server` is not in the dependency tree
+
+Ragex's `:per_project` store backend spawns a **`dllb-server`** OS process
+against `<repo>/.ragex/dllb.redb`. That binary is a Rust executable, not an
+Elixir dependency, so it is absent from every fresh machine — including every
+GitHub Actions runner. Without it, Ragex logs:
+
+```
+Failed to initialize per-project dllb instance for <dir>: :dllb_binary_not_found
+Per-project Dllb startup notice: :dllb_binary_not_found
+```
+
+and silently degrades to the ETS backend. That is a *degradation, not an
+error*: the run still succeeds, it just has no knowledge graph. `action.yml`
+installs the binary and both workflow files do the same for the dev tree:
+
+```yaml
+- name: Install dllb-server
+  run: |
+    ./scripts/install-dllb.sh
+    echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+```
+
+`scripts/install-dllb.sh` downloads the pinned release tarball, verifies its
+SHA-256 against the release's `SHA256SUMS` **before** making it executable, and
+installs to `~/.local/bin` without `sudo`. It never fails the job on its own —
+pass `DLLB_REQUIRED=1` to opt into that.
+
+> **Two separate lookups, one binary.** `~/.local/bin` is on `PATH`, but Ragex's
+> `find_dllb_binary/0` searches `PATH` via `System.find_executable/1`, which
+> does **not** consult `$GITHUB_PATH` updates made earlier in the same job in
+> every case, and does not know about `~/.local/bin` when it is not on `PATH`.
+> `Yoke.Config.CI.install_dllb_binary/0` therefore resolves the path explicitly
+> and exports `:ragex, :dllb_server_bin` + `DLLB_SERVER_BIN` before the review
+> starts. If you see `:dllb_binary_not_found` despite the install step passing,
+> check that export first.
 
 ### 10.2 Failure is not fatal
 
@@ -598,14 +666,17 @@ accelerator was unavailable. `--strict` opts into failing instead.
 `action.yml` is a composite action. Inputs:
 
 `command`, `base`, `head`, `pr`, `model`, `endpoint`, `fail-on`, `config-path`,
-`post`, `with-ragex`, `upload`, `api-url`, `api-key`, `yoke-version`,
-`elixir-version`, `otp-version`.
+`post`, `with-ragex`, `dllb-version`, `upload`, `api-url`, `api-key`,
+`yoke-version`, `elixir-version`, `otp-version`.
 
 Outputs: `findings-count`, `max-severity`, `run-uid`, `report-path`.
 
 `scripts/install.sh` downloads the pinned escript and **verifies its SHA-256
 before making it executable**, so a corrupted or tampered download can never
 run. It never uses `sudo`.
+
+`scripts/install-dllb.sh` does the same for `dllb-server` (§10.1.1), and is
+skipped entirely when `dllb-version: skip` is set.
 
 ---
 

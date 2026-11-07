@@ -21,6 +21,7 @@ defmodule Yoke.CLI.CI do
   | `--model <name>` | Model override |
   | `--endpoint <url>` | Endpoint override |
   | `--max-cost <usd>` | Hard USD budget for the run |
+  | `--max-diff-bytes <n>` | Override the review diff cap (default 300 KB) |
   | `--dry-run` | Resolve the context and exit without calling the model |
 
   ## Exit codes
@@ -48,6 +49,7 @@ defmodule Yoke.CLI.CI do
     model: :string,
     endpoint: :string,
     max_cost: :string,
+    max_diff_bytes: :string,
     dry_run: :boolean,
     help: :boolean
   ]
@@ -129,6 +131,7 @@ defmodule Yoke.CLI.CI do
       model: :string,
       endpoint: :string,
       max_cost: :string,
+      max_diff_bytes: :string,
       output: :string,
       format: :string,
       # Accepted for parity with the other subcommands, because `action.yml`
@@ -173,6 +176,7 @@ defmodule Yoke.CLI.CI do
       --model <name>      Model override
       --endpoint <url>    Endpoint override
       --max-cost <usd>    Hard USD budget for this run
+      --max-diff-bytes <n>  Override the review diff cap (default 300000)
       --format <fmt>      markdown | json | summary (default: summary)
       --output <path>     Artifact path (default: $RUNNER_TEMP/yoke-describe.json)
       -h, --help          Show this help
@@ -823,6 +827,7 @@ defmodule Yoke.CLI.CI do
       --model <name>      Model override
       --endpoint <url>    Endpoint override
       --max-cost <usd>    Hard USD budget for this run
+      --max-diff-bytes <n>  Override the review diff cap (default 300000)
       --dry-run           Resolve the review context and exit without calling the model
       -h, --help          Show this help
 
@@ -849,9 +854,19 @@ defmodule Yoke.CLI.CI do
       output: opts[:output],
       post: opts[:post] || false,
       model: opts[:model],
-      endpoint: opts[:endpoint]
+      endpoint: opts[:endpoint],
+      max_diff_bytes: parse_int(opts[:max_diff_bytes])
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  defp parse_int(nil), do: nil
+
+  defp parse_int(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {n, ""} when n > 0 -> n
+      _ -> nil
+    end
   end
 
   @doc """

@@ -59,6 +59,7 @@ defmodule Yoke.CI.Review do
   @spec run(keyword()) :: {:ok, map()} | {:error, String.t()}
   def run(opts \\ []) do
     cwd = Keyword.get(opts, :cwd) || File.cwd!()
+    apply_diff_limit_override(Keyword.get(opts, :max_diff_bytes))
 
     with {:ok, context} <- resolve_context(opts, cwd),
          :ok <- install_seams(cwd),
@@ -68,6 +69,19 @@ defmodule Yoke.CI.Review do
       finish(context, findings, response, opts, cwd)
     end
   end
+
+  # `--max-diff-bytes` overrides the policy limit for this run only. Set in the
+  # application env because `Yoke.Git.diff_branches/3` reads the limit there,
+  # and threading a parameter through it would change a public signature for
+  # one caller.
+  defp apply_diff_limit_override(nil), do: :ok
+
+  defp apply_diff_limit_override(limit) when is_integer(limit) and limit > 0 do
+    Application.put_env(:yoke, :max_diff_bytes_override, limit)
+    :ok
+  end
+
+  defp apply_diff_limit_override(_), do: :ok
 
   @doc """
   Resolves the review context from the given options.

@@ -43,7 +43,9 @@ defmodule Yoke.PRReview.ContextTest do
     File.write!(Path.join(repo, "large.txt"), String.duplicate("large payload\n", 25_000))
     Fixture.commit(repo, "large change")
     assert {:error, large} = Context.resolve("main HEAD", repo)
-    assert large =~ "exceeds 300 KB"
+    # The message must name the limit and how to raise it, not just refuse.
+    assert large =~ "over the 300 KB limit"
+    assert large =~ "max_diff_bytes"
   end
 
   test "uses merge-base semantics when base has advanced", %{repo: repo} do

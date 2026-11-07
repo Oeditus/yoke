@@ -48,9 +48,18 @@ defmodule Yoke.Git do
   @doc "Returns the effective review-diff cap in bytes for `cwd`."
   @spec max_diff_bytes(String.t()) :: non_neg_integer()
   def max_diff_bytes(cwd \\ ".") do
-    case Yoke.Interaction.Policy.load(cwd)["max_diff_bytes"] do
-      limit when is_integer(limit) and limit > 0 -> limit
-      _ -> @default_max_diff_bytes
+    # An explicit override (e.g. `yoke review --max-diff-bytes`) wins over the
+    # policy file, so a legitimately large PR can be reviewed without editing
+    # repository config.
+    case Application.get_env(:yoke, :max_diff_bytes_override) do
+      limit when is_integer(limit) and limit > 0 ->
+        limit
+
+      _ ->
+        case Yoke.Interaction.Policy.load(cwd)["max_diff_bytes"] do
+          limit when is_integer(limit) and limit > 0 -> limit
+          _ -> @default_max_diff_bytes
+        end
     end
   end
 
@@ -59,8 +68,9 @@ defmodule Yoke.Git do
 
     if byte_size(diff) > limit do
       {:error,
-       "Review diff exceeds #{div(limit, 1000)} KB. Review a smaller commit range; " <>
-         "no partial review was generated."}
+       "Review diff is #{div(byte_size(diff), 1000)} KB, over the #{div(limit, 1000)} KB " <>
+         "limit. No partial review was generated. Either review a smaller commit range, " <>
+         "or raise the limit with `max_diff_bytes` in .yoke/policy.json."}
     else
       :ok
     end

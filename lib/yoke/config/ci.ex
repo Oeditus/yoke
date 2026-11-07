@@ -155,6 +155,13 @@ defmodule Yoke.Config.CI do
     * `:output_mode` → `:plain` unless a TTY is genuinely present
     * `:non_interactive` → `true`
 
+  Also resolves the `dllb-server` executable once, via
+  `install_dllb_binary/0`. Ragex's `:per_project` store backend spawns that
+  binary as an OS process; on a fresh CI runner it is only present if the
+  action installed it into `~/.local/bin`, which is on `PATH` but which Ragex
+  does not search. Resolving it here means the graph works when the binary is
+  available and degrades quietly when it is not.
+
   Returns the list of `{key, value}` pairs that were applied, which is useful
   for `--doctor` output and for tests.
   """
@@ -168,7 +175,50 @@ defmodule Yoke.Config.CI do
     ]
 
     Enum.each(applied, fn {key, value} -> Application.put_env(:yoke, key, value) end)
+    install_dllb_binary()
     applied
+  end
+
+  @doc """
+  Resolves the `dllb-server` executable and exports it to Ragex.
+
+  Ragex reads `:ragex, :dllb_server_bin` (or `DLLB_SERVER_BIN`) and otherwise
+  searches only `PATH`, `~/.local/bin` and a `../dllb` sibling checkout -- see
+  `Ragex.Dllb.ProjectManager.find_dllb_binary/0`. When the binary is absent,
+  Ragex logs `:dllb_binary_not_found` and falls back to the ETS backend. That
+  is a *degradation, not an error*, so this function never raises and never
+  changes the exit code.
+
+  Returns the resolved path, or `nil` when no binary could be found.
+  """
+  @spec install_dllb_binary() :: String.t() | nil
+  def install_dllb_binary do
+    case find_dllb_binary() do
+      nil ->
+        nil
+
+      path ->
+        Application.put_env(:ragex, :dllb_server_bin, path)
+        System.put_env("DLLB_SERVER_BIN", path)
+        path
+    end
+  end
+
+  # Candidate locations, in the order Ragex itself would try them, plus the
+  # two install locations the GitHub Action and `mix yoke.install` use.
+  defp find_dllb_binary do
+    home = System.user_home() || System.get_env("HOME") || "/root"
+
+    [
+      System.get_env("DLLB_SERVER_BIN"),
+      Application.get_env(:ragex, :dllb_server_bin),
+      System.find_executable("dllb-server"),
+      Path.join(home, ".local/bin/dllb-server"),
+      Path.join(home, ".cargo/bin/dllb-server"),
+      "/usr/local/bin/dllb-server"
+    ]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.find(&File.exists?/1)
   end
 
   # ---------------------------------------------------------------------
