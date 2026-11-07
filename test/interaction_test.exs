@@ -99,6 +99,27 @@ defmodule Yoke.InteractionTest do
   end
 
   describe "Yoke.Interaction.Policy" do
+    test "every interaction kind has a policy default" do
+      # A kind missing from `defaults/0` can never be set to "approve" via a
+      # policy file -- it silently falls back to the `Map.get(..., "deny")`
+      # branch. This invariants catches a new kind being added to the
+      # behaviour without a matching policy key.
+      defaults = Policy.defaults() |> Map.keys() |> MapSet.new()
+      kinds = Interaction.kinds() |> Enum.map(&Atom.to_string/1) |> MapSet.new()
+
+      missing = MapSet.difference(kinds, defaults)
+
+      assert MapSet.size(missing) == 0,
+             "interaction kinds missing from Policy.defaults/0: #{inspect(MapSet.to_list(missing))}"
+    end
+
+    test "every kind can be approved via a policy file", %{tmp_dir: dir} do
+      for kind <- Interaction.kinds() do
+        Policy.write(dir, %{Atom.to_string(kind) => "approve"})
+        assert Policy.ask(kind, %{cwd: dir}) == :approve, "#{kind} could not be approved"
+      end
+    end
+
     setup do
       prior = System.get_env("YOKE_POLICY")
       System.delete_env("YOKE_POLICY")

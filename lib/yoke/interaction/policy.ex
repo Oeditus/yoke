@@ -62,6 +62,14 @@ defmodule Yoke.Interaction.Policy do
     "max_depth" => "deny",
     "tool_permission" => "deny",
     "review_fix" => "deny",
+    # Workflow steps: `task_split` asks whether to fan out into parallel git
+    # worktrees, `branch` whether to branch off an unexpected base. Denying
+    # both is the CI-correct answer (one checkout, no worktrees), so these
+    # default to deny -- but they are listed so a repository *can* opt in.
+    "workflow_confirm" => "deny",
+    # The interactive linter's apply/skip prompt. Denying means findings are
+    # reported but never auto-applied, which is right for a CI run.
+    "lint_fix" => "deny",
     "allow_writes" => false,
     "fail_on" => "high",
     "max_tool_calls" => 120,

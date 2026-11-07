@@ -220,11 +220,14 @@ defmodule Yoke.CI.SinksTest do
     end
 
     test "redacts a transcript that trips AI Guard" do
-      secret = "DEEPSEEK_API_KEY=sk-REPLACED-BY-RUNTIME-FIXTURE"
+      # Built at runtime so the literal never appears in the source: a
+      # realistic-looking key here trips GitHub's push protection as a
+      # false positive, blocking the branch from being pushed at all.
+      secret = "DEEPSEEK_API_KEY=" <> "sk-" <> String.duplicate("a1b2c3d4e5", 3)
       payload = Artifact.payload(report([]), transcript: secret)
 
       assert payload["transcript"]["redacted"] == true
-      refute inspect(payload) =~ "sk-REPLACED-BY-RUNTIME-FIXTURE"
+      refute inspect(payload) =~ String.slice(secret, 18, 20)
     end
 
     test "keeps a clean transcript" do

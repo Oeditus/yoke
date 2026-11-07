@@ -103,7 +103,8 @@ or written.**
   "max_tool_calls": 120,
   "max_wall_clock_s": 900,
   "max_cost_usd": 2.0,
-  "max_tokens": 400000
+  "max_tokens": 400000,
+  "max_diff_bytes": 300000
 }
 ```
 
@@ -116,10 +117,21 @@ or written.**
 | `max_wall_clock_s` | Hard cap on wall-clock seconds in one run |
 | `max_cost_usd` | Hard cap on estimated USD spend |
 | `max_tokens` | Hard cap on total tokens |
+| `max_diff_bytes` | Cap on the review diff size, in bytes (default 300 KB) |
+
+Recognised `<kind>` values: `plan_gate`, `plan_revision`, `loop_break`,
+`api_error`, `max_depth`, `tool_permission`, `review_fix`, `workflow_confirm`,
+`lint_fix`.
 
 Every value is validated. An unrecognised value is **dropped** and replaced by
 the safe default rather than propagated — a typo must not silently loosen a
 safety property.
+
+> **Adding a key requires code changes.** `Yoke.Interaction.Policy` normalises
+> against an explicit allowlist, so a key that is not added to
+> `normalize_value/2` is silently ignored. This bit us once with
+> `max_diff_bytes`; if a policy setting appears to have no effect, check the
+> allowlist first.
 
 ---
 
@@ -647,6 +659,22 @@ ldd deps/exla/cache/libexla.so | grep -c "not found"
 
 To reproduce the CI failure locally, point `LD_LIBRARY_PATH` away from your CUDA
 libraries and run `mix test` — the `cuda13` build will fail to start `:exla`.
+
+The selection logic is in `deps/xla/lib/xla.ex`:
+
+```elixir
+target = System.get_env("XLA_TARGET") || infer_xla_target() || "cpu"
+```
+
+so an unset `XLA_TARGET` falls back to *inference*, which is why the wrongly
+named `EXLA_TARGET` had no effect. The `cpu` artifact for the pinned version
+was confirmed present upstream:
+
+```bash
+curl -sIL -o /dev/null -w "%{http_code}\n" \
+  https://github.com/elixir-nx/xla/releases/download/v0.10.0/xla_extension-0.10.0-x86_64-linux-gnu-cpu.tar.gz
+# 200
+```
 
 > **Note:** a machine with CUDA installed will try to *rebuild* the NIF from
 > source when `deps/exla/cache` is removed, which needs `XLA_BUILD=true` and a
