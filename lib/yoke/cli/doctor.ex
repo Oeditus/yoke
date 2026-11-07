@@ -10,11 +10,11 @@ defmodule Yoke.CLI.Doctor do
   defstruct [:status, :checks, :summary]
 
   @doc "Runs all diagnostic checks and prints or returns a report."
-  def run(workspace \\ File.cwd!()) do
+  def run(workspace \\ File.cwd!(), opts \\ []) do
     checks = [
       check_runtime(),
       check_workspace(workspace),
-      check_provider(),
+      check_provider(workspace, opts),
       check_git(workspace),
       check_tools()
     ]
@@ -29,8 +29,8 @@ defmodule Yoke.CLI.Doctor do
     }
   end
 
-  def print_report(workspace \\ File.cwd!()) do
-    report = run(workspace)
+  def print_report(workspace \\ File.cwd!(), opts \\ []) do
+    report = run(workspace, opts)
     IO.puts(report.summary)
     report.status
   end
@@ -76,6 +76,28 @@ defmodule Yoke.CLI.Doctor do
         status: :error,
         details: "Directory '#{workspace}' does not exist"
       }
+    end
+  end
+
+  defp check_provider(workspace, opts) do
+    resolved = Yoke.Provider.resolve(Keyword.put(opts, :cwd, workspace))
+
+    if resolved[:provider] do
+      local? = Yoke.Provider.location(resolved[:endpoint]) == "LOCAL"
+      configured? = is_binary(resolved[:api_key]) and resolved[:api_key] != ""
+
+      %{
+        category: "AI Provider Credentials",
+        status: if(local? or configured?, do: :ok, else: :warning),
+        details:
+          Yoke.Provider.describe(resolved) <>
+            if(local?,
+              do: " (no API key required)",
+              else: " (credentials configured: #{configured?})"
+            )
+      }
+    else
+      check_provider()
     end
   end
 

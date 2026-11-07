@@ -6,9 +6,6 @@ defmodule Yoke.Client.DeepSeekAPI do
   """
   require Logger
 
-  @default_endpoint "https://api.deepseek.com/chat/completions"
-  @default_model "deepseek-flash"
-
   defmodule ClientConfig do
     @moduledoc "Configuration parameters for DeepSeek API requests."
     defstruct model: "deepseek-flash",
@@ -47,17 +44,22 @@ defmodule Yoke.Client.DeepSeekAPI do
   Sends a chat completion request to DeepSeek API or mock handler.
   """
   def chat_completion(messages, tools, opts \\ []) do
+    opts = Yoke.Provider.resolve(opts)
     config = build_config(opts)
     _input_verdict = Yoke.AIGuard.guard_llm(messages, :input, target: config.model)
 
     res =
       Yoke.ExternalCall.run(:deepseek_api, [endpoint: config.endpoint, model: config.model], fn ->
-        if ((is_nil(config.api_key) or config.api_key == "") and
-              not local_endpoint?(config.endpoint)) or
-             config.mock == true do
-          mock_response(messages, tools, config.model)
+        if opts[:provider] && not config.mock && config.api_key in [nil, ""] do
+          {:error, "Selected provider has no API credentials configured."}
         else
-          real_chat_completion(messages, tools, config)
+          if ((is_nil(config.api_key) or config.api_key == "") and
+                not local_endpoint?(config.endpoint)) or
+               config.mock == true do
+            mock_response(messages, tools, config.model)
+          else
+            real_chat_completion(messages, tools, config)
+          end
         end
       end)
 
@@ -133,7 +135,7 @@ defmodule Yoke.Client.DeepSeekAPI do
           |> Enum.reject(&is_nil/1)
           |> Enum.sort()
 
-        if Enum.empty?(model_ids) do
+        if Enum.empty?(model_ids) and not local_endpoint?(config.endpoint) do
           {:ok, ["deepseek-flash", "deepseek-v4-pro", "deepseek-reasoner", "deepseek-chat"]}
         else
           {:ok, model_ids}
@@ -170,42 +172,15 @@ defmodule Yoke.Client.DeepSeekAPI do
   @doc "Builds a structured ClientConfig struct from keyword options."
   # credo:disable-for-lines:109
   def build_config(opts) when is_list(opts) do
+    opts = Yoke.Provider.resolve(opts)
+
     mock_default =
       if Keyword.has_key?(opts, :mock),
         do: Keyword.get(opts, :mock),
         else: enable_real_api_tests?()
 
-    raw_endpoint =
-      Enum.find(
-        [
-          opts[:endpoint],
-          System.get_env("DEEPSEEK_ENDPOINT"),
-          System.get_env("OPENROUTER_BASE_URL"),
-          System.get_env("OPENCODE_BASE_URL"),
-          System.get_env("OLLAMA_HOST")
-        ],
-        @default_endpoint,
-        &is_binary/1
-      )
-
-    normalized_endpoint = normalize_endpoint(raw_endpoint)
-
-    api_key =
-      cond do
-        opts[:api_key] ->
-          opts[:api_key]
-
-        local_endpoint?(normalized_endpoint) ->
-          "not-needed"
-
-        true ->
-          System.get_env("DEEPSEEK_API_KEY") ||
-            System.get_env("OPENROUTER_API_KEY") ||
-            System.get_env("OPENCODE_API_KEY") ||
-            System.get_env("OPENCODE_ZEN_API_KEY") ||
-            System.get_env("LLM_API_KEY") ||
-            Map.get(Yoke.Config.load_config(opts[:cwd] || "."), "api_key")
-      end
+    normalized_endpoint = normalize_endpoint(opts[:endpoint])
+    api_key = opts[:api_key]
 
     session_id =
       cond do
@@ -227,10 +202,7 @@ defmodule Yoke.Client.DeepSeekAPI do
 
     cfg = Yoke.Config.load_config(opts[:cwd] || ".")
 
-    configured_model =
-      opts[:model] ||
-        System.get_env("DEEPSEEK_MODEL") ||
-        Map.get(cfg, "model", @default_model)
+    configured_model = opts[:model]
 
     is_reasoning = reasoning_model?(configured_model)
 
@@ -289,8 +261,8 @@ defmodule Yoke.Client.DeepSeekAPI do
       stream_fun: opts[:stream_fun],
       mock: mock_default,
       session_id: session_id,
-      thinking: thinking,
-      reasoning_effort: reasoning_effort
+      thinking: if(local_endpoint?(normalized_endpoint), do: nil, else: thinking),
+      reasoning_effort: if(local_endpoint?(normalized_endpoint), do: nil, else: reasoning_effort)
     }
   end
 

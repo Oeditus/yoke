@@ -177,6 +177,118 @@ Connect `yoke` to OpenCode Go / Zen endpoints:
   ```
 
 #### C. Local Models (SGLang, Ollama, LM Studio, vLLM)
+##### Named profiles: local inference versus remote DeepSeek
+Select the model and endpoint together:
+
+```bash
+yoke --provider local        # Devstral Small 2 24B Q4_K_M, localhost Ollama
+yoke --provider local-qwen   # Qwen3-Coder 30B-A3B Q4_K_M, localhost Ollama
+yoke --provider deepseek     # deepseek-flash, official remote DeepSeek API
+```
+
+Inside the REPL, `/provider` shows the profile, model, endpoint, and
+`LOCAL`/`REMOTE` transport. `/provider local`, `/provider local-qwen`, and
+`/provider deepseek` switch all settings atomically while idle. The prompt
+always includes `[LOCAL]` or `[REMOTE]`, independently of Hands `/mode`.
+A remote switch warns that subsequent requests send the conversation history;
+use `/reset` for a fresh conversation.
+
+Selection precedence is CLI `--provider`, then `YOKE_PROVIDER`, then
+`"provider"` in global/workspace config. Without a profile, existing
+model/endpoint behavior is preserved. Explicit profiles ignore unrelated
+`DEEPSEEK_MODEL`, `DEEPSEEK_ENDPOINT`, aggregator routing, and `OLLAMA_HOST`.
+Explicit `--model` and `--endpoint` overrides remain available; local profiles
+reject non-loopback endpoints.
+
+Local profiles send no API credentials and omit DeepSeek-only thinking
+controls. They have zero API token prices, without erasing earlier remote
+costs. DeepSeek resolves its own credentials rather than aggregator environment
+keys. Provider identity survives session/workflow resume without persisting
+credentials. Subagents, plans, compression, practice learning, and workflow
+steps inherit the selected transport. Local failures never fall back remotely.
+
+##### Sharing a 24 GB NVIDIA GPU with Ragex
+Devstral Small 2 is the conservative local default: approximately 15 GB of
+Q4_K_M weights versus Qwen's 19 GB. It is Apache-2.0; its
+[upstream card](https://huggingface.co/mistralai/Devstral-Small-2-24B-Instruct-2512)
+reports 68% SWE-bench Verified and 256K context. These are upstream results,
+not measurements of this quantization or Yoke. Qwen is a sparse MoE, useful
+for coding-speed comparisons, but all its weights still occupy memory.
+
+Use a current [Ollama Linux distribution](https://docs.ollama.com/linux).
+For a rootless installation, inspect and extract the official amd64 archive
+under `~/.local` (it contains `bin/ollama` and `lib/ollama`). On this workstation
+Ollama is installed this way and enabled as a user service at
+`~/.config/systemd/user/yoke-ollama.service`. Its environment is:
+
+```ini
+OLLAMA_HOST=127.0.0.1:11434
+OLLAMA_NO_CLOUD=1
+OLLAMA_CONTEXT_LENGTH=16384
+OLLAMA_FLASH_ATTENTION=1
+OLLAMA_KV_CACHE_TYPE=q8_0
+OLLAMA_NUM_PARALLEL=1
+OLLAMA_MAX_LOADED_MODELS=1
+OLLAMA_GPU_OVERHEAD=4294967296
+OLLAMA_KEEP_ALIVE=2m
+```
+
+These are server settings, not environment variables to put on the Yoke
+client. For a manual server, export them before running `ollama serve`.
+The 4 GiB scheduler margin is not a hard cross-process memory partition.
+Only one generation model is loaded, and it unloads after two minutes idle.
+
+```bash
+systemctl --user status yoke-ollama.service --no-pager
+systemctl --user restart yoke-ollama.service
+systemctl --user stop yoke-ollama.service
+journalctl --user -u yoke-ollama.service --no-pager
+ollama pull devstral-small-2:24b-instruct-2512-q4_K_M
+ollama pull qwen3-coder:30b-a3b-q4_K_M
+```
+
+Both pinned baselines need approximately 34 GB total disk space. Leave EXLA
+preallocation disabled and initially budget roughly 3 GiB for embeddings:
+
+```bash
+EXLA_GPU_MEMORY_FRACTION=0.125 \
+EXLA_GPU_PREALLOCATE=false \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.125 \
+XLA_PYTHON_CLIENT_PREALLOCATE=false \
+yoke --provider local
+```
+
+The workstation's `~/.config/yoke/cuda.sh` supplies these defaults while
+preserving explicit environment overrides. An already-open shell may carry
+older exported values; use the command above or open a fresh shell. Other
+machines retain Yoke's existing EXLA defaults.
+
+Check `ollama ps` and `nvidia-smi` before increasing context/concurrency.
+Multiple Yoke processes also multiply embedding memory. Advertised maximum
+context does not imply it fits a shared 24 GB GPU: local profiles assume the
+server's 16,384-token context. If tuning the server, align the profile's
+`max_context_tokens` setting in `Yoke.Provider` too.
+
+Reproduce real client tool-call/result round trips with overlapping 32-item
+CUDA embedding batches:
+
+```bash
+EXLA_GPU_MEMORY_FRACTION=0.125 \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.125 \
+mix run --no-start scripts/verify_local.exs
+```
+
+The script executes CUDA servings directly so CPU fallback cannot hide
+failure, prints VRAM allocation, and unloads both generation models afterwards.
+No remote generation requests are made. Embedding weights may initially be
+downloaded from Hugging Face.
+
+```bash
+ollama stop devstral-small-2:24b-instruct-2512-q4_K_M
+ollama stop qwen3-coder:30b-a3b-q4_K_M
+```
+
+##### Custom local endpoints
 Run `yoke` completely offline against local LLM servers without requiring API keys:
 
 - **SGLang (`http://localhost:30000`)**:

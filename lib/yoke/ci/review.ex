@@ -152,6 +152,7 @@ defmodule Yoke.CI.Review do
         budget: budget
       ]
       |> maybe_put(:model, Keyword.get(opts, :model))
+      |> maybe_put(:provider, Keyword.get(opts, :provider))
       |> maybe_put(:endpoint, Keyword.get(opts, :endpoint))
       |> maybe_put(:api_key, Keyword.get(opts, :api_key))
 

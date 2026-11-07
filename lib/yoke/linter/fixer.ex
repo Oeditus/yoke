@@ -34,7 +34,7 @@ defmodule Yoke.Linter.Fixer do
   @doc """
   Generates a proposed patch for a single finding in the given working directory.
   """
-  def propose_fix(%Finding{} = finding, cwd \\ ".") do
+  def propose_fix(%Finding{} = finding, cwd \\ ".", provider_opts \\ []) do
     full_path = Path.expand(finding.file, cwd)
 
     if File.exists?(full_path) do
@@ -45,7 +45,7 @@ defmodule Yoke.Linter.Fixer do
           {:ok, patch}
 
         :no_mechanical_fix ->
-          try_llm_fix(finding, full_path, content)
+          try_llm_fix(finding, full_path, content, Keyword.put(provider_opts, :cwd, cwd))
       end
     else
       {:error, "File does not exist: #{finding.file}"}
@@ -152,7 +152,7 @@ defmodule Yoke.Linter.Fixer do
 
   # --- LLM Fixes ---
 
-  defp try_llm_fix(%Finding{} = finding, full_path, content) do
+  defp try_llm_fix(%Finding{} = finding, full_path, content, provider_opts) do
     lines = String.split(content, "\n")
     total_lines = length(lines)
     s_line = max(1, finding.line - 10)
@@ -182,8 +182,8 @@ defmodule Yoke.Linter.Fixer do
 
     messages = [%{"role" => "user", "content" => prompt}]
 
-    case Yoke.Client.DeepSeekAPI.chat_completion(messages, []) do
-      {:ok, %{"content" => reply}} when is_binary(reply) ->
+    case Yoke.Client.DeepSeekAPI.chat_completion(messages, [], provider_opts) do
+      {:ok, %{content: reply}} when is_binary(reply) ->
         clean_code = extract_code_block(reply)
         original_snippet = Enum.slice(lines, (s_line - 1)..(e_line - 1)) |> Enum.join("\n")
 

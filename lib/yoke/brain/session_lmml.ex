@@ -298,6 +298,8 @@ defmodule Yoke.Brain.SessionLmml do
   defp build_manifest(session_state, session_id) do
     %{
       "session_id" => session_id,
+      "provider_options" =>
+        session_state |> Map.get(:provider_options, []) |> Yoke.Provider.public_options(),
       "model" => Map.get(session_state, :model, "deepseek-flash"),
       "permission_mode" => to_string(Map.get(session_state, :permission_mode, :ask_confirm)),
       "step_count" => Map.get(session_state, :step_count, 0),
@@ -315,6 +317,7 @@ defmodule Yoke.Brain.SessionLmml do
         "label" => s[:label] || s["label"],
         "timestamp" => s[:timestamp] || s["timestamp"],
         "model" => s[:model] || s["model"],
+        "provider_options" => s[:provider_options] || s["provider_options"] || %{},
         "messages" => s[:messages] || s["messages"]
       }
     end)
@@ -351,6 +354,7 @@ defmodule Yoke.Brain.SessionLmml do
   defp normalize_manifest(data) do
     base = %{
       "session_id" => Map.get(data, "session_id"),
+      "provider_options" => Map.get(data, "provider_options"),
       "model" => Map.get(data, "model", "deepseek-flash"),
       "permission_mode" => Map.get(data, "permission_mode", "ask_confirm"),
       "step_count" => Map.get(data, "step_count", 0),

@@ -9,7 +9,7 @@ defmodule Yoke.Linter.Interactive do
   @doc """
   Runs interactive fix session on raw linter output.
   """
-  def run(linter_output, tool \\ "credo", cwd \\ ".") do
+  def run(linter_output, tool \\ "credo", cwd \\ ".", provider_opts \\ []) do
     findings = Parser.parse(linter_output, tool)
 
     if findings == [] do
@@ -23,7 +23,8 @@ defmodule Yoke.Linter.Interactive do
           Formatter.reset()
       )
 
-      {applied_count, skipped_count} = loop_findings(findings, 1, total, cwd, false, {0, 0})
+      {applied_count, skipped_count} =
+        loop_findings(findings, 1, total, cwd, false, {0, 0}, provider_opts)
 
       summary =
         Formatter.green() <>
@@ -36,12 +37,20 @@ defmodule Yoke.Linter.Interactive do
     end
   end
 
-  defp loop_findings([], _idx, _total, _cwd, _auto_apply, {applied, skipped}) do
+  defp loop_findings([], _idx, _total, _cwd, _auto_apply, {applied, skipped}, _provider_opts) do
     {applied, skipped}
   end
 
-  defp loop_findings([finding | rest], idx, total, cwd, auto_apply, {applied, skipped}) do
-    case Fixer.propose_fix(finding, cwd) do
+  defp loop_findings(
+         [finding | rest],
+         idx,
+         total,
+         cwd,
+         auto_apply,
+         {applied, skipped},
+         provider_opts
+       ) do
+    case Fixer.propose_fix(finding, cwd, provider_opts) do
       {:ok, patch} ->
         if auto_apply do
           case Fixer.apply_patch(patch) do
@@ -52,10 +61,26 @@ defmodule Yoke.Linter.Interactive do
                   Formatter.reset()
               )
 
-              loop_findings(rest, idx + 1, total, cwd, true, {applied + 1, skipped})
+              loop_findings(
+                rest,
+                idx + 1,
+                total,
+                cwd,
+                true,
+                {applied + 1, skipped},
+                provider_opts
+              )
 
             _ ->
-              loop_findings(rest, idx + 1, total, cwd, true, {applied, skipped + 1})
+              loop_findings(
+                rest,
+                idx + 1,
+                total,
+                cwd,
+                true,
+                {applied, skipped + 1},
+                provider_opts
+              )
           end
         else
           prompt_text =
@@ -89,7 +114,15 @@ defmodule Yoke.Linter.Interactive do
                   "  ✓ Applied diff to #{finding.file}:#{finding.line}" <> Formatter.reset()
               )
 
-              loop_findings(rest, idx + 1, total, cwd, true, {applied + 1, skipped})
+              loop_findings(
+                rest,
+                idx + 1,
+                total,
+                cwd,
+                true,
+                {applied + 1, skipped},
+                provider_opts
+              )
 
             :approve ->
               Fixer.apply_patch(patch)
@@ -99,7 +132,15 @@ defmodule Yoke.Linter.Interactive do
                   "  ✓ Applied diff to #{finding.file}:#{finding.line}" <> Formatter.reset()
               )
 
-              loop_findings(rest, idx + 1, total, cwd, false, {applied + 1, skipped})
+              loop_findings(
+                rest,
+                idx + 1,
+                total,
+                cwd,
+                false,
+                {applied + 1, skipped},
+                provider_opts
+              )
 
             _ ->
               IO.puts(
@@ -107,7 +148,15 @@ defmodule Yoke.Linter.Interactive do
                   "  ✗ Skipped finding at #{finding.file}:#{finding.line}" <> Formatter.reset()
               )
 
-              loop_findings(rest, idx + 1, total, cwd, false, {applied, skipped + 1})
+              loop_findings(
+                rest,
+                idx + 1,
+                total,
+                cwd,
+                false,
+                {applied, skipped + 1},
+                provider_opts
+              )
           end
         end
 
@@ -118,7 +167,15 @@ defmodule Yoke.Linter.Interactive do
             Formatter.reset()
         )
 
-        loop_findings(rest, idx + 1, total, cwd, auto_apply, {applied, skipped + 1})
+        loop_findings(
+          rest,
+          idx + 1,
+          total,
+          cwd,
+          auto_apply,
+          {applied, skipped + 1},
+          provider_opts
+        )
     end
   end
 end
