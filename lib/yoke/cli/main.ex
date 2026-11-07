@@ -2,13 +2,54 @@ defmodule Yoke.CLI.Main do
   @moduledoc """
   CLI entrypoint module for `yoke` escript executable.
   Supports interactive REPL and command-line execution arguments.
+
+  ## Subcommand dispatch
+
+  `yoke <subcommand> ...` is routed through `@subcommands`. The table is
+  deliberately built out in full even where only some entries are wired yet
+  (`docs/CI_PLAN.md` Phase 1.1), so later capabilities are *additive* rather
+  than a refactor. An entry that is not yet implemented prints a clear
+  "not implemented" message and exits non-zero, rather than silently falling
+  through to the REPL.
+
+  Anything that is not a known subcommand keeps the historical behaviour:
+  one-shot mode when a prompt is present, otherwise the interactive REPL.
   """
   alias Yoke.Brain.SessionSupervisor
   alias Yoke.CLI.Repl
   alias Yoke.Distribution.NodeManager
 
+  # The full dispatch table. Every entry is wired; the `:planned` status is
+  # retained in the vocabulary so a future command can be advertised before it
+  # is implemented (see `dispatch_subcommand/2`).
+  @subcommands %{
+    "review" => %{module: Yoke.CLI.CI, fun: :review, status: :implemented},
+    "lint" => %{module: Yoke.CLI.CI, fun: :lint, status: :implemented},
+    "describe" => %{module: Yoke.CLI.CI, fun: :describe, status: :implemented},
+    "run" => %{module: Yoke.CLI.CI, fun: :run_workflow, status: :implemented},
+    "audit" => %{module: Yoke.CLI.CI, fun: :audit, status: :implemented},
+    "rag" => %{module: Yoke.CLI.CI, fun: :rag, status: :implemented}
+  }
+
+  @doc "Returns the subcommand dispatch table."
+  @spec subcommands() :: %{String.t() => map()}
+  def subcommands, do: @subcommands
+
   def main(args) do
-    # Ensure custom Yoke-style LogFormatter is installed
+    # Probe terminal capability FIRST, before anything else can write output.
+    # `Application.ensure_all_started/1` below logs startup lines through
+    # `Yoke.CLI.LogFormatter`, so priming after it would let ANSI escapes
+    # reach a CI log for the entire boot sequence. In CI (`</dev/null`,
+    # piped stdout) this pins the presentation seam to `:plain` up front.
+    Yoke.CLI.Output.prime()
+
+    # Install the log formatter before starting anything. In a `mix run` /
+    # release this is also done by `config/runtime.exs`, but an escript
+    # bootstraps differently: its archive starts the dependency tree before
+    # `runtime.exs` is evaluated, so `:ragex` and `:dllb` would emit ~15 raw
+    # `[info]` lines (timestamps and tags included) ahead of the command's own
+    # output. Installing here -- the first statement of the escript's entry
+    # point -- is what actually silences them. Idempotent.
     Yoke.CLI.LogFormatter.install()
 
     configure_ragex_ai()
@@ -27,6 +68,64 @@ defmodule Yoke.CLI.Main do
         other -> other
       end
 
+    # A subcommand is the first non-flag argument, when it names a known
+    # entry in the dispatch table. `--help` / `--doctor` still win.
+    case split_subcommand(args) do
+      {subcommand, rest} ->
+        dispatch_subcommand(subcommand, rest)
+
+      nil ->
+        run_legacy(args)
+    end
+  end
+
+  @doc """
+  Splits `args` into `{subcommand, rest}` when the first non-flag argument
+  names a known subcommand, or `nil` otherwise.
+  """
+  @spec split_subcommand([String.t()]) :: {String.t(), [String.t()]} | nil
+  def split_subcommand(args) do
+    case Enum.split_while(args, &String.starts_with?(&1, "-")) do
+      {_flags, []} ->
+        nil
+
+      {flags, [candidate | rest]} ->
+        if Map.has_key?(@subcommands, candidate) do
+          {candidate, flags ++ rest}
+        else
+          nil
+        end
+    end
+  end
+
+  # Every entry in `@subcommands` is currently implemented. When a future
+  # command is added to the table before it is wired, `Map.fetch!/2` still
+  # resolves it and `apply/3` would raise `UndefinedFunctionError`; the guard
+  # below turns that into a clear message instead.
+  defp dispatch_subcommand(subcommand, args) do
+    %{module: module, fun: fun} = Map.fetch!(@subcommands, subcommand)
+
+    # `function_exported?/3` returns false for a module that is not yet
+    # loaded, which in a freshly-booted escript is the normal state. Ensure
+    # the module is loaded first, otherwise every command reports as
+    # "not implemented" -- which is exactly what happened in CI.
+    _ = Code.ensure_loaded(module)
+
+    unless function_exported?(module, fun, 1) do
+      IO.puts(
+        Yoke.CLI.Formatter.format_warning(
+          "`yoke #{subcommand}` is not implemented yet. See docs/CI_PLAN.md §6."
+        )
+      )
+
+      halt(2)
+    end
+
+    code = apply(module, fun, [args])
+    halt(code)
+  end
+
+  defp run_legacy(args) do
     {opts, extra_args, _invalid} =
       OptionParser.parse(args,
         switches: [

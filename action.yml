@@ -1,0 +1,284 @@
+name: 'Yoke Review'
+description: 'Review a pull request with yoke, headlessly, and annotate the diff'
+author: 'Oeditus'
+
+branding:
+  icon: 'git-pull-request'
+  color: 'purple'
+
+inputs:
+  command:
+    description: 'Subcommand to run (review, lint, describe, run, audit, rag).'
+    required: false
+    default: 'review'
+  base:
+    description: 'Base revision to review from. Defaults to the PR base SHA.'
+    required: false
+    default: ''
+  head:
+    description: 'Head revision to review to. Defaults to the PR head SHA.'
+    required: false
+    default: ''
+  pr:
+    description: 'Pull request number. Defaults to the PR that triggered the workflow.'
+    required: false
+    default: ''
+  model:
+    description: 'Model identifier to use for the review.'
+    required: false
+    default: 'deepseek-flash'
+  endpoint:
+    description: 'Chat-completions endpoint URL.'
+    required: false
+    default: ''
+  fail-on:
+    description: 'Severity threshold that fails the job: high, medium, low, info, or never.'
+    required: false
+    default: ''
+  config-path:
+    description: 'Path to the yoke config file. Defaults to .yoke/config.json in the repo.'
+    required: false
+    default: ''
+  post:
+    description: 'Post the review to the pull request as inline comments.'
+    required: false
+    default: 'true'
+  with-ragex:
+    description: >
+      Enable Ragex code intelligence (slower; requires a cache). When true,
+      dllb-server and the .ragex/.yoke caches are wired up as well.
+    required: false
+    default: 'false'
+  dllb-version:
+    description: >
+      dllb-server release tag to install, e.g. v1.0.2. Defaults to the latest
+      release. Set to 'skip' to install nothing.
+    required: false
+    default: ''
+  upload:
+    description: 'Upload the review artifact at the end of the run.'
+    required: false
+    default: 'true'
+  api-url:
+    description: 'Optional remote sink URL (Phase 3). Failures never fail the job.'
+    required: false
+    default: ''
+  api-key:
+    description: 'Optional remote sink API key (Phase 3).'
+    required: false
+    default: ''
+  yoke-version:
+    description: 'yoke release tag to install, e.g. v0.21.1. Defaults to the latest release.'
+    required: false
+    default: ''
+  build-from-source:
+    description: >
+      Build the escript from the checked-out tree instead of downloading a
+      release. Use for dogfooding: a released binary may predate the command
+      under test, which makes a passing run meaningless.
+    required: false
+    default: 'false'
+  elixir-version:
+    description: 'Elixir version to install.'
+    required: false
+    default: '1.20'
+  otp-version:
+    description: 'Erlang/OTP version to install.'
+    required: false
+    default: '29'
+
+outputs:
+  findings-count:
+    description: 'Number of issues found (endorsements excluded).'
+    value: ${{ steps.review.outputs.findings-count }}
+  max-severity:
+    description: 'Highest issue severity found, or "none".'
+    value: ${{ steps.review.outputs.max-severity }}
+  run-uid:
+    description: 'Stable identifier for this review run.'
+    value: ${{ steps.review.outputs.run-uid }}
+  report-path:
+    description: 'Path to the JSON artifact describing the run.'
+    value: ${{ steps.review.outputs.report-path }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Elixir and Erlang
+      uses: erlef/setup-beam@v1
+      with:
+        elixir-version: ${{ inputs.elixir-version }}
+        otp-version: ${{ inputs.otp-version }}
+
+    - name: Install yoke
+      id: install
+      shell: bash
+      env:
+        YOKE_VERSION: ${{ inputs.yoke-version }}
+        BUILD_FROM_SOURCE: ${{ inputs.build-from-source }}
+      run: |
+        set -euo pipefail
+
+        if [ "$BUILD_FROM_SOURCE" = "true" ]; then
+          # Build the escript from the checked-out tree. Used for dogfooding:
+          # the released binary may predate the command being tested, which
+          # makes a "passing" run meaningless.
+          echo "Building yoke from source…"
+          MIX_ENV=escript mix deps.get
+          MIX_ENV=escript mix escript.build
+          # `install.sh` creates this directory; the source path must too.
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 yoke_escript "$HOME/.local/bin/yoke"
+        else
+          "${{ github.action_path }}/scripts/install.sh"
+        fi
+
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    # Ragex's per-project store backend spawns a `dllb-server` OS process
+    # against `<repo>/.ragex/dllb.redb`. That binary is a Rust executable and
+    # is not part of the Elixir dependency tree, so without this step every
+    # run logs `:dllb_binary_not_found` and falls back to the ETS backend.
+    # The installer never fails the job on its own: dllb is an accelerator.
+    - name: Install dllb-server
+      id: dllb
+      if: ${{ inputs.dllb-version != 'skip' }}
+      shell: bash
+      env:
+        DLLB_VERSION: ${{ inputs.dllb-version }}
+      run: |
+        set -euo pipefail
+        "${{ github.action_path }}/scripts/install-dllb.sh"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    # `.ragex` holds the Ragex knowledge graph (dllb.redb) and `.yoke` holds
+    # the repo's config, policy and session checkpoints. Restoring them turns
+    # a 2-4 minute cold index into a warm start. Both are keyed on the sources
+    # they describe, so a stale graph is never reused after a code change.
+    - name: Restore Ragex and yoke caches
+      if: ${{ inputs.with-ragex == 'true' }}
+      uses: actions/cache@v4
+      with:
+        path: |
+          .ragex
+          .yoke
+        key: ${{ runner.os }}-ragex-${{ hashFiles('**/*.ex', '**/*.exs', 'mix.lock', '.yoke/config.json', '.yoke/policy.json') }}
+        restore-keys: |
+          ${{ runner.os }}-ragex-
+
+    - name: Resolve review range
+      id: range
+      shell: bash
+      env:
+        INPUT_BASE: ${{ inputs.base }}
+        INPUT_HEAD: ${{ inputs.head }}
+        INPUT_PR: ${{ inputs.pr }}
+        EVENT_NAME: ${{ github.event_name }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        PUSH_BEFORE: ${{ github.event.before }}
+        PUSH_AFTER: ${{ github.event.after }}
+      run: |
+        set -euo pipefail
+
+        pr="${INPUT_PR:-$PR_NUMBER}"
+        base="${INPUT_BASE:-$PR_BASE_SHA}"
+        head="${INPUT_HEAD:-$PR_HEAD_SHA}"
+
+        # On a push event there is no PR; review the pushed range instead.
+        if [ -z "$base" ] && [ "$EVENT_NAME" = "push" ]; then
+          base="$PUSH_BEFORE"
+          head="$PUSH_AFTER"
+        fi
+
+        echo "pr=$pr"       >> "$GITHUB_OUTPUT"
+        echo "base=$base"   >> "$GITHUB_OUTPUT"
+        echo "head=$head"   >> "$GITHUB_OUTPUT"
+
+    - name: Run yoke ${{ inputs.command }}
+      id: review
+      shell: bash
+      env:
+        # Model provider credentials come from the caller's secrets.
+        DEEPSEEK_API_KEY: ${{ env.DEEPSEEK_API_KEY }}
+        # `gh` is preinstalled on GitHub-hosted runners and reads this.
+        GITHUB_TOKEN: ${{ github.token }}
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_ENDPOINT: ${{ inputs.endpoint }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_CONFIG_PATH: ${{ inputs.config-path }}
+        INPUT_POST: ${{ inputs.post }}
+        INPUT_WITH_RAGEX: ${{ inputs.with-ragex }}
+        REVIEW_PR: ${{ steps.range.outputs.pr }}
+        REVIEW_BASE: ${{ steps.range.outputs.base }}
+        REVIEW_HEAD: ${{ steps.range.outputs.head }}
+      run: |
+        set -uo pipefail
+
+        args=("$INPUT_COMMAND")
+
+        [ -n "$REVIEW_BASE" ]        && args+=(--base "$REVIEW_BASE")
+        [ -n "$REVIEW_HEAD" ]        && args+=(--head "$REVIEW_HEAD")
+        [ -n "$REVIEW_PR" ]          && args+=(--pr "$REVIEW_PR")
+        [ -n "$INPUT_MODEL" ]        && args+=(--model "$INPUT_MODEL")
+        [ -n "$INPUT_ENDPOINT" ]     && args+=(--endpoint "$INPUT_ENDPOINT")
+        [ -n "$INPUT_FAIL_ON" ]      && args+=(--fail-on "$INPUT_FAIL_ON")
+        [ -n "$INPUT_CONFIG_PATH" ]  && args+=(--config "$INPUT_CONFIG_PATH")
+        [ "$INPUT_POST" = "true" ]   && args+=(--post)
+
+        export YOKE_WITH_RAGEX="$INPUT_WITH_RAGEX"
+
+        report="${RUNNER_TEMP:-/tmp}/yoke-review.json"
+        args+=(--output "$report")
+
+        # `yoke` writes the step summary and annotations itself. Capture the
+        # exit status rather than letting `set -e` abort, so the outputs below
+        # are always populated even on a gating failure.
+        set +e
+        yoke "${args[@]}"
+        status=$?
+        set -e
+
+        {
+          echo "report-path=$report"
+          if [ -f "$report" ]; then
+            echo "findings-count=$(jq -r '.summary.findings_count // 0' "$report")"
+            echo "max-severity=$(jq -r '.summary.max_severity // "none"' "$report")"
+            echo "run-uid=$(jq -r '.run_uid // ""' "$report")"
+          else
+            echo "findings-count=0"
+            echo "max-severity=none"
+            echo "run-uid="
+          fi
+        } >> "$GITHUB_OUTPUT"
+
+        # Fail the step when `yoke` failed. Without this the job passes on any
+        # non-zero exit -- including a usage error or a missing binary -- and
+        # "green" means nothing. Exit 1 (findings at or above --fail-on) is a
+        # legitimate gating outcome, so it is reported but not treated as an
+        # infrastructure failure.
+        if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
+          echo "::error title=yoke $INPUT_COMMAND failed::exit status $status"
+          exit "$status"
+        fi
+
+        if [ ! -f "$report" ]; then
+          echo "::error title=yoke $INPUT_COMMAND produced no artifact::expected $report"
+          exit 3
+        fi
+
+        exit "$status"
+
+    # Guarded on a non-empty path: when the run step fails before writing its
+    # outputs, `report-path` is unset and upload-artifact errors with
+    # "Input required and not supplied: path", masking the real failure.
+    - name: Upload review artifact
+      if: ${{ always() && inputs.upload == 'true' && steps.review.outputs.report-path != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: yoke-review
+        path: ${{ steps.review.outputs.report-path }}
+        if-no-files-found: warn
+        retention-days: 14

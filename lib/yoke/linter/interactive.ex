@@ -3,7 +3,6 @@ defmodule Yoke.Linter.Interactive do
   Orchestrates the interactive TUI approval modal loop for applying linter diff fixes.
   """
   alias Yoke.CLI.Formatter
-  alias Yoke.CLI.QuestionPrompt
   alias Yoke.Linter.Fixer
   alias Yoke.Linter.Parser
 
@@ -73,46 +72,34 @@ defmodule Yoke.Linter.Interactive do
           ]
 
           res =
-            QuestionPrompt.ask_single_question(
-              prompt_text,
-              options,
-              false,
-              true,
-              progress: {idx, total}
-            )
+            Yoke.Interaction.ask(:lint_fix, %{
+              question: prompt_text,
+              options: options,
+              finding: finding,
+              progress: {idx, total},
+              cwd: cwd
+            })
 
           case res do
-            %{selected: [selected]} ->
-              cond do
-                String.contains?(selected, "Apply diff") ->
-                  Fixer.apply_patch(patch)
+            {:answer, "apply_all"} ->
+              Fixer.apply_patch(patch)
 
-                  IO.puts(
-                    Formatter.green() <>
-                      "  ✓ Applied diff to #{finding.file}:#{finding.line}" <> Formatter.reset()
-                  )
+              IO.puts(
+                Formatter.green() <>
+                  "  ✓ Applied diff to #{finding.file}:#{finding.line}" <> Formatter.reset()
+              )
 
-                  loop_findings(rest, idx + 1, total, cwd, false, {applied + 1, skipped})
+              loop_findings(rest, idx + 1, total, cwd, true, {applied + 1, skipped})
 
-                String.contains?(selected, "all remaining") ->
-                  Fixer.apply_patch(patch)
+            :approve ->
+              Fixer.apply_patch(patch)
 
-                  IO.puts(
-                    Formatter.green() <>
-                      "  ✓ Applied diff to #{finding.file}:#{finding.line}" <> Formatter.reset()
-                  )
+              IO.puts(
+                Formatter.green() <>
+                  "  ✓ Applied diff to #{finding.file}:#{finding.line}" <> Formatter.reset()
+              )
 
-                  loop_findings(rest, idx + 1, total, cwd, true, {applied + 1, skipped})
-
-                true ->
-                  IO.puts(
-                    Formatter.dim() <>
-                      "  ✗ Skipped finding at #{finding.file}:#{finding.line}" <>
-                      Formatter.reset()
-                  )
-
-                  loop_findings(rest, idx + 1, total, cwd, false, {applied, skipped + 1})
-              end
+              loop_findings(rest, idx + 1, total, cwd, false, {applied + 1, skipped})
 
             _ ->
               IO.puts(

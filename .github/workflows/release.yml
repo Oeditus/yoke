@@ -38,6 +38,8 @@ jobs:
         run: mix test --exclude ragex
       - name: Run yoke launcher tests
         run: bash test/yoke_release_test.sh
+      - name: Run dllb install script tests
+        run: bash test/install_dllb_test.sh
 
   linters:
     name: Static Analysis

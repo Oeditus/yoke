@@ -10,7 +10,15 @@ config :dllb,
 
 # Configure yoke global defaults
 config :yoke,
-  assistant_name: "Robby Ott"
+  assistant_name: "Robby Ott",
+  # The blocking seam (`docs/CI_PLAN.md` §2.1): which module answers every
+  # "stop and ask a human" site in the agent loop. `Yoke.Interaction.TTY` is
+  # the interactive REPL; CI swaps in `Yoke.Interaction.Policy`, which never
+  # blocks. Selected once here so no call site branches per call.
+  interaction: Yoke.Interaction.TTY,
+  # The presentation seam (§2.2). `:auto` probes the environment on first
+  # use; `:tty` / `:plain` force a mode (tests, `yoke --doctor`).
+  output_mode: :auto
 
 # Configure ragex knowledge graph store backend to use per-project dllb server daemon
 # Disable stdio server when embedded in yoke to prevent raw JSON-RPC dumps
@@ -63,4 +71,17 @@ if config_env() == :test do
   config :nx, :default_backend, Nx.BinaryBackend
   config :exla, start_log_sink: false
   config :logger, level: :warning
+end
+
+# Bake Yoke's log formatter into the `:logger` default handler at *build* time.
+#
+# This matters only for the `escript` env. An escript archive starts the
+# dependency tree (`:ragex`, `:dllb`) before `config/runtime.exs` is evaluated
+# and before `Yoke.CLI.Main.main/1` runs, so ~15 raw `[info]`/`[debug]` lines
+# with timestamps appear ahead of the command's own output. Installing the
+# formatter here puts it in the archive's `logger` app env, so it is in place
+# before anything starts.
+if config_env() == :escript do
+  config :logger,
+    default_handler: [formatter: {Yoke.CLI.LogFormatter, %{}}]
 end

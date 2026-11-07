@@ -1,21 +1,33 @@
 defmodule Yoke.CLI.Formatter do
   @moduledoc """
   ANSI terminal styling, banner rendering, and text formatting helpers.
+
+  Every colour helper in this module delegates to `Yoke.CLI.Output.style/1`,
+  so when output is not a real terminal (CI logs, piped stdout,
+  `</dev/null`) each one returns `""` and the rendered text stays readable
+  instead of being wrapped in raw escape bytes. `display_width/1` likewise
+  degrades to a plain grapheme count in that mode.
+
+  This is the whole of the "presentation seam" described in
+  `docs/CI_PLAN.md` §2.2: no call site had to change, because they all
+  already build their lines out of these helpers.
   """
 
-  # IO ANSI shortcuts
-  def reset, do: IO.ANSI.reset()
-  def bold, do: IO.ANSI.bright()
-  def dim, do: IO.ANSI.faint()
-  def cyan, do: IO.ANSI.cyan()
-  def green, do: IO.ANSI.green()
-  def yellow, do: IO.ANSI.yellow()
-  def magenta, do: IO.ANSI.magenta()
-  def red, do: IO.ANSI.red()
-  def blue, do: IO.ANSI.blue()
-  def gray, do: IO.ANSI.light_black()
-  def italic, do: IO.ANSI.italic()
-  def blink, do: IO.ANSI.blink_slow()
+  alias Yoke.CLI.Output
+
+  # IO ANSI shortcuts. Each is suppressed to "" when output is not a TTY.
+  def reset, do: Output.style(IO.ANSI.reset())
+  def bold, do: Output.style(IO.ANSI.bright())
+  def dim, do: Output.style(IO.ANSI.faint())
+  def cyan, do: Output.style(IO.ANSI.cyan())
+  def green, do: Output.style(IO.ANSI.green())
+  def yellow, do: Output.style(IO.ANSI.yellow())
+  def magenta, do: Output.style(IO.ANSI.magenta())
+  def red, do: Output.style(IO.ANSI.red())
+  def blue, do: Output.style(IO.ANSI.blue())
+  def gray, do: Output.style(IO.ANSI.light_black())
+  def italic, do: Output.style(IO.ANSI.italic())
+  def blink, do: Output.style(IO.ANSI.blink_slow())
 
   @doc """
   Forces buffered standard output to the terminal.
@@ -99,9 +111,9 @@ defmodule Yoke.CLI.Formatter do
       end
 
     if dev? do
-      IO.ANSI.cyan()
+      Output.style(IO.ANSI.cyan())
     else
-      IO.ANSI.light_magenta()
+      Output.style(Output.style(IO.ANSI.light_magenta()))
     end
   end
 
@@ -470,23 +482,23 @@ defmodule Yoke.CLI.Formatter do
   def ansi_color(color_name) when is_binary(color_name) or is_atom(color_name) do
     case color_name |> to_string() |> String.downcase() |> String.trim() do
       "yellow" -> yellow()
-      "light_yellow" -> IO.ANSI.light_yellow()
+      "light_yellow" -> Output.style(IO.ANSI.light_yellow())
       "cyan" -> cyan()
-      "light_cyan" -> IO.ANSI.light_cyan()
+      "light_cyan" -> Output.style(IO.ANSI.light_cyan())
       "green" -> green()
-      "light_green" -> IO.ANSI.light_green()
+      "light_green" -> Output.style(IO.ANSI.light_green())
       "magenta" -> magenta()
-      "light_magenta" -> IO.ANSI.light_magenta()
+      "light_magenta" -> Output.style(IO.ANSI.light_magenta())
       "purple" -> magenta()
       "red" -> red()
-      "light_red" -> IO.ANSI.light_red()
+      "light_red" -> Output.style(IO.ANSI.light_red())
       "blue" -> blue()
-      "light_blue" -> IO.ANSI.light_blue()
+      "light_blue" -> Output.style(IO.ANSI.light_blue())
       "gray" -> gray()
       "grey" -> gray()
       "light_black" -> gray()
-      "white" -> IO.ANSI.white()
-      "light_white" -> IO.ANSI.light_white()
+      "white" -> Output.style(IO.ANSI.white())
+      "light_white" -> Output.style(IO.ANSI.light_white())
       "dim" -> dim()
       "bright" -> bold()
       "bold" -> bold()
@@ -523,21 +535,18 @@ defmodule Yoke.CLI.Formatter do
   @doc """
   Computes a string's terminal display width, in columns.
 
-  Strips ANSI escape/cursor-control sequences (zero width) and sums each
-  remaining grapheme's rendered width: 1 column for ordinary characters,
-  2 columns for East-Asian-Wide/Fullwidth code points and the common emoji
-  blocks, matching how virtually every terminal emulator actually renders
-  them.
+  Delegates to `Yoke.CLI.Output.display_width/1`, which in `:tty` mode strips
+  ANSI escape/cursor-control sequences (zero width) and sums each remaining
+  grapheme's rendered width -- 1 column for ordinary characters, 2 columns for
+  East-Asian-Wide/Fullwidth code points and the common emoji blocks, matching
+  how virtually every terminal emulator actually renders them -- and in
+  `:plain` mode returns a plain grapheme count.
 
   Safely sanitizes invalid UTF-8 byte sequences upfront and falls back to
   0 on non-binary/nil inputs or unexpected errors.
   """
   def display_width(str) when is_binary(str) do
-    str
-    |> sanitize_utf8()
-    |> String.replace(~r/\e\][^\e\a]*(?:\e\\|\a)|\e\[[0-9;?]*[a-zA-Z~]/, "")
-    |> String.graphemes()
-    |> Enum.reduce(0, fn grapheme, acc -> acc + grapheme_width(grapheme) end)
+    Output.display_width(str)
   rescue
     _ -> 0
   end
@@ -547,45 +556,15 @@ defmodule Yoke.CLI.Formatter do
   # A grapheme cluster's rendered width is the width of its base (first)
   # code point -- combining marks, variation selectors, and any other code
   # points that follow within the same cluster render as zero-width
-  # modifiers of that base character.
-  defp grapheme_width(<<first::utf8, _rest::binary>>), do: codepoint_width(first)
-  defp grapheme_width(<<_byte, _rest::binary>>), do: 1
-  defp grapheme_width(""), do: 0
-  defp grapheme_width(_), do: 0
+  # modifiers of that base character. The width algorithm lives in
+  # `Yoke.CLI.Output` so the two modules can never disagree (and so
+  # `Output.display_width/1` never has to call back into this module).
+  @doc false
+  def grapheme_width(grapheme), do: Output.grapheme_width(grapheme)
 
-  # Approximates POSIX `wcwidth(3)` for the ranges that matter to a
-  # terminal UI: East Asian Wide/Fullwidth blocks (CJK ideographs, Hangul
-  # syllables, fullwidth forms) and the common emoji blocks render as 2
-  # terminal columns in essentially every modern terminal emulator;
-  # everything else -- including Latin text and Nerd Font Private-Use-Area
-  # icons, which render in a single cell -- is 1 column.
-  defp codepoint_width(cp) do
-    cond do
-      cp in 0x1100..0x115F -> 2
-      cp == 0x26A1 -> 2
-      cp in 0x2E80..0x303E -> 2
-      cp in 0x3041..0x33FF -> 2
-      cp in 0x3400..0x4DBF -> 2
-      cp in 0x4E00..0x9FFF -> 2
-      cp in 0xA000..0xA4CF -> 2
-      cp in 0xAC00..0xD7A3 -> 2
-      cp in 0xF900..0xFAFF -> 2
-      cp in 0xFE30..0xFE4F -> 2
-      cp in 0xFF00..0xFF60 -> 2
-      cp in 0xFFE0..0xFFE6 -> 2
-      cp in 0x16FE0..0x16FE4 -> 2
-      cp in 0x17000..0x18CFF -> 2
-      cp in 0x1B000..0x1B2FF -> 2
-      cp in 0x1F000..0x1F2FF -> 2
-      cp in 0x1F300..0x1F64F -> 2
-      cp in 0x1F680..0x1F6FF -> 2
-      cp in 0x1F900..0x1F9FF -> 2
-      cp in 0x1FA00..0x1FA6F -> 2
-      cp in 0x1FA70..0x1FAFF -> 2
-      cp in 0x20000..0x3FFFD -> 2
-      true -> 1
-    end
-  end
+  # Approximates POSIX `wcwidth(3)` -- see `Yoke.CLI.Output.codepoint_width/1`.
+  @doc false
+  def codepoint_width(cp), do: Output.codepoint_width(cp)
 
   @doc "Copies a markdown text payload to the OS clipboard."
   def copy_to_clipboard(text) when is_binary(text) do

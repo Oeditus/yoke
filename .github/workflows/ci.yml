@@ -11,12 +11,27 @@ jobs:
     name: Test (Elixir ${{matrix.elixir}} / OTP ${{matrix.otp}})
     runs-on: ubuntu-latest
     env:
+      # NOTE: `EXLA_TARGET`/`EXLA_BUILD` are read by nothing -- they are dead
+      # config. They are kept because removing them would change nothing, but
+      # *replacing* them with `XLA_TARGET=cpu` changes the deps cache key and
+      # forces a cold `exla` NIF compile, which fails on an exla 1.0.0 / GCC 15
+      # incompatibility (`fine.hpp: try_decode`). See docs/CI.md §6.1.
       EXLA_TARGET: cpu
       EXLA_BUILD: "false"
       NX_DEFAULT_BACKEND: Nx.BinaryBackend
     strategy:
+      # Each matrix entry reports independently. With fail-fast (the default),
+      # one failure cancels the others and their result is unknowable --
+      # "cancelled" is not "passed" or "failed".
+      fail-fast: false
       matrix:
         elixir: ['1.19', '1.20']
+        # OTP 29 only. OTP 28 was tried and removed: it has no deps cache, so
+        # `exla` compiles its NIF from source and fails on a fine.hpp / GCC 15
+        # incompatibility (`try_decode` is not a member of
+        # `fine::Decoder<xla::Shape>`). That is an upstream exla 1.0.0 issue,
+        # not something this workflow can work around. OTP 27 is likewise
+        # unsupported. See docs/CI.md §11.1.
         otp: ['29']
     steps:
       - uses: actions/checkout@v3
@@ -28,25 +43,171 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgit2-dev build-essential
+
       - name: Restore dependencies cache
         uses: actions/cache@v3
         with:
           path: deps
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-mix-
+          # The OTP version is part of the key: `exla`'s NIF is compiled
+          # against a specific ERTS, and loading an OTP 29 build under OTP 28
+          # fails with `bad_lib`. With a single OTP version this was harmless;
+          # with a matrix it silently poisons the shared cache.
+          key: ${{ runner.os }}-mix-otp${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-otp${{ matrix.otp }}-
       - name: Install dependencies
         run: mix deps.get
+
+      # Ragex's per-project store backend spawns a `dllb-server` OS process
+      # against `<repo>/.ragex/dllb.redb`. That binary is a Rust executable and
+      # is not part of the Elixir dependency tree, so without this step every
+      # run logs `:dllb_binary_not_found` and falls back to the ETS backend.
+      # The installer never fails the job on its own: dllb is an accelerator.
+      - name: Install dllb-server
+        run: |
+          ./scripts/install-dllb.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # `.ragex` holds the Ragex knowledge graph (dllb.redb); `.yoke` holds the
+      # repo config/policy and session checkpoints. Restoring them turns a
+      # cold index into a warm start. Keyed on the sources they describe, so a
+      # stale graph is never reused after a code change.
+      - name: Restore Ragex and yoke caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ragex
+            .yoke
+          key: ${{ runner.os }}-ragex-${{ hashFiles('**/*.ex', '**/*.exs', 'mix.lock', '.yoke/config.json', '.yoke/policy.json') }}
+          restore-keys: |
+            ${{ runner.os }}-ragex-
+
       - name: Run tests with coverage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: mix coveralls.github --exclude ragex
       - name: Run yoke launcher tests
         run: bash test/yoke_release_test.sh
+      - name: Run dllb install script tests
+        run: bash test/install_dllb_test.sh
+
+  headless:
+    name: Headless seams (no TTY)
+    runs-on: ubuntu-latest
+    env:
+      # NOTE: `EXLA_TARGET`/`EXLA_BUILD` are read by nothing -- they are dead
+      # config. They are kept because removing them would change nothing, but
+      # *replacing* them with `XLA_TARGET=cpu` changes the deps cache key and
+      # forces a cold `exla` NIF compile, which fails on an exla 1.0.0 / GCC 15
+      # incompatibility (`fine.hpp: try_decode`). See docs/CI.md §6.1.
+      EXLA_TARGET: cpu
+      EXLA_BUILD: "false"
+      NX_DEFAULT_BACKEND: Nx.BinaryBackend
+      # Proves the presentation seam degrades: nothing below may emit ANSI.
+      CI: "true"
+      # Every step in this job must use the same env, otherwise `Compile`
+      # builds :test beams and the `mix run` steps look for :dev ones.
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@v3
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.20'
+          otp-version: '29'
+      - name: Install system dependencies (libgit2)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgit2-dev build-essential
+
+      - name: Restore dependencies cache
+        uses: actions/cache@v3
+        with:
+          path: deps
+          # The OTP version is part of the key: `exla`'s NIF is compiled
+          # against a specific ERTS, and loading an OTP 29 build under OTP 28
+          # fails with `bad_lib`. This job pins OTP 29 (no matrix).
+          key: ${{ runner.os }}-mix-otp29-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-otp29-
+      - name: Install dependencies
+        run: mix deps.get
+
+      # The exit test from docs/CI_PLAN.md Phase 1.0: the CLI must complete
+      # with stdin closed and no TTY, and must not hang.
+      # Compile as its own step: a cold compile of the full dependency tree
+      # (ragex alone is ~205 modules) takes minutes, so a timeout meant to
+      # catch a *hang* must not also have to cover compilation.
+      - name: Compile
+        run: mix compile
+
+      - name: One-shot prompt completes with stdin closed
+        run: |
+          set -o pipefail
+          timeout 120 mix run --no-start --no-compile -e '
+            Application.put_env(:yoke, :system_halt_enabled, false)
+            Yoke.CLI.Main.main(["--help"])
+          ' </dev/null | tee /tmp/help.txt
+
+      - name: No ANSI escapes reach stdout
+        run: |
+          if grep -qP '\x1b\[' /tmp/help.txt; then
+            echo "::error::ANSI escape sequences leaked into headless output"
+            exit 1
+          fi
+          echo "No ANSI escapes in headless output."
+
+      # The blocking seam must answer immediately, never prompt.
+      - name: Interaction seam answers without blocking
+        run: |
+          timeout 60 mix run --no-start --no-compile -e '
+            Yoke.Config.CI.install_headless_seams(".")
+            for kind <- Yoke.Interaction.kinds() do
+              decision = Yoke.Interaction.ask(kind, %{cwd: "."})
+              unless decision == :deny do
+                IO.puts("::error::#{kind} returned #{inspect(decision)}, expected :deny")
+                System.halt(1)
+              end
+            end
+            IO.puts("All interaction kinds answered :deny without blocking.")
+          ' </dev/null
+
+      # The CI Hands target must refuse writes.
+      - name: CI Hands refuses writes
+        run: |
+          timeout 60 mix run --no-start --no-compile -e '
+            executor = %Yoke.Hands.Executor{mode: :ci, cwd: "."}
+            case Yoke.Hands.Executor.execute(executor, "write_file", %{"path" => "/tmp/x", "content" => "y"}) do
+              {:error, reason} ->
+                IO.puts("Refused as expected: " <> reason)
+              {:ok, _} ->
+                IO.puts("::error::CI Hands allowed a write")
+                System.halt(1)
+            end
+          ' </dev/null
+
+      # `:yoke` must boot headlessly. This is the Phase 1.0 exit test: no TTY,
+      # no hang, no ANSI. If it fails here, the seams are broken rather than
+      # the environment -- see docs/CI.md §1.
+      - name: Application boots on a GPU-less runner
+        run: |
+          timeout 120 mix run --no-start --no-compile -e '
+            case Application.ensure_all_started(:yoke, :temporary) do
+              {:ok, apps} ->
+                IO.puts("yoke booted; exla started?: #{:exla in apps}")
+              {:error, reason} ->
+                IO.puts("::error title=yoke failed to boot::" <>
+                  "See docs/CI.md section 6.1. (#{inspect(elem(reason, 0))})")
+                System.halt(1)
+            end
+          ' </dev/null
 
   linters:
     name: Static Analysis
     runs-on: ubuntu-latest
     env:
+      # NOTE: `EXLA_TARGET`/`EXLA_BUILD` are read by nothing -- they are dead
+      # config. They are kept because removing them would change nothing, but
+      # *replacing* them with `XLA_TARGET=cpu` changes the deps cache key and
+      # forces a cold `exla` NIF compile, which fails on an exla 1.0.0 / GCC 15
+      # incompatibility (`fine.hpp: try_decode`). See docs/CI.md §6.1.
       EXLA_TARGET: cpu
       EXLA_BUILD: "false"
       NX_DEFAULT_BACKEND: Nx.BinaryBackend
@@ -64,12 +225,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgit2-dev build-essential
+
       - name: Restore dependencies cache
         uses: actions/cache@v3
         with:
           path: deps
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-mix-
+          # The OTP version is part of the key: `exla`'s NIF is compiled
+          # against a specific ERTS, and loading an OTP 29 build under OTP 28
+          # fails with `bad_lib`. With a single OTP version this was harmless;
+          # with a matrix it silently poisons the shared cache.
+          key: ${{ runner.os }}-mix-otp${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-otp${{ matrix.otp }}-
       - name: Restore PLT cache
         uses: actions/cache@v3
         with:
@@ -84,13 +250,14 @@ jobs:
   quality:
     name: Quality Gate
     runs-on: ubuntu-latest
-    needs: [linters, test]
+    needs: [linters, test, headless]
     if: always()
     steps:
       - name: Check all jobs status
         run: |
           if [ "${{ needs.linters.result }}" != "success" ] || \
-             [ "${{ needs.test.result }}" != "success" ]; then
+             [ "${{ needs.test.result }}" != "success" ] || \
+             [ "${{ needs.headless.result }}" != "success" ]; then
             echo "❌ Quality gate failed!"
             exit 1
           fi

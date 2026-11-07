@@ -14,3 +14,5 @@ end
 
 ExUnit.start()
 Code.require_file("support/review_fixture.ex", __DIR__)
+Code.require_file("support/stub_interaction.ex", __DIR__)
+Code.require_file("support/golden_fixtures.ex", __DIR__)

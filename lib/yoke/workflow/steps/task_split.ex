@@ -19,8 +19,6 @@ defmodule Yoke.Workflow.Steps.TaskSplit do
 
   alias Yoke.Brain.Session
   alias Yoke.Brain.SessionSupervisor
-  alias Yoke.CLI.QuestionPrompt
-  alias Yoke.CLI.Spinner
   alias Yoke.Git
   alias Yoke.TaskEngine.TaskSupervisor
   alias Yoke.Workflow.Engine
@@ -160,21 +158,14 @@ defmodule Yoke.Workflow.Steps.TaskSplit do
       "Proposed split of '#{context.workflow.name}' into #{length(subtasks)} independent " <>
         "subtasks:\n#{summary_lines}\n\nRun these in parallel (each in its own isolated git worktree)?"
 
-    answer =
-      Spinner.with_paused(fn ->
-        QuestionPrompt.ask_single_question(
-          question,
-          ["Yes, run in parallel", "No, run as a single task"],
-          false
-        )
-      end)
-
-    case answer do
-      %{selected: [sel]} when is_binary(sel) ->
-        if String.starts_with?(sel, "Yes"), do: {:run_parallel, subtasks}, else: :run_as_single
-
-      _ ->
-        :run_as_single
+    case Yoke.Interaction.ask(:workflow_confirm, %{
+           question: question,
+           options: ["Yes, run in parallel", "No, run as a single task"],
+           workflow: context.workflow.name,
+           cwd: Map.get(context, :cwd)
+         }) do
+      :approve -> {:run_parallel, subtasks}
+      _ -> :run_as_single
     end
   end
 

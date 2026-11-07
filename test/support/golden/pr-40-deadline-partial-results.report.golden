@@ -1,0 +1,18 @@
+## Yoke review
+**Result: failing** — 1 finding(s) at or above `high`.
+Reviewed `17098ac446ed...d5b8498dceed`
+| | Count |
+| :--- | ---: |
+| Issues | 3 |
+| Endorsements | 0 |
+| Gating (`high`) | 1 |
+| Max severity | high |
+
+### Issues
+
+| # | Severity | Location | Title |
+| ---: | :--- | :--- | :--- |
+| 1 | `high` | `CHANGELOG.md:8` | Golden finding 1 |
+| 2 | `medium` | `CHANGELOG.md:9` | Golden finding 2 |
+| 3 | `low` | `CHANGELOG.md:10` | Golden finding 3 |
+

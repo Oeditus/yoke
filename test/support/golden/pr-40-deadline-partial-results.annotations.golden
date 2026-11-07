@@ -1,0 +1,3 @@
+::error file=CHANGELOG.md,line=8,title=Golden finding 1::Golden finding 1
+::error file=CHANGELOG.md,line=9,title=Golden finding 2::Golden finding 2
+::warning file=CHANGELOG.md,line=10,title=Golden finding 3::Golden finding 3

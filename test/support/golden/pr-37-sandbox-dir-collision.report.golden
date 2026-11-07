@@ -1,0 +1,18 @@
+## Yoke review
+**Result: failing** — 1 finding(s) at or above `high`.
+Reviewed `598625c9721e...40b79e1add1b`
+| | Count |
+| :--- | ---: |
+| Issues | 3 |
+| Endorsements | 0 |
+| Gating (`high`) | 1 |
+| Max severity | high |
+
+### Issues
+
+| # | Severity | Location | Title |
+| ---: | :--- | :--- | :--- |
+| 1 | `high` | `lib/muex/git_diff.ex:38` | Golden finding 1 |
+| 2 | `medium` | `lib/muex/git_diff.ex:39` | Golden finding 2 |
+| 3 | `low` | `lib/muex/git_diff.ex:40` | Golden finding 3 |
+

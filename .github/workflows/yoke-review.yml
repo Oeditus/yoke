@@ -1,0 +1,70 @@
+name: Yoke Review
+
+# Dogfooding: yoke reviews its own pull requests, using the same action that
+# ships to users. This is the Phase 1.2 exit test from docs/CI_PLAN.md —
+# if the action is broken, this workflow is broken.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Exercise install + lint only (no model call, no API credits)'
+        type: boolean
+        default: true
+
+concurrency:
+  group: yoke-review-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  # Manual smoke test: proves the action installs and runs without spending a
+  # model call. Use this to validate the pipeline before trusting a real review.
+  dry-run:
+    name: Dry run (no model call)
+    if: github.event_name == 'workflow_dispatch' && inputs.dry-run
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run yoke lint (no provider credentials needed)
+        uses: ./
+        with:
+          command: lint
+          build-from-source: 'true'
+          fail-on: never
+          post: 'false'
+          # No DEEPSEEK_API_KEY: `lint` must work without one.
+
+  review:
+    name: Review pull request
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The review needs the base and head commits to diff them.
+          fetch-depth: 0
+
+      - name: Run yoke review
+        uses: ./
+        with:
+          command: review
+          # Build from the checked-out tree. The released binary may predate
+          # the command under test, which makes a passing run meaningless.
+          build-from-source: 'true'
+          # Ship `never` as the default for the first release so a noisy
+          # reviewer cannot block merges before anyone has seen its output.
+          # Opt into gating once the signal is trusted (docs/CI_PLAN.md §8).
+          fail-on: never
+          post: 'true'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}

@@ -1,7 +1,26 @@
 defmodule Yoke.HandsExecutorTest do
-  use ExUnit.Case, async: true
+  # Not async: the setup pins the global `:yoke, :output_mode` app env, and
+  # other modules (cli_output_test, formatter_test) mutate the same key. Under
+  # `async: true` they race and this module's ANSI assertions see plain output.
+  use ExUnit.Case, async: false
 
   alias Yoke.Hands.Executor
+
+  setup do
+    # Some assertions below describe the interactive, ANSI-coloured tool log
+    # line. Pin the presentation seam to `:tty` so they are deterministic
+    # whether or not the suite runs in CI.
+    prior = Application.get_env(:yoke, :output_mode)
+    Application.put_env(:yoke, :output_mode, :tty)
+
+    on_exit(fn ->
+      if prior == nil,
+        do: Application.delete_env(:yoke, :output_mode),
+        else: Application.put_env(:yoke, :output_mode, prior)
+    end)
+
+    :ok
+  end
 
   test "executes local tool call" do
     config = %Executor{mode: :local}

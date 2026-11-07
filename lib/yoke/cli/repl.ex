@@ -110,9 +110,8 @@ defmodule Yoke.CLI.Repl do
   end
 
   defp review_yes?(question, options) do
-    case Yoke.CLI.QuestionPrompt.ask_single_question(question, options) do
-      %{selected: [choice | _]} -> String.starts_with?(choice, "Yes")
-      %{custom: choice} when is_binary(choice) -> String.starts_with?(choice, "Yes")
+    case Yoke.Interaction.ask(:review_fix, %{question: question, options: options}) do
+      :approve -> true
       _ -> false
     end
   end

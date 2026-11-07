@@ -34,6 +34,30 @@ jobs:
           restore-keys: ${{ runner.os }}-mix-
       - name: Install dependencies
         run: mix deps.get
+
+      # Ragex's per-project store backend spawns a `dllb-server` OS process
+      # against `<repo>/.ragex/dllb.redb`. That binary is a Rust executable and
+      # is not part of the Elixir dependency tree, so without this step every
+      # run logs `:dllb_binary_not_found` and falls back to the ETS backend.
+      # The installer never fails the job on its own: dllb is an accelerator.
+      - name: Install dllb-server
+        run: |
+          ./scripts/install-dllb.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # `.ragex` holds the knowledge graph (dllb.redb) this job exists to
+      # build; `.yoke` holds the repo config/policy. Restoring them turns a
+      # cold index into a warm start.
+      - name: Restore Ragex and yoke caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ragex
+            .yoke
+          key: ${{ runner.os }}-ragex-${{ hashFiles('**/*.ex', '**/*.exs', 'mix.lock', '.yoke/config.json', '.yoke/policy.json') }}
+          restore-keys: |
+            ${{ runner.os }}-ragex-
+
       - name: Compile codebase
         run: mix compile
 
