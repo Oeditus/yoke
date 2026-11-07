@@ -1420,6 +1420,8 @@ defmodule Yoke.CLI.Repl do
         end
 
       {:ok, current} = Session.set_model(session_pid, target_model)
+      {:ok, endpoint} = Session.get_endpoint(session_pid)
+      Yoke.CLI.Main.configure_ragex_ai(current, endpoint)
       IO.puts(Formatter.format_success("Switched model to '#{current}'"))
       :continue
     end
@@ -1481,6 +1483,8 @@ defmodule Yoke.CLI.Repl do
       end
 
     {:ok, current} = Session.set_endpoint(session_pid, target_endpoint)
+    {:ok, model} = Session.get_model(session_pid)
+    Yoke.CLI.Main.configure_ragex_ai(model, current)
     IO.puts(Formatter.format_success("Switched endpoint to '#{current}'"))
     :continue
   end

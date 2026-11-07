@@ -313,6 +313,42 @@ defmodule Yoke.CLI.Main do
   end
 
   @doc false
+  def configure_ragex_ai(model, endpoint) when is_binary(model) and is_binary(endpoint) do
+    case ollama_base_url(endpoint) do
+      {:ok, base_url} ->
+        ai_cfg =
+          Application.get_env(:ragex, :ai, [])
+          |> Keyword.put(:providers, [:ollama])
+          |> Keyword.put(:default_provider, :ollama)
+
+        ollama_cfg =
+          Application.get_env(:ragex, :ai_providers, [])
+          |> Keyword.get(:ollama, [])
+          |> Keyword.put(:endpoint, base_url)
+          |> Keyword.put(:model, model)
+
+        providers = Application.get_env(:ragex, :ai_providers, [])
+
+        Application.put_env(:ragex, :ai, ai_cfg)
+        Application.put_env(:ragex, :ai_providers, Keyword.put(providers, :ollama, ollama_cfg))
+
+      :error ->
+        configure_ragex_ai()
+    end
+  end
+
+  defp ollama_base_url(endpoint) do
+    uri = URI.parse(endpoint)
+
+    if uri.scheme in ["http", "https"] and is_binary(uri.host) and
+         String.ends_with?(uri.path || "", "/v1/chat/completions") do
+      {:ok, URI.to_string(%{uri | path: nil, query: nil, fragment: nil})}
+    else
+      :error
+    end
+  end
+
+  @doc false
   def configure_exla do
     gpu_mem_fraction =
       case System.get_env("EXLA_GPU_MEMORY_FRACTION") do
