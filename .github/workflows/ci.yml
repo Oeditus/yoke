@@ -20,6 +20,10 @@ jobs:
       EXLA_BUILD: "false"
       NX_DEFAULT_BACKEND: Nx.BinaryBackend
     strategy:
+      # Each matrix entry reports independently. With fail-fast (the default),
+      # one failure cancels the others and their result is unknowable --
+      # "cancelled" is not "passed" or "failed".
+      fail-fast: false
       matrix:
         elixir: ['1.19', '1.20']
         # OTP 27 is deliberately not supported (see docs/CI_PLAN.md); 28 and 29

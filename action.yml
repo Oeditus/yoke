@@ -118,6 +118,8 @@ runs:
           echo "Building yoke from source…"
           MIX_ENV=escript mix deps.get
           MIX_ENV=escript mix escript.build
+          # `install.sh` creates this directory; the source path must too.
+          mkdir -p "$HOME/.local/bin"
           install -m 0755 yoke_escript "$HOME/.local/bin/yoke"
         else
           "${{ github.action_path }}/scripts/install.sh"
@@ -230,8 +232,11 @@ runs:
 
         exit "$status"
 
+    # Guarded on a non-empty path: when the run step fails before writing its
+    # outputs, `report-path` is unset and upload-artifact errors with
+    # "Input required and not supplied: path", masking the real failure.
     - name: Upload review artifact
-      if: ${{ always() && inputs.upload == 'true' }}
+      if: ${{ always() && inputs.upload == 'true' && steps.review.outputs.report-path != '' }}
       uses: actions/upload-artifact@v4
       with:
         name: yoke-review
