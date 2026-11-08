@@ -167,7 +167,8 @@ defmodule Yoke.PRReview.MarkdownTest do
       body = Markdown.format_inline_comment_body(finding)
 
       # Header has severity and formatted title with backticks
-      assert String.contains?(body, "**[HIGH]")
+      assert String.contains?(body, "**🔴 ")
+      refute String.contains?(body, "[HIGH]")
       assert String.contains?(body, "`:comment_event`")
       assert String.contains?(body, "`handle_info/2`")
 

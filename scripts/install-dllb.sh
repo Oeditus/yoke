@@ -55,6 +55,12 @@ need curl
 need sha256sum
 need tar
 
+# Retry transient HTTP failures, but bound both each attempt and total retries.
+download() {
+  curl -fsSL --retry 3 --retry-delay 2 --retry-max-time 90 \
+    --connect-timeout 10 --max-time 30 "$@"
+}
+
 case "$(uname -s)" in
   Linux)  os="unknown-linux-gnu" ;;
   Darwin) os="apple-darwin" ;;
@@ -77,10 +83,10 @@ target="${arch}-${os}"
 if [ -z "$VERSION" ]; then
   log "Resolving the latest dllb release…"
   VERSION="$(
-    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+    download "https://api.github.com/repos/${REPO}/releases/latest" \
       | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
       | head -n1
-  )"
+  )" || fail "could not resolve the latest release of ${REPO}"
   [ -n "$VERSION" ] || fail "could not determine the latest release of ${REPO}"
 fi
 
@@ -90,8 +96,8 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 log "Downloading dllb ${VERSION} for ${target}…"
-curl -fsSL "${base}/${archive}" -o "${tmp}/${archive}" || fail "download failed: ${base}/${archive}"
-curl -fsSL "${base}/SHA256SUMS" -o "${tmp}/SHA256SUMS" || fail "download failed: ${base}/SHA256SUMS"
+download "${base}/${archive}" -o "${tmp}/${archive}" || fail "download failed: ${base}/${archive}"
+download "${base}/SHA256SUMS" -o "${tmp}/SHA256SUMS" || fail "download failed: ${base}/SHA256SUMS"
 
 log "Verifying checksum…"
 # SHA256SUMS is `sha256sum` output, i.e. "<hash>  <filename>". Match the

@@ -11,6 +11,7 @@ defmodule Yoke.PRReview do
   alias Yoke.Json
   alias Yoke.PRReview.Markdown
   alias Yoke.PRReview.Patterns
+  alias Yoke.PRReview.ReviewDismissal
 
   @doc "Builds a review request solely from pinned evidence and explicit review guidance."
   def review_prompt(context, peer_comments \\ []) do
@@ -45,7 +46,7 @@ defmodule Yoke.PRReview do
   end
 
   @doc "Posts findings to the exact PR and commit whose diff was reviewed."
-  def post_context_review(context, findings, body, event \\ "COMMENT") do
+  def post_context_review(context, findings, body, event \\ :derived) do
     with :ok <- Yoke.PRReview.Context.verify_current(context),
          :ok <- Yoke.PRReview.Context.validate_findings(findings, context) do
       payload =
@@ -53,7 +54,18 @@ defmodule Yoke.PRReview do
         |> build_atomic_review_payload(body, event, context.valid_lines)
         |> Map.put("commit_id", context.head_sha)
 
-      post_atomic_review(context.pr_number, payload, context.cwd)
+      with {:ok, result} <- post_atomic_review(context.pr_number, payload, context.cwd),
+           :ok <- maybe_dismiss_change_requests(context, findings, payload, result) do
+        {:ok, result}
+      end
+    end
+  end
+
+  defp maybe_dismiss_change_requests(context, findings, payload, result) do
+    if payload["event"] == "COMMENT" and actionable_findings(findings) == [] do
+      ReviewDismissal.dismiss(context, result)
+    else
+      :ok
     end
   end
 
@@ -117,7 +129,7 @@ defmodule Yoke.PRReview do
     ### 9. Tone & Comment Phrasing Rules:
     - **Technical issues only**: Never raise process, organizational, or interpersonal concerns.
     - **Praise outstanding code**: Highlight outstanding craftsmanship in a separate Endorsements section, using plain text and `kind: "endorsement"`.
-    - **No emojis**: Do not use Unicode emojis or GitHub emoji shortcodes in review text, findings, endorsements, or suggested prompts. The application alone adds its branding marker to the very top review header.
+    - **No emojis**: Do not use Unicode emojis or GitHub emoji shortcodes in review text, findings, endorsements, or suggested prompts. The application alone adds its branding marker and severity circles.
     - **Markdown formatting for GitHub PR comments**:
       - Findings payload fields (`title`, `description`, `fix_suggestion`) are posted directly as GitHub Pull Request inline review comments and summary items. They MUST be formatted in rich GitHub-flavored Markdown, NEVER plain text.
       - **Backticks for code pieces**: Enclose all short code pieces—function/macro calls and arities (e.g. `mark_read/2`), expressions (e.g. `send(self(), ...)`), module/type names (e.g. `LiveView`), atoms/keys (e.g. `:comment_event`), variables/assigns (e.g. `socket.assigns.view`), and file paths (e.g. `config/dev.exs`)—in single backticks (`...`).
@@ -172,6 +184,19 @@ defmodule Yoke.PRReview do
   Returns only issues eligible for fix prompts and review-pattern memory.
   """
   def actionable_findings(findings), do: Enum.reject(findings, &endorsement?/1)
+
+  @doc "Returns the code-review verdict independently of GitHub approval permissions."
+  def review_verdict(findings) do
+    if actionable_findings(findings) == [], do: "Approved", else: "Changes requested"
+  end
+
+  @doc """
+  Selects the GitHub event from actionable findings. A clean code review is
+  published as a COMMENT, not a formal PR approval that can satisfy merge rules.
+  """
+  def review_event(findings) do
+    if actionable_findings(findings) == [], do: "COMMENT", else: "REQUEST_CHANGES"
+  end
 
   defp parse_int(str) do
     case Integer.parse(str) do
@@ -378,34 +403,19 @@ defmodule Yoke.PRReview do
   @doc """
   Builds the Markdown body for the GitHub PR comment/review.
   """
-  def build_pr_comment_body(accepted_findings, fix_prompt \\ "", opts \\ []) do
-    {endorsements, issues} = Enum.split_with(accepted_findings, &endorsement?/1)
-    summary_section = findings_summary(issues, "No issues/findings accepted.")
+  def build_pr_comment_body(accepted_findings, _fix_prompt \\ "", opts \\ []) do
+    issues = actionable_findings(accepted_findings)
 
-    endorsements_section =
-      if endorsements == [] do
-        ""
-      else
-        "\n\n### Endorsements\n\n" <> findings_summary(endorsements, "")
-      end
+    summary =
+      cond do
+        accepted_findings == [] ->
+          "No actionable issues found."
 
-    # Rebuild from typed findings rather than trusting a caller-supplied prompt
-    # that may already contain endorsements from an older review workflow.
-    fix_prompt = if fix_prompt != "", do: build_fix_prompt(issues), else: ""
+        issues == [] ->
+          "No actionable issues found. There are some comments left with observations."
 
-    fix_block =
-      if fix_prompt != "" do
-        """
-
-        ---
-
-        ### Recommended Fix Prompt
-        ```
-        #{fix_prompt}
-        ```
-        """
-      else
-        ""
+        true ->
+          "There are some comments left. Please address the reported issues."
       end
 
     assistant_name =
@@ -415,27 +425,13 @@ defmodule Yoke.PRReview do
     """
     ## 🪢 Review from #{assistant_name}
 
-    ### Findings Summary & Accepted Issues
+    **Code review: #{review_verdict(accepted_findings)}**
 
-    #{summary_section}#{endorsements_section}#{fix_block}
+    #{summary}
+
+    #{ReviewDismissal.marker()}
     """
     |> Markdown.sanitize_review_body()
-  end
-
-  defp findings_summary(findings, empty_message) do
-    if findings == [] do
-      empty_message
-    else
-      findings
-      |> Enum.with_index(1)
-      |> Enum.map_join("\n", fn {f, idx} ->
-        loc = if f.file, do: "`#{f.file}`#{if f.line, do: ":#{f.line}"}", else: "General"
-        title = Markdown.format_inline_code(f.title)
-        desc = Markdown.format_inline_code(f.description)
-
-        "- **#{idx}. [#{f.severity |> String.upcase()}]** #{loc} - **#{title}**: #{desc}"
-      end)
-    end
   end
 
   @doc """
@@ -541,15 +537,18 @@ defmodule Yoke.PRReview do
   Builds an atomic GitHub review payload.
   Sorts findings into valid inline comments (lines on the right side of diff)
   and top-level body sidenotes (lines outside diff or general architectural findings).
-  `event` can be "APPROVE", "COMMENT", or "REQUEST_CHANGES".
+  `event` can be "APPROVE", "COMMENT", "REQUEST_CHANGES", or `:derived`.
   """
   def build_atomic_review_payload(
         accepted_findings,
         review_body,
-        event \\ "COMMENT",
+        event \\ :derived,
         valid_diff_lines \\ nil
       ) do
-    event_str = normalize_review_event(event)
+    event_str =
+      normalize_review_event(
+        if event == :derived, do: review_event(accepted_findings), else: event
+      )
 
     {inline_comments, body_sidenotes} =
       Enum.split_with(accepted_findings, fn f ->
@@ -574,12 +573,8 @@ defmodule Yoke.PRReview do
         }
       end)
 
-    # The review body already contains a "Findings Summary & Accepted Issues"
-    # section that lists every accepted finding. Only surface an off-diff
-    # sidenote in the "General Observations & Out-of-Diff Notes" section when
-    # it is NOT already mentioned in that summary, otherwise the section would
-    # be an exact duplicate of the summary. If nothing new remains, omit the
-    # section entirely.
+    # Inline details belong only in inline comments. Off-diff observations
+    # must remain in the body; tolerate legacy callers that already list them.
     novel_sidenotes =
       Enum.reject(body_sidenotes, fn f ->
         title = to_string(f.title)
@@ -599,9 +594,7 @@ defmodule Yoke.PRReview do
         sidenotes_text =
           Enum.map_join(novel_sidenotes, "\n", fn f ->
             loc = if f.file, do: "`#{f.file}`#{if f.line, do: ":#{f.line}"}", else: "General"
-            title = Markdown.format_inline_code(f.title)
-            desc = Markdown.format_inline_code(f.description)
-            "- **[#{f.severity |> String.upcase()}]** #{loc} - **#{title}**: #{desc}"
+            "#### #{loc}\n\n" <> format_sidenote_body(f)
           end)
 
         review_body <> "\n\n### General Observations & Out-of-Diff Notes\n" <> sidenotes_text
@@ -627,6 +620,10 @@ defmodule Yoke.PRReview do
     Markdown.format_inline_comment_body(f)
   end
 
+  defp format_sidenote_body(f) do
+    Markdown.format_sidenote_body(f)
+  end
+
   @doc """
   Posts an atomic review (body + inline comments) to a GitHub PR using `gh api`.
   Falls back to standard PR comment if the API call fails or inline comments are rejected.
@@ -636,7 +633,10 @@ defmodule Yoke.PRReview do
       payload
       |> Map.update!("body", &Markdown.sanitize_review_body/1)
       |> Map.update("comments", [], fn comments ->
-        Enum.map(comments, &Map.update!(&1, "body", fn body -> Markdown.strip_emojis(body) end))
+        Enum.map(
+          comments,
+          &Map.update!(&1, "body", fn body -> Markdown.sanitize_review_body(body) end)
+        )
       end)
 
     case System.find_executable("gh") do
@@ -660,17 +660,31 @@ defmodule Yoke.PRReview do
           args = ["api", "-X", "POST", api_path, "--input", temp_file]
 
           case System.cmd("gh", args, cd: cwd, stderr_to_stdout: true) do
-            {_out, 0} ->
+            {out, 0} ->
               File.rm(temp_file)
-              {:ok, %{number: pr_num, url: pr_info.url, event: payload["event"]}}
+
+              identity =
+                case Json.decode(out) do
+                  {:ok, %{"id" => id, "user" => %{"id" => reviewer_id}}} ->
+                    %{review_id: id, reviewer_id: reviewer_id}
+
+                  _ ->
+                    %{}
+                end
+
+              {:ok,
+               Map.merge(
+                 %{number: pr_num, url: pr_info.url, event: payload["event"]},
+                 identity
+               )}
 
             {err, _code} ->
               File.rm(temp_file)
 
               # If atomic reviews fail (e.g. invalid line number rejection), fall back to top-level PR comment
-              if is_binary(payload["commit_id"]) do
+              if is_binary(payload["commit_id"]) or payload["event"] != "COMMENT" do
                 {:error,
-                 "GitHub rejected the commit-pinned review: #{String.trim(err)}. No fallback comment was posted."}
+                 "GitHub rejected the review: #{String.trim(err)}. No fallback comment was posted."}
               else
                 case post_to_github_pr(target_or_head, payload["body"], cwd) do
                   {:ok, res} ->

@@ -10,9 +10,8 @@
 # was unavailable. These tests pin that contract, plus the checksum
 # verification that makes a tampered download unrunnable.
 #
-# Network is never touched: every case points the installer at a `file://`
-# URL or an unreachable version tag, and the download path is exercised
-# against a locally-built tarball.
+# Network is never touched: curl is replaced with a local release fixture.
+# Also exercises the yoke installer, which shares the download policy.
 #
 # Usage:
 #   bash test/install_dllb_test.sh
@@ -28,15 +27,56 @@ INSTALLER="${PROJECT_ROOT}/scripts/install-dllb.sh"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
+mkdir -p "$WORK_DIR/bin"
+export MOCK_CURL_LOG="$WORK_DIR/curl.log"
+export MOCK_RELEASE="$WORK_DIR/fake-release"
+export MOCK_CURL_MODE=fail
+
+/bin/cat > "$WORK_DIR/bin/curl" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$MOCK_CURL_LOG"
+url=
+output=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    https://*) url="$1"; shift ;;
+    -o) output="$2"; shift 2 ;;
+    --retry|--retry-delay|--retry-max-time|--connect-timeout|--max-time) shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ "$MOCK_CURL_MODE" != fail ] || exit 22
+case "$url" in
+  */releases/latest)
+    [ "$MOCK_CURL_MODE" != empty ] || exit 0
+    printf '%s\n' '{"tag_name":"v9.9.9"}'
+    ;;
+  *)
+    [ -n "$output" ] || exit 2
+    cp "$MOCK_RELEASE/${url##*/}" "$output"
+    ;;
+esac
+MOCK
+/bin/cat > "$WORK_DIR/bin/uname" <<'MOCK'
+#!/usr/bin/env bash
+case "$1" in
+  -s) printf '%s\n' Linux ;;
+  -m) printf '%s\n' x86_64 ;;
+  *) exit 1 ;;
+esac
+MOCK
+chmod +x "$WORK_DIR/bin/curl" "$WORK_DIR/bin/uname"
+export PATH="$WORK_DIR/bin:$PATH"
+
 failures=0
-pass() { echo "  ✓ $1"; }
-fail() { echo "  ✗ $1"; failures=$((failures + 1)); }
+pass() { printf '  PASS %s\n' "$1"; }
+fail() { printf '  FAIL %s\n' "$1"; failures=$((failures + 1)); }
 
 echo "== dllb install script tests =="
 
 if [ ! -x "$INSTALLER" ]; then
   fail "scripts/install-dllb.sh is missing or not executable"
-  echo "❌ ${failures} dllb install test(s) failed."
+  echo "${failures} installer test(s) failed."
   exit 1
 fi
 
@@ -94,19 +134,21 @@ printf '%s  %s\n' \
   "0000000000000000000000000000000000000000000000000000000000000000" \
   "$archive" > "${fake}/SHA256SUMS"
 
-# Point the installer at the fake release by overriding the URL prefix it
-# builds. It derives both URLs from `base`, so a file:// base is enough.
+# The mock curl serves real fixture bytes, so this reaches checksum validation.
+out="$(
 DLLB_VERSION=v9.9.9 \
+DLLB_REQUIRED=1 \
 DLLB_INSTALL_DIR="${WORK_DIR}/t3" \
-DLLB_REPO="file://${fake}" \
-DLLB_BASE_URL="file://${fake}" \
-  "$INSTALLER" >/dev/null 2>&1
+MOCK_CURL_MODE=release \
+  "$INSTALLER" 2>&1
+)"
 status=$?
 
-if [ -f "${WORK_DIR}/t3/dllb-server" ]; then
-  fail "installed a binary whose checksum did not match"
+if [ "$status" -eq 1 ] && [[ "$out" == *"checksum mismatch"* ]] &&
+   [ ! -f "${WORK_DIR}/t3/dllb-server" ]; then
+  pass "checksum-mismatched archive reaches validation and is rejected"
 else
-  pass "refused to install a checksum-mismatched archive"
+  fail "expected a checksum mismatch without installing a binary"
 fi
 
 # ---------------------------------------------------------------
@@ -135,9 +177,81 @@ else
   fail "expected explicit unsupported-platform guards"
 fi
 
+echo "Test 6: latest-release failure follows the optional/required contract"
+for mode in fail empty; do
+  for required in 0 1; do
+    out="$(DLLB_VERSION='' DLLB_REQUIRED="$required" MOCK_CURL_MODE="$mode" \
+      DLLB_INSTALL_DIR="$WORK_DIR/latest-$mode-$required" "$INSTALLER" 2>&1)"
+    status=$?
+    if [ "$status" -eq "$required" ] && [[ "$out" == *"latest release"* ]]; then
+      pass "latest lookup $mode respects DLLB_REQUIRED=$required"
+    else
+      fail "latest lookup $mode returned $status with DLLB_REQUIRED=$required"
+    fi
+  done
+done
+
+echo "Test 7: verified dllb archive installs from pinned and latest versions"
+# Manifests contain asset basenames, not absolute fixture paths.
+hash="$(sha256sum "$fake/$archive" | awk '{print $1}')"
+printf '%s  %s\n' "$hash" "$archive" > "$fake/SHA256SUMS"
+for version in v9.9.9 ""; do
+  out="$(DLLB_VERSION="$version" DLLB_REQUIRED=1 MOCK_CURL_MODE=release \
+    DLLB_INSTALL_DIR="$WORK_DIR/success" "$INSTALLER" 2>&1)"
+  status=$?
+  if [ "$status" -eq 0 ] && [ -x "$WORK_DIR/success/dllb-server" ]; then
+    pass "verified dllb installs with version '${version:-latest}'"
+  else
+    fail "verified dllb install failed: $out"
+  fi
+done
+
+echo "Test 8: yoke installer verifies pinned and latest releases"
+printf '#!/bin/sh\nexit 0\n' > "$fake/yoke"
+hash="$(sha256sum "$fake/yoke" | awk '{print $1}')"
+printf '%s  yoke\n' "$hash" > "$fake/yoke.sha256"
+for version in v9.9.9 ""; do
+  out="$(YOKE_VERSION="$version" MOCK_CURL_MODE=release \
+    YOKE_INSTALL_DIR="$WORK_DIR/yoke-success" "$PROJECT_ROOT/scripts/install.sh" 2>&1)"
+  status=$?
+  if [ "$status" -eq 0 ] && [ -x "$WORK_DIR/yoke-success/yoke" ]; then
+    pass "verified yoke installs with version '${version:-latest}'"
+  else
+    fail "verified yoke install failed: $out"
+  fi
+done
+
+echo "Test 9: yoke rejects invalid checksums and failed latest lookups"
+printf '%064d  yoke\n' 0 > "$fake/yoke.sha256"
+out="$(YOKE_VERSION=v9.9.9 MOCK_CURL_MODE=release \
+  YOKE_INSTALL_DIR="$WORK_DIR/yoke-bad" "$PROJECT_ROOT/scripts/install.sh" 2>&1)"
+status=$?
+if [ "$status" -eq 1 ] && [[ "$out" == *"checksum mismatch"* ]] &&
+   [ ! -f "$WORK_DIR/yoke-bad/yoke" ]; then
+  pass "yoke refuses a checksum mismatch"
+else
+  fail "yoke checksum rejection failed"
+fi
+out="$(YOKE_VERSION='' MOCK_CURL_MODE=fail \
+  YOKE_INSTALL_DIR="$WORK_DIR/yoke-bad" "$PROJECT_ROOT/scripts/install.sh" 2>&1)"
+status=$?
+if [ "$status" -eq 1 ] && [[ "$out" == *"could not resolve the latest release"* ]]; then
+  pass "yoke reports latest lookup failures"
+else
+  fail "yoke latest lookup failure was not reported"
+fi
+
+echo "Test 10: every download requests bounded retries and timeouts"
+if [ -s "$MOCK_CURL_LOG" ] &&
+   ! grep -v -- '--retry 3 --retry-delay 2 --retry-max-time 90 --connect-timeout 10 --max-time 30' "$MOCK_CURL_LOG"; then
+  pass "all requests include retry and timeout options"
+else
+  fail "a download omitted bounded retry options"
+fi
+
 echo
 if [ "$failures" -eq 0 ]; then
-  echo "✅ All dllb install tests passed."
+  echo "All release installer tests passed."
   exit 0
 else
   echo "❌ ${failures} dllb install test(s) failed."

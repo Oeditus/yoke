@@ -4,6 +4,50 @@ defmodule Yoke.DeepSeekAPITest do
 
   alias Yoke.Client.DeepSeekAPI
 
+  describe "tool argument parsing" do
+    test "preserves encoded and already decoded argument objects" do
+      args = %{"files" => [%{"path" => "sample.ex", "content" => "  value\n"}]}
+
+      for raw <- [Yoke.Json.encode!(args), args] do
+        assert {:ok, %{tool_calls: [%{arguments: ^args}]}} = tool_response(raw)
+      end
+    end
+
+    test "rejects malformed or non-object arguments rather than fabricating empty edits" do
+      for raw <- ["{\"files\":", "[]", "null", "true", "1", nil, []] do
+        assert {:error, message} = tool_response(raw)
+
+        assert message ==
+                 "Invalid tool arguments for mcp_ragex_edit_files: expected a JSON object."
+      end
+    end
+  end
+
+  defp tool_response(raw) do
+    {:ok, _} = Application.ensure_all_started(:req)
+    response = Yoke.Test.ReviewFixture.tool_choice("mcp_ragex_edit_files", %{})
+
+    response =
+      update_in(response["choices"], fn [choice] ->
+        [put_in(choice, ["message", "tool_calls", Access.at(0), "function", "arguments"], raw)]
+      end)
+
+    {listen, server, endpoint} = Yoke.Test.ReviewFixture.provider(self(), [response])
+
+    on_exit(fn ->
+      :gen_tcp.close(listen)
+      if Process.alive?(server), do: Process.exit(server, :kill)
+    end)
+
+    DeepSeekAPI.chat_completion(
+      [%{"role" => "user", "content" => "Edit"}],
+      [],
+      endpoint: endpoint,
+      api_key: "not-needed",
+      model: "loop-test"
+    )
+  end
+
   test "returns mock chat completion in offline mode" do
     messages = [%{"role" => "user", "content" => "Hello DeepSeek"}]
 

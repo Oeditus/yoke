@@ -3,6 +3,28 @@ defmodule Yoke.CLI.ConfigExplorerTest do
 
   alias Yoke.CLI.ConfigExplorer
 
+  defp loaded_state(cwd) do
+    cwd
+    |> ConfigExplorer.new_state(include_global?: false)
+    |> ConfigExplorer.start_loading()
+    |> await_loading()
+  end
+
+  defp await_loading(state) do
+    if Enum.any?(state.loading, fn {_tab, status} -> status == :loading end) do
+      ref = state.load_ref
+
+      receive do
+        {:explorer_load, ^ref, _, _} = message ->
+          state |> ConfigExplorer.apply_load_result(message) |> await_loading()
+      after
+        2_000 -> flunk("Explorer did not finish loading")
+      end
+    else
+      state
+    end
+  end
+
   setup do
     tmp_dir =
       Path.join(System.tmp_dir!(), "explorer_test_#{System.unique_integer([:positive])}")
@@ -156,7 +178,7 @@ defmodule Yoke.CLI.ConfigExplorerTest do
 
   describe "state navigation & tab switching" do
     test "initializes state and switches tabs", %{tmp_dir: tmp_dir} do
-      state = ConfigExplorer.new_state(tmp_dir)
+      state = loaded_state(tmp_dir)
       assert state.active_tab == :settings
       assert state.tab_index == 0
 
@@ -169,7 +191,7 @@ defmodule Yoke.CLI.ConfigExplorerTest do
     end
 
     test "moves cursor within tab boundaries", %{tmp_dir: tmp_dir} do
-      state = ConfigExplorer.new_state(tmp_dir)
+      state = loaded_state(tmp_dir)
       state = ConfigExplorer.move_cursor(state, 1)
       assert state.cursor == 1
 
@@ -180,7 +202,7 @@ defmodule Yoke.CLI.ConfigExplorerTest do
 
   describe "expandable detail views" do
     test "toggles into detail view mode on select", %{tmp_dir: tmp_dir} do
-      state = ConfigExplorer.new_state(tmp_dir)
+      state = loaded_state(tmp_dir)
       # :sessions tab
       state = ConfigExplorer.switch_tab(state, 2)
 
@@ -193,7 +215,7 @@ defmodule Yoke.CLI.ConfigExplorerTest do
     end
 
     test "provides detail view for skills", %{tmp_dir: tmp_dir} do
-      state = ConfigExplorer.new_state(tmp_dir)
+      state = loaded_state(tmp_dir)
       state = %{state | active_tab: :skills, tab_index: 5}
 
       assert state.view_mode == :list
@@ -218,53 +240,53 @@ defmodule Yoke.CLI.ConfigExplorerTest do
 
   describe "toggles and deletions" do
     test "toggles boolean setting in config tab", %{tmp_dir: tmp_dir} do
-      state = ConfigExplorer.new_state(tmp_dir)
+      state = loaded_state(tmp_dir)
       keys = Enum.sort(Map.keys(state.tree.config))
       god_idx = Enum.find_index(keys, &(&1 == "god_mode"))
 
       state = %{state | cursor: god_idx}
-      updated_state = ConfigExplorer.handle_toggle(state)
+      updated_state = ConfigExplorer.handle_toggle(state) |> await_loading()
 
       assert updated_state.tree.config["god_mode"] == true
     end
 
     test "clears errors in diagnostics tab", %{tmp_dir: tmp_dir} do
-      state = ConfigExplorer.new_state(tmp_dir)
+      state = loaded_state(tmp_dir)
       state = %{state | active_tab: :diagnostics}
 
-      updated_state = ConfigExplorer.handle_delete(state)
+      updated_state = ConfigExplorer.handle_delete(state) |> await_loading()
       assert updated_state.tree.errors.count == 0
       assert File.read!(Path.join(tmp_dir, ".yoke/ERRORS_TO_FIX.lmml")) == ""
     end
 
     test "deletes job log in jobs tab", %{tmp_dir: tmp_dir} do
-      state = ConfigExplorer.new_state(tmp_dir)
+      state = loaded_state(tmp_dir)
       state = %{state | active_tab: :jobs, tab_index: 4, cursor: 0}
 
       assert [_] = state.tree.jobs
-      updated_state = ConfigExplorer.handle_delete(state)
+      updated_state = ConfigExplorer.handle_delete(state) |> await_loading()
       assert updated_state.tree.jobs == []
       refute File.exists?(Path.join(tmp_dir, ".yoke/jobs/job_101.log"))
     end
 
     test "deletes project skill in skills tab", %{tmp_dir: tmp_dir} do
-      state = ConfigExplorer.new_state(tmp_dir)
+      state = loaded_state(tmp_dir)
       skill_idx = Enum.find_index(state.tree.skills, &(&1.name == "custom_skill")) || 0
       state = %{state | active_tab: :skills, tab_index: 5, cursor: skill_idx}
 
       skill_dir = Path.join(tmp_dir, ".yoke/skills/custom_skill")
       assert File.exists?(skill_dir)
 
-      updated_state = ConfigExplorer.handle_delete(state)
+      updated_state = ConfigExplorer.handle_delete(state) |> await_loading()
       refute File.exists?(skill_dir)
       assert updated_state.status_notice =~ "Deleted project skill"
     end
 
     test "clears bash analytics in analytics tab", %{tmp_dir: tmp_dir} do
-      state = ConfigExplorer.new_state(tmp_dir)
+      state = loaded_state(tmp_dir)
       state = %{state | active_tab: :analytics, tab_index: 7, cursor: 0}
 
-      updated_state = ConfigExplorer.handle_delete(state)
+      updated_state = ConfigExplorer.handle_delete(state) |> await_loading()
       assert updated_state.status_notice =~ "Cleared bash command analytics"
     end
   end
@@ -281,7 +303,7 @@ defmodule Yoke.CLI.ConfigExplorerTest do
       File.write!(Path.join(tmp_dir, ".yoke/ERRORS_TO_FIX.lmml"), invalid_entry)
 
       # Rescan tree and load state
-      state = ConfigExplorer.new_state(tmp_dir)
+      state = loaded_state(tmp_dir)
       assert state.tree.errors.count == 1
       entry = hd(state.tree.errors.entries)
       assert String.valid?(entry.title)
@@ -350,7 +372,7 @@ defmodule Yoke.CLI.ConfigExplorerTest do
 
       File.write!(Path.join(tmp_dir, ".yoke/sessions/marcli_sess.lmml"), rich_session)
 
-      state = ConfigExplorer.new_state(tmp_dir)
+      state = loaded_state(tmp_dir)
       sess_idx = Enum.find_index(state.tree.sessions, &(&1.id == "marcli_sess"))
       assert sess_idx != nil
 
@@ -384,6 +406,53 @@ defmodule Yoke.CLI.ConfigExplorerTest do
 
       assert scrolled_output =~ "read_file"
       assert scrolled_output =~ "Tool Call"
+    end
+
+    test "formats conversation detail view and populates metadata if placeholder was present", %{
+      tmp_dir: tmp_dir
+    } do
+      path = Path.join(tmp_dir, ".yoke/sessions/placeholder_sess.lmml")
+
+      File.write!(path, """
+      @@@manifest.json
+      {"session_id":"placeholder_sess","model":"custom-model-v1","messages":[{"role":"user","content":"Hello"}]}
+      @@@
+
+      # User
+      Hello
+      """)
+
+      placeholder_sess = %{
+        id: "placeholder_sess",
+        file: "placeholder_sess.lmml",
+        path: path,
+        size: 100,
+        mtime: {{2026, 11, 8}, {12, 0, 0}},
+        timestamp: "2026-11-08 12:00:00",
+        model: "not loaded",
+        msg_count: 0,
+        preview: "(open to inspect)"
+      }
+
+      base = ConfigExplorer.new_state(tmp_dir)
+
+      state = %{
+        base
+        | active_tab: :sessions,
+          tab_index: 2,
+          cursor: 0,
+          view_mode: :detail,
+          loading: Map.put(base.loading, :sessions, :ready),
+          tree: %{base.tree | sessions: [placeholder_sess]}
+      }
+
+      output =
+        ExUnit.CaptureIO.capture_io(:user, fn ->
+          ConfigExplorer.render_full_screen(state)
+        end)
+
+      assert output =~ "Model:        custom-model-v1"
+      assert output =~ "Total Messages: 1"
     end
   end
 end

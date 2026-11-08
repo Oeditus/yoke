@@ -3,6 +3,117 @@ defmodule Yoke.Brain.AgentLoopTest do
 
   alias Yoke.Brain.AgentLoop
 
+  describe "edit argument identity" do
+    test "does not conflate valid edits with different exact content" do
+      for {old, new} <- [
+            {"value\n", "  value\n"},
+            {"value", "value\n"},
+            {"{\"a\": 1}", "{\"a\":1}"},
+            {"1", 1},
+            {"true", true},
+            {"null", nil},
+            {%{}, []}
+          ] do
+        messages = [%{"role" => "user", "content" => "Edit"}, edit_step(edit_args(old))]
+        call = %{id: "next", name: "mcp_ragex_edit_files", arguments: edit_args(new)}
+
+        assert :ok = AgentLoop.detect_tool_loop(messages, [call]),
+               "distinct edit content collapsed: #{inspect({old, new})}"
+      end
+    end
+
+    test "recognizes identical edits across wire and decoded argument representations" do
+      args = edit_args("  value\n")
+      messages = [%{"role" => "user", "content" => "Edit"}, edit_step(args)]
+      call = %{id: "different-id", name: "mcp_ragex_edit_files", arguments: args}
+
+      assert {:loop, %{period: 1, count: 2}} = AgentLoop.detect_tool_loop(messages, [call])
+      refute "mcp_ragex_edit_files" in AgentLoop.repeatable_tools()
+    end
+
+    test "canonicalizes object keys without parsing nested JSON-looking strings" do
+      args = %{changes: [%{content: "{\"value\": true}\n", line: "1"}]}
+      wire = ~s({"changes":[{"line":"1","content":"{\\"value\\": true}\\n"}]})
+
+      assert AgentLoop.normalize_arguments(args) == AgentLoop.normalize_arguments(wire)
+
+      assert %{"changes" => [%{"line" => "1", "content" => "{\"value\": true}\n"}]} =
+               AgentLoop.normalize_arguments(wire)
+    end
+
+    test "keeps edit array order distinct and trims malformed argument whitespace" do
+      refute AgentLoop.normalize_arguments(%{changes: ["first", "second"]}) ==
+               AgentLoop.normalize_arguments(%{changes: ["second", "first"]})
+
+      assert AgentLoop.normalize_arguments("invalid ") ==
+               AgentLoop.normalize_arguments("invalid")
+
+      refute AgentLoop.normalize_arguments("invalid1") ==
+               AgentLoop.normalize_arguments("invalid2")
+    end
+
+    test "internal notices retain the current turn but a multimodal user starts a new one" do
+      args = edit_args("value")
+      call = %{name: "mcp_ragex_edit_files", arguments: args}
+      history = [%{"role" => "user", "content" => "Edit"}, edit_step(args)]
+      notice = %{"role" => "user", "content" => "SYSTEM NOTICE: Tool failed."}
+
+      assert {:loop, _} = AgentLoop.detect_tool_loop(history ++ [notice], [call])
+
+      user = %{"role" => "user", "content" => [%{"type" => "text", "text" => "Retry"}]}
+      assert :ok = AgentLoop.detect_tool_loop(history ++ [notice, user], [call])
+    end
+  end
+
+  describe "outstanding loop warnings" do
+    test "only an immediately preceding loop warning can trigger escalation" do
+      warning = %{
+        "role" => "user",
+        "content" => "SYSTEM NOTICE: Repetitive tool loop detected (period 1)"
+      }
+
+      assert AgentLoop.loop_warning_pending?([warning])
+      refute AgentLoop.loop_warning_pending?([warning, edit_step(edit_args("progress"))])
+      refute AgentLoop.loop_warning_pending?([warning, %{"role" => "tool", "content" => "done"}])
+      refute AgentLoop.loop_warning_pending?([warning, %{"role" => "user", "content" => "Retry"}])
+
+      refute AgentLoop.loop_warning_pending?([
+               warning,
+               %{"role" => "user", "content" => [%{"text" => "New turn"}]}
+             ])
+
+      refute AgentLoop.loop_warning_pending?([])
+    end
+  end
+
+  defp edit_args(content) do
+    %{
+      "files" => [
+        %{
+          "path" => "lib/sample.ex",
+          "changes" => [
+            %{"line_start" => 1, "line_end" => 1, "old_content" => "old", "content" => content}
+          ]
+        }
+      ]
+    }
+  end
+
+  defp edit_step(args) do
+    %{
+      "role" => "assistant",
+      "tool_calls" => [
+        %{
+          "id" => "previous",
+          "function" => %{
+            "name" => "mcp_ragex_edit_files",
+            "arguments" => Yoke.Json.encode!(args)
+          }
+        }
+      ]
+    }
+  end
+
   describe "AgentLoop duplicate tool call detection" do
     test "allows identical mutable reads to observe refreshed evidence" do
       messages = [

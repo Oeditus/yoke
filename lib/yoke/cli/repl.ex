@@ -334,7 +334,12 @@ defmodule Yoke.CLI.Repl do
   end
 
   def handle_input("/help", _session_pid, _session_id) do
-    IO.puts(Formatter.help_menu())
+    IO.puts(Yoke.CLI.Help.text())
+    :continue
+  end
+
+  def handle_input("/help " <> topic, _session_pid, _session_id) do
+    IO.puts(Yoke.CLI.Help.text(topic))
     :continue
   end
 
@@ -938,6 +943,8 @@ defmodule Yoke.CLI.Repl do
 
             if findings == [] do
               IO.puts(Formatter.format_info("Review completed: no new findings to triage."))
+              body = Yoke.PRReview.build_pr_comment_body([], "", cwd: ctx.cwd)
+              maybe_post_review_to_github([], body, ctx)
             else
               {:ok, accepted_findings, _declined} = Yoke.PRReview.interactive_review(findings)
 
@@ -2970,13 +2977,15 @@ defmodule Yoke.CLI.Repl do
   end
 
   defp maybe_post_review_to_github(accepted_findings, pr_body, ctx) do
-    post_question = "Choose GitHub PR review action for accepted findings:"
+    event = Yoke.PRReview.review_event(accepted_findings)
+    verdict = Yoke.PRReview.review_verdict(accepted_findings)
+    review_label = if event == "COMMENT", do: "#{verdict} (comment only)", else: verdict
+    post_question = "Submit code review: #{review_label}?"
+    submit_option = "Submit code review: #{review_label}"
 
     post_options = [
       "Skip posting to GitHub (Recommended)",
-      "Submit COMMENT review with inline comments",
-      "Submit REQUEST_CHANGES review with inline comments",
-      "Submit APPROVE review with inline comments"
+      submit_option
     ]
 
     post_choice = Yoke.CLI.QuestionPrompt.ask_single_question(post_question, post_options)
@@ -2988,15 +2997,7 @@ defmodule Yoke.CLI.Repl do
         _ -> "Skip posting to GitHub"
       end
 
-    event =
-      cond do
-        String.contains?(selected_post, "APPROVE") -> "APPROVE"
-        String.contains?(selected_post, "REQUEST_CHANGES") -> "REQUEST_CHANGES"
-        String.contains?(selected_post, "COMMENT") -> "COMMENT"
-        true -> nil
-      end
-
-    if event do
+    if selected_post == submit_option do
       case Yoke.PRReview.post_context_review(ctx, accepted_findings, pr_body, event) do
         {:ok, pr_info} ->
           comments_count =
@@ -3004,7 +3005,7 @@ defmodule Yoke.CLI.Repl do
 
           IO.puts(
             Formatter.format_success(
-              "Successfully posted #{event} review with #{comments_count} inline comment(s) to GitHub PR ##{pr_info.number} (#{pr_info.url})"
+              "Successfully posted code review: #{review_label}, with #{comments_count} inline comment(s) to GitHub PR ##{pr_info.number} (#{pr_info.url})"
             )
           )
 

@@ -50,9 +50,20 @@ jobs:
       # is not part of the Elixir dependency tree, so without this step every
       # run logs `:dllb_binary_not_found` and falls back to the ETS backend.
       # The installer never fails the job on its own: dllb is an accelerator.
+      - name: Prepare binary cache key
+        id: binary-cache
+        run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - name: Restore dllb binary
+        id: dllb-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/bin/dllb-server
+          key: dllb-binary-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-dllb.sh') }}-latest-${{ steps.binary-cache.outputs.day }}
       - name: Install dllb-server
+        if: steps.dllb-cache.outputs.cache-hit != 'true'
+        run: ./scripts/install-dllb.sh
+      - name: Add installed binaries to PATH
         run: |
-          ./scripts/install-dllb.sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # `.ragex` holds the Ragex knowledge graph (dllb.redb); `.yoke` holds the

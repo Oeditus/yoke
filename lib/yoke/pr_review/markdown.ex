@@ -39,7 +39,7 @@ defmodule Yoke.PRReview.Markdown do
   @doc """
   Formats an inline review comment finding for GitHub PR reviews.
   """
-  def format_inline_comment_body(finding) when is_map(finding) do
+  def format_inline_comment_body(finding, opts \\ []) when is_map(finding) do
     severity = Map.get(finding, :severity) || Map.get(finding, "severity") || "medium"
     title = Map.get(finding, :title) || Map.get(finding, "title") || ""
     desc = Map.get(finding, :description) || Map.get(finding, "description") || ""
@@ -47,19 +47,38 @@ defmodule Yoke.PRReview.Markdown do
     file = Map.get(finding, :file) || Map.get(finding, "file")
 
     lang = infer_language(file)
+    suggestion = Keyword.get(opts, :suggestion, true)
 
     formatted_title = format_inline_code(to_string(title))
     formatted_desc = format_markdown_body(to_string(desc), lang: lang)
-    suggestion_block = format_fix_block(to_string(fix), lang: lang)
+    suggestion_block = format_fix_block(to_string(fix), lang: lang, suggestion: suggestion)
 
-    header = "**[#{String.upcase(to_string(severity))}] #{formatted_title}**"
+    header = "**#{severity_marker(severity)} #{formatted_title}**"
 
     body_parts =
       [header, formatted_desc, suggestion_block]
       |> Enum.map(&String.trim/1)
       |> Enum.reject(&(&1 == ""))
 
-    body_parts |> Enum.join("\n\n") |> strip_emojis()
+    body_parts |> Enum.join("\n\n") |> sanitize_review_body()
+  end
+
+  @doc """
+  Formats an off-diff review finding for the top-level GitHub PR review body,
+  rendering code suggestions in standard fenced code blocks instead of
+  committable inline suggestion fences.
+  """
+  def format_sidenote_body(finding) when is_map(finding) do
+    format_inline_comment_body(finding, suggestion: false)
+  end
+
+  @doc "Returns the application-owned severity marker for a GitHub review finding."
+  def severity_marker(severity) do
+    case severity |> to_string() |> String.trim() |> String.downcase() do
+      "high" -> "🔴"
+      "medium" -> "🟡"
+      _ -> "🔵"
+    end
   end
 
   @doc """
@@ -80,13 +99,20 @@ defmodule Yoke.PRReview.Markdown do
   end
 
   @doc """
-  Enforces emoji-free review output except for the branding marker in the first header.
+  Removes decorative emojis while retaining branding and severity circles.
   """
   def sanitize_review_body("## 🪢 Review from " <> rest) do
-    "## 🪢 Review from " <> strip_emojis(rest)
+    "## 🪢 Review from " <> sanitize_review_body(rest)
   end
 
-  def sanitize_review_body(text), do: strip_emojis(text)
+  def sanitize_review_body(text) when is_binary(text) do
+    text
+    |> String.split(~r/([🔴🟡🔵])/u, include_captures: true)
+    |> Enum.map_join(fn
+      marker when marker in ["🔴", "🟡", "🔵"] -> marker
+      part -> strip_emojis(part)
+    end)
+  end
 
   @doc """
   Formats single-line prose or inline text (such as titles or summary lines),
@@ -140,6 +166,8 @@ defmodule Yoke.PRReview.Markdown do
 
   defp format_fix_block(fix, opts) do
     trimmed = String.trim(fix)
+    suggestion = Keyword.get(opts, :suggestion, true)
+    lang = Keyword.get(opts, :lang, "elixir")
 
     cond do
       trimmed == "" ->
@@ -153,9 +181,13 @@ defmodule Yoke.PRReview.Markdown do
         # Pure prose suggestion, format inline code
         format_inline_code(trimmed)
 
-      true ->
+      suggestion ->
         # Code snippet: wrap in ```suggestion
         "\n```suggestion\n#{trimmed}\n```"
+
+      true ->
+        fence = if is_binary(lang) and lang != "", do: lang, else: ""
+        "\n```#{fence}\n#{trimmed}\n```"
     end
   end
 

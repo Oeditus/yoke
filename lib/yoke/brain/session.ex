@@ -1268,6 +1268,7 @@ defmodule Yoke.Brain.Session do
     review_state =
       state
       |> Map.put(:review_context, context)
+      |> Map.put(:review_progress, Yoke.PRReview.Progress.new())
       |> Map.put(:messages, [system, %{"role" => "user", "content" => prompt}])
       |> Map.put(:tools, Yoke.PRReview.Tools.definitions())
       |> Map.put(:tool_failure_counts, %{})
@@ -1498,6 +1499,19 @@ defmodule Yoke.Brain.Session do
     end
   end
 
+  defp handle_tool_calls_turn(
+         %{review_context: _, suppress_tools: true} = state,
+         response,
+         _tool_calls,
+         _depth
+       ) do
+    state = accumulate_usage(state, response[:usage])
+
+    {{:error,
+      "Review stalled: provider continued requesting tools after finalization was required."},
+     %{state | status: :idle}}
+  end
+
   defp handle_tool_calls_turn(state, response, tool_calls, depth) do
     state = accumulate_usage(state, response[:usage])
     state = record_budget_tool_calls(state, tool_calls)
@@ -1525,7 +1539,7 @@ defmodule Yoke.Brain.Session do
       {:loop, %{period: period, count: count, cycle: cycle} = loop_info} ->
         cycle_desc = AgentLoop.format_cycle_description(cycle)
 
-        if previous_message_was_loop_warning?(state.messages) do
+        if AgentLoop.loop_warning_pending?(state.messages) do
           Logger.warning(
             "[Brain.Session] Model ignored previous loop break warning and repeated cycle (period #{period}, repeated #{count} times):\n#{cycle_desc}"
           )
@@ -1582,9 +1596,52 @@ defmodule Yoke.Brain.Session do
                 step_count: updated_hands_state.step_count + 1
             }
 
-            run_agent_loop(state_after_tools, depth - 1)
+            continue_after_tools(state_after_tools, tool_calls, tool_messages, depth)
         end
     end
+  end
+
+  # ---------------------------------------------------------------------
+  # Revision-pinned review progress and bounded, tool-free finalization
+  # ---------------------------------------------------------------------
+
+  defp continue_after_tools(%{review_context: _} = state, calls, messages, depth) do
+    {status, progress} =
+      Yoke.PRReview.Progress.observe(state.review_progress, calls, messages, state.cwd)
+
+    state = %{state | review_progress: progress}
+
+    case status do
+      :ok -> run_agent_loop(state, depth - 1)
+      :stalled -> finalize_review(state, depth, "Repeated pinned reads returned no new evidence.")
+    end
+  end
+
+  defp continue_after_tools(state, _calls, _messages, depth),
+    do: run_agent_loop(state, depth - 1)
+
+  defp finalize_review(state, depth, reason) do
+    Logger.warning(
+      "[Brain.Session] #{reason} Requesting a final structured review without tools."
+    )
+
+    notice = %{
+      "role" => "user",
+      "content" =>
+        "SYSTEM NOTICE: #{reason} All review tools are now disabled. " <>
+          "Finish using only the evidence already supplied. Return the required " <>
+          "<findings>JSON array</findings> payload containing only verified regressions; " <>
+          "an empty array is valid only if no actionable regressions were found. " <>
+          "Do not request any more tools."
+    }
+
+    state = %{
+      state
+      | messages: repair_tool_messages(state.messages) ++ [notice],
+        suppress_tools: true
+    }
+
+    run_agent_loop(state, depth - 1)
   end
 
   # ---------------------------------------------------------------------
@@ -1862,6 +1919,10 @@ defmodule Yoke.Brain.Session do
 
   defp loop_guidance(_loop_info), do: ""
 
+  defp handle_unyielding_loop(%{review_context: _} = state, depth, _loop_info) do
+    finalize_review(state, depth, "The model repeated a tool cycle after a loop warning.")
+  end
+
   defp handle_unyielding_loop(state, depth, loop_info) do
     if top_level_session?(state.session_id) do
       prompt_user_on_loop(state, depth, loop_info)
@@ -1925,31 +1986,6 @@ defmodule Yoke.Brain.Session do
       _ ->
         {{:error, "Turn stopped by user: agent stuck in infinite tool loop."},
          %{state | status: :idle, suppress_tools: false}}
-    end
-  end
-
-  defp previous_message_was_loop_warning?(messages) do
-    if is_list(messages) do
-      messages
-      |> Enum.reverse()
-      |> Enum.find_value(false, fn msg ->
-        role = Map.get(msg, "role") || Map.get(msg, :role)
-        content = Map.get(msg, "content") || Map.get(msg, :content) || ""
-
-        cond do
-          role == "user" and
-              String.starts_with?(content, "SYSTEM NOTICE: Repetitive tool loop detected") ->
-            true
-
-          role == "user" ->
-            false
-
-          true ->
-            nil
-        end
-      end)
-    else
-      false
     end
   end
 

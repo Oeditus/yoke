@@ -52,7 +52,7 @@ inputs:
   dllb-version:
     description: >
       dllb-server release tag to install, e.g. v1.0.2. Defaults to the latest
-      release. Set to 'skip' to install nothing.
+      release, refreshed daily when cached. Set to 'skip' to install nothing.
     required: false
     default: ''
   upload:
@@ -68,7 +68,7 @@ inputs:
     required: false
     default: ''
   yoke-version:
-    description: 'yoke release tag to install, e.g. v0.21.1. Defaults to the latest release.'
+    description: 'yoke release tag to install, e.g. v0.21.1. Defaults to the latest release, refreshed daily when cached.'
     required: false
     default: ''
   build-from-source:
@@ -110,8 +110,31 @@ runs:
         elixir-version: ${{ inputs.elixir-version }}
         otp-version: ${{ inputs.otp-version }}
 
+    - name: Prepare binary cache keys
+      id: binary-cache
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        {
+          echo "day=$(date -u +%F)"
+          echo "yoke-installer=$(sha256sum "$ACTION_PATH/scripts/install.sh" | awk '{print $1}')"
+          echo "dllb-installer=$(sha256sum "$ACTION_PATH/scripts/install-dllb.sh" | awk '{print $1}')"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Restore yoke binary
+      # Source builds must never be satisfied by a downloaded release cache.
+      id: yoke-cache
+      if: ${{ inputs.build-from-source != 'true' }}
+      uses: actions/cache@v4
+      with:
+        path: ~/.local/bin/yoke
+        key: yoke-binary-v1-${{ runner.os }}-${{ runner.arch }}-otp${{ inputs.otp-version }}-elixir${{ inputs.elixir-version }}-${{ steps.binary-cache.outputs.yoke-installer }}-${{ inputs.yoke-version || format('latest-{0}', steps.binary-cache.outputs.day) }}
+
     - name: Install yoke
       id: install
+      if: ${{ inputs.build-from-source == 'true' || steps.yoke-cache.outputs.cache-hit != 'true' }}
       shell: bash
       env:
         YOKE_VERSION: ${{ inputs.yoke-version }}
@@ -133,7 +156,17 @@ runs:
           "${{ github.action_path }}/scripts/install.sh"
         fi
 
-        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+    - name: Add installed binaries to PATH
+      shell: bash
+      run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Restore dllb binary
+      id: dllb-cache
+      if: ${{ inputs.dllb-version != 'skip' }}
+      uses: actions/cache@v4
+      with:
+        path: ~/.local/bin/dllb-server
+        key: dllb-binary-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.binary-cache.outputs.dllb-installer }}-${{ inputs.dllb-version || format('latest-{0}', steps.binary-cache.outputs.day) }}
 
     # Ragex's per-project store backend spawns a `dllb-server` OS process
     # against `<repo>/.ragex/dllb.redb`. That binary is a Rust executable and
@@ -142,14 +175,13 @@ runs:
     # The installer never fails the job on its own: dllb is an accelerator.
     - name: Install dllb-server
       id: dllb
-      if: ${{ inputs.dllb-version != 'skip' }}
+      if: ${{ inputs.dllb-version != 'skip' && steps.dllb-cache.outputs.cache-hit != 'true' }}
       shell: bash
       env:
         DLLB_VERSION: ${{ inputs.dllb-version }}
       run: |
         set -euo pipefail
         "${{ github.action_path }}/scripts/install-dllb.sh"
-        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
     # `.ragex` holds the Ragex knowledge graph (dllb.redb) and `.yoke` holds
     # the repo's config, policy and session checkpoints. Restoring them turns
