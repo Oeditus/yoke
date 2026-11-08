@@ -5,6 +5,9 @@ defmodule Yoke.TaskEngine.PackageTrackerTest do
   subtasks) to the status bar.
   """
   use ExUnit.Case, async: false
+  # `Yoke.TaskEngine.PackageTracker` writes to `Yoke.PackageRegistry`.
+  # See `test/test_helper.exs`.
+  @moduletag :app
 
   alias Yoke.TaskEngine.PackageTracker
 

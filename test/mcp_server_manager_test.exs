@@ -1,5 +1,8 @@
 defmodule Yoke.MCPServerManagerTest do
   use ExUnit.Case, async: false
+  # Drives `Yoke.MCP.ServerManager`, a supervised process.
+  # See `test/test_helper.exs`.
+  @moduletag :app
 
   alias Yoke.MCP.ServerManager, as: MCPServerManager
 
@@ -23,6 +26,50 @@ defmodule Yoke.MCPServerManagerTest do
   test "handles removing connected MCP server gracefully" do
     assert {:error, msg} = MCPServerManager.remove_server("non_existent_server")
     assert msg =~ "not connected"
+  end
+
+  describe "activate_dllb_project does not block the manager" do
+    # `DllbPM.set_active_project/1` starts (or re-targets) a `dllb-server` OS
+    # process and waits for it to accept connections. Running that inline in
+    # `handle_call` blocked this GenServer's mailbox -- and therefore every
+    # `get_tool` and MCP call in every session -- for as long as the external
+    # process took to come up.
+    @tag :tmp_dir
+    test "the manager answers other calls while activation is in flight", %{tmp_dir: project} do
+      alias Ragex.Dllb.ProjectManager, as: DllbPM
+
+      pid = Process.whereis(MCPServerManager)
+      assert is_pid(pid)
+      manager_state = :sys.get_state(pid)
+      dllb_state = :sys.get_state(DllbPM)
+      mode = Application.get_env(:ragex, :dllb_mode)
+
+      on_exit(fn ->
+        :sys.replace_state(pid, fn _ -> manager_state end)
+        :sys.replace_state(DllbPM, fn _ -> dllb_state end)
+        Application.put_env(:ragex, :dllb_mode, mode)
+      end)
+
+      Application.put_env(:ragex, :dllb_mode, :per_project)
+      info = %{project_path: project, owned?: false, proc: nil, pool_pid: nil}
+
+      :sys.replace_state(DllbPM, &%{&1 | instances: Map.put(&1.instances, project, info)})
+      :sys.replace_state(pid, &%{&1 | ragex_status: :ready})
+      tag = make_ref()
+      :sys.suspend(DllbPM)
+
+      try do
+        # Same sender guarantees activation precedes the query in the mailbox;
+        # the suspended manager guarantees activation cannot finish first.
+        send(pid, {:"$gen_call", {self(), tag}, {:activate_dllb_project, project}})
+        assert is_list(GenServer.call(pid, :list_servers, 1_000))
+      after
+        :sys.resume(DllbPM)
+      end
+
+      assert_receive {^tag, :ok}, 1_000
+      assert :ok = MCPServerManager.stop_ragex()
+    end
   end
 
   test "reanalyzes directory with ragex on each subsequent run when branch files change" do

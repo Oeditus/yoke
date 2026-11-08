@@ -1,5 +1,8 @@
 defmodule Yoke.ProviderTest do
   use ExUnit.Case, async: false
+  # Starts session actors to exercise provider resolution end to end.
+  # See `test/test_helper.exs`.
+  @moduletag :app
   @moduletag tmp_dir: true
 
   alias Yoke.Brain.Session

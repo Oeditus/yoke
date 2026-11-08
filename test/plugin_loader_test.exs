@@ -1,5 +1,8 @@
 defmodule Yoke.PluginLoaderTest do
   use ExUnit.Case, async: false
+  # `Yoke.Plugin.Loader` is a supervised process; `execute_tool/3` calls it.
+  # See `test/test_helper.exs`.
+  @moduletag :app
 
   alias Yoke.Plugin.Loader, as: PluginLoader
 
@@ -281,5 +284,71 @@ defmodule Yoke.PluginLoaderTest do
       })
 
     assert res3 =~ "mix.exs:1: defmodule Sample do"
+  end
+
+  describe "execute_tool/3 failure containment" do
+    # A tool closure runs in the *caller's* process. Before this containment,
+    # a `rescue` covered raises but not `throw`/`exit`, so a tool that called
+    # `exit(:timeout)` killed the calling `Task` outright: the model got no
+    # tool result at all, and the orchestrator reported a generic
+    # "Tool process crashed" instead of a diagnosable message.
+    setup do
+      tmp_plugin_path =
+        Path.join(
+          System.tmp_dir!(),
+          "failing_plugin_#{System.unique_integer([:positive])}.exs"
+        )
+
+      File.write!(tmp_plugin_path, """
+      defmodule FailingPlugin do
+        @behaviour Yoke.Plugin.Behaviour
+
+        def name, do: "FailingPlugin"
+        def description, do: "Tools that fail in every way a tool can fail"
+
+        def tools do
+          [
+            %{name: "fail_raise", description: "raises", parameters: %{}, execute: fn _ -> raise "boom" end},
+            %{name: "fail_exit", description: "exits", parameters: %{}, execute: fn _ -> exit(:timeout) end},
+            %{name: "fail_throw", description: "throws", parameters: %{}, execute: fn _ -> throw(:nope) end}
+          ]
+        end
+      end
+      """)
+
+      on_exit(fn ->
+        File.rm(tmp_plugin_path)
+        PluginLoader.unregister_plugins(["FailingPlugin"])
+      end)
+
+      {:ok, _names} = PluginLoader.load_file(tmp_plugin_path)
+      :ok
+    end
+
+    test "a raising tool is reported as an error, not a crash" do
+      assert {:error, message} = PluginLoader.execute_tool("fail_raise", %{})
+      assert message =~ "Error executing tool fail_raise"
+      assert message =~ "boom"
+    end
+
+    test "an exiting tool is reported as an error instead of killing the caller" do
+      assert {:error, message} = PluginLoader.execute_tool("fail_exit", %{})
+      assert message =~ "Tool fail_exit exited"
+      assert message =~ "timeout"
+    end
+
+    test "a throwing tool is reported as an error instead of killing the caller" do
+      assert {:error, message} = PluginLoader.execute_tool("fail_throw", %{})
+      assert message =~ "Tool fail_throw threw"
+      assert message =~ "nope"
+    end
+
+    test "the loader survives a failing tool and keeps serving other tools" do
+      assert {:error, _} = PluginLoader.execute_tool("fail_exit", %{})
+
+      # The GenServer is still alive and still answers.
+      assert "list_dir" in Enum.map(PluginLoader.list_tools(), & &1.name)
+      assert {:ok, _} = PluginLoader.execute_tool("elixir_eval", %{"code" => "1 + 1"})
+    end
   end
 end

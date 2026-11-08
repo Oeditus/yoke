@@ -17,20 +17,19 @@ defmodule Yoke.CLI.Interrupt do
 
   Known limitation: while a permission-confirmation or `ask_question`
   modal is on-screen (i.e. `Yoke.CLI.Spinner` is paused -- see
-  `Yoke.CLI.Spinner.with_paused/1`), the keystroke watcher below
-  backs off entirely rather than competing with that modal for keystrokes.
+  `Yoke.CLI.Spinner.with_paused/1`), the keystroke watcher is paused
+  and killed by `pause/0` rather than competing with that modal for
+  keystrokes, and is respawned by `resume/0` when the modal closes.
   Ctrl+Q is only recognized while the spinner itself is actively showing
   ("AI is responding"), not while the AI is waiting on a modal answer --
   use the modal's own Ctrl+C ("deny"/"cancelled") in that case.
   """
   alias Yoke.Brain.Session
-  alias Yoke.CLI.Spinner
+
+  use Agent
 
   @ctrl_q "\x11"
   @ctrl_o "\x0f"
-  @paused_poll_interval_ms 120
-
-  use Agent
 
   @doc "Starts the (named, singleton) Interrupt agent."
   def start_link(_opts \\ []) do
@@ -156,38 +155,29 @@ defmodule Yoke.CLI.Interrupt do
   end
 
   defp watch_for_interrupt(session_pid) do
-    if Spinner.active?() and Spinner.paused?() do
-      # A confirmation/question modal (or the max-tool-depth "continue?"
-      # prompt) currently owns the TTY -- see the moduledoc's "Known
-      # limitation" -- back off and check again shortly rather than racing
-      # it for keystrokes.
-      Process.sleep(@paused_poll_interval_ms)
-      watch_for_interrupt(session_pid)
-    else
-      # Re-assert raw mode on every iteration: a modal that just finished
-      # (`Yoke.CLI.QuestionPrompt`) unconditionally restores
-      # cooked mode when *it* exits, since it has no idea this outer
-      # "AI is responding" phase still wants raw mode for the rest of the
-      # turn. Cooked mode would otherwise silently break Ctrl+Q detection
-      # (many terminals treat it as XON software flow control, consuming
-      # it before it ever reaches this program) for whatever remains of
-      # the turn. Idempotent/cheap when already raw.
-      set_raw_mode()
+    # Re-assert raw mode on every iteration: a modal that just finished
+    # (`Yoke.CLI.QuestionPrompt`) unconditionally restores
+    # cooked mode when *it* exits, since it has no idea this outer
+    # "AI is responding" phase still wants raw mode for the rest of the
+    # turn. Cooked mode would otherwise silently break Ctrl+Q detection
+    # (many terminals treat it as XON software flow control, consuming
+    # it before it ever reaches this program) for whatever remains of
+    # the turn. Idempotent/cheap when already raw.
+    set_raw_mode()
 
-      case read_char() do
-        @ctrl_q ->
-          Session.cancel_current_turn(session_pid)
+    case read_char() do
+      @ctrl_q ->
+        Session.cancel_current_turn(session_pid)
 
-        @ctrl_o ->
-          Yoke.CLI.LineEditor.toggle_expand_tool_calls(%{})
-          watch_for_interrupt(session_pid)
+      @ctrl_o ->
+        Yoke.CLI.LineEditor.toggle_expand_tool_calls(%{})
+        watch_for_interrupt(session_pid)
 
-        :eof ->
-          :ok
+      :eof ->
+        :ok
 
-        _other ->
-          watch_for_interrupt(session_pid)
-      end
+      _other ->
+        watch_for_interrupt(session_pid)
     end
   end
 

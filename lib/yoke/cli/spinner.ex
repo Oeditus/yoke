@@ -68,8 +68,6 @@ defmodule Yoke.CLI.Spinner do
 
   @doc "Resumes spinner redraws after a previous `pause/0`. Safe to call even if the spinner isn't running."
   def resume do
-    Yoke.CLI.Interrupt.resume()
-
     if active?() do
       try do
         GenServer.call(__MODULE__, :resume, 500)
@@ -79,6 +77,9 @@ defmodule Yoke.CLI.Spinner do
     else
       :ok
     end
+
+    # Resume the Ctrl+Q watcher if one was paused for a modal.
+    Yoke.CLI.Interrupt.resume()
   end
 
   @doc """

@@ -23,11 +23,10 @@ config :ragex, :ai, providers: []
 # Restrict GPU preallocation and cap memory fraction to 1/4 (0.25) so concurrent
 # instances can start without exhausting GPU memory.
 #
-# Guarded by `config_env() != :escript` for the same reason as config.exs:
-# the `escript` Mix env deliberately excludes exla/nx/bumblebee/image from the
-# dependency tree (see mix.exs), so configuring :exla there emits
+# Use the build-time feature setting from config.exs: ordinary tests and all
+# escript builds exclude the native dependency tree, so configuring :exla emits
 # "Please ensure :exla exists or remove the configuration" on every boot.
-if config_env() != :escript do
+if Application.get_env(:yoke, :embeddings_enabled, false) do
   gpu_mem_fraction =
     case System.get_env("EXLA_GPU_MEMORY_FRACTION") do
       nil ->

@@ -1,5 +1,8 @@
 defmodule Yoke.TaskEngine.OrchestratorTest do
   use ExUnit.Case, async: true
+  # `execute_batch/3` needs `Yoke.TaskEngine.TaskSupervisor`.
+  # See `test/test_helper.exs`.
+  @moduletag :app
 
   alias Yoke.TaskEngine.Orchestrator
 
@@ -64,6 +67,48 @@ defmodule Yoke.TaskEngine.OrchestratorTest do
       # the batch timeout as before.
       assert {:error, bash_msg} = bash_res
       assert bash_msg =~ "timed out"
+    end
+  end
+
+  describe "lock acquisition" do
+    # Exercise actual contention on the tool's file_lock key, rather than
+    # waiting for an unrelated lock holder to exit before starting a tool.
+    test "a contended lock is acquired once the holder releases it" do
+      path = Path.join(System.tmp_dir!(), "lock_ok_#{System.unique_integer([:positive])}.txt")
+      key = Orchestrator.get_lock_resource("write_file", %{"path" => path})
+      caller = self()
+      on_exit(fn -> File.rm(path) end)
+
+      holder =
+        spawn_link(fn ->
+          {:ok, _} = Registry.register(Yoke.TaskEngine.LockRegistry, key, :locked)
+          send(caller, :lock_held)
+          receive do: (:release -> Registry.unregister(Yoke.TaskEngine.LockRegistry, key))
+        end)
+
+      on_exit(fn -> if Process.alive?(holder), do: Process.exit(holder, :kill) end)
+      assert_receive :lock_held
+
+      session_state = %{hands: %Yoke.Hands.Executor{mode: :local}}
+
+      worker =
+        Task.async(fn ->
+          Orchestrator.execute_batch(
+            [%{id: "w1", name: "write_file", arguments: %{"path" => path, "content" => "ok"}}],
+            session_state
+          )
+        end)
+
+      assert Task.yield(worker, 50) == nil
+      refute File.exists?(path)
+      send(holder, :release)
+      assert [{_tc, {:ok, _}}] = Task.await(worker)
+      assert File.read!(path) == "ok"
+    end
+
+    test "the configured lock wait is finite and positive" do
+      assert is_integer(Orchestrator.lock_timeout_ms())
+      assert Orchestrator.lock_timeout_ms() > 0
     end
   end
 end

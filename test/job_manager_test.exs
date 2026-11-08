@@ -1,5 +1,8 @@
 defmodule Yoke.TaskEngine.JobManagerTest do
   use ExUnit.Case, async: false
+  # `Yoke.TaskEngine.JobManager` is a supervised process.
+  # See `test/test_helper.exs`.
+  @moduletag :app
 
   alias Yoke.Plugin.DefaultTools
   alias Yoke.TaskEngine.JobManager

@@ -1,5 +1,8 @@
 defmodule Yoke.TaskEngineTest do
   use ExUnit.Case, async: true
+  # `Orchestrator.execute_batch/3` needs `Yoke.TaskEngine.TaskSupervisor`.
+  # See `test/test_helper.exs`.
+  @moduletag :app
 
   alias Yoke.Hands.Executor, as: HandsExecutor
   alias Yoke.TaskEngine.Orchestrator

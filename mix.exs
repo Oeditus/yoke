@@ -41,7 +41,7 @@ defmodule Yoke.MixProject do
         name: "yoke_escript"
       ],
       deps: deps()
-    ]
+    ] ++ native_test_build_config()
   end
 
   def cli do
@@ -115,12 +115,14 @@ defmodule Yoke.MixProject do
   # load from inside a `mix escript.build` archive (see MIX_ENV=:escript
   # below). ragex itself marks them `optional: true`, so this project must
   # declare them directly to pull them into the standard `mix release` /
-  # dev / test dependency tree and keep embeddings-based semantic search and
-  # image tools working there. They're deliberately omitted under the
-  # dedicated `escript` Mix env used to build the standalone `yoke` escript,
-  # so that build stays free of anything that can't load from an archive.
+  # dev dependency tree and keep embeddings-based semantic search and image
+  # tools working there. Ordinary tests omit this optional native stack:
+  # Nx.BinaryBackend does not prevent EXLA's application/NIF from starting.
+  # Opt in with YOKE_EMBEDDINGS=true mix test on a suitably configured host.
+  # Escript builds always omit native dependencies, regardless of the flag.
   defp embeddings_deps do
-    if Mix.env() == :escript do
+    if Mix.env() == :escript or
+         (Mix.env() == :test and System.get_env("YOKE_EMBEDDINGS") not in ["1", "true"]) do
       []
     else
       [
@@ -132,6 +134,19 @@ defmodule Yoke.MixProject do
         {:fine, "~> 0.1.6", runtime: false},
         {:image, "~> 0.54"}
       ]
+    end
+  end
+
+  # Mix can reuse .app files when only environment-controlled deps change.
+  # Keep opt-in native tests out of the ordinary test artifact directory.
+  defp native_test_build_config do
+    if Mix.env() == :test and System.get_env("YOKE_EMBEDDINGS") in ["1", "true"] do
+      [
+        build_path: Path.join(System.get_env("MIX_BUILD_ROOT", "_build"), "test_native"),
+        build_per_environment: false
+      ]
+    else
+      []
     end
   end
 

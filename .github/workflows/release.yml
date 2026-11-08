@@ -45,9 +45,8 @@ jobs:
     name: Static Analysis
     runs-on: ubuntu-latest
     env:
-      EXLA_TARGET: cpu
-      EXLA_BUILD: "false"
-      NX_DEFAULT_BACKEND: Nx.BinaryBackend
+      XLA_TARGET: cpu
+      EXLA_CPU_ONLY: "true"
     strategy:
       matrix:
         elixir: ['1.20']

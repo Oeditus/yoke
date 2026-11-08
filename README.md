@@ -451,6 +451,28 @@ mix deps.get
 mix yoke.install
 ```
 
+#### Running tests without CUDA
+
+Run `MIX_ENV=test mix deps.get` followed by `mix test`. Ordinary tests exclude
+the optional Bumblebee/Nx/EXLA/Image dependency group, so they do not need
+CUDA, NCCL, or XLA archives. Ragex still starts its non-embedding services and
+uses the ETS graph backend in tests. Other core dependencies, such as the
+Markdown parser's precompiled NIF, remain part of the build.
+
+For native integration testing, use `YOKE_EMBEDDINGS=true mix test`. These
+artifacts live in `_build/test_native` (or beneath
+`MIX_BUILD_ROOT`) so switching back cannot reuse native-enabled `yoke.app`
+metadata in the ordinary test build. On a CPU-only host, also set
+`XLA_TARGET=cpu EXLA_CPU_ONLY=true` **when compiling**
+the native dependencies; those settings cannot turn an already compiled CUDA
+NIF into a CPU NIF. Rebuild EXLA when changing its target. Keep hardware/model
+integration checks separate from ordinary unit tests.
+
+Dev/prod builds retain embeddings and image processing by default. Escript
+builds always exclude this native feature group, even with the opt-in flag.
+`mix test --no-start` remains available for tests that do not need Yoke's
+supervision tree; app-dependent cases are excluded in that mode.
+
 #### Testing local Ragex changes
 
 Set `LOCAL_RAGEX` to an absolute Ragex checkout path to use unpublished source changes instead of the Hex dependency. For example, run `LOCAL_RAGEX=/path/to/ragex mix test` from this checkout. The same override applies when building a release with `LOCAL_RAGEX=/path/to/ragex MIX_ENV=prod mix release --overwrite`.
@@ -721,6 +743,7 @@ Options: `-n/--no-run`, `-a/--apply`, `-p/--previous`, `--command <cmd>`, `--his
 | `compact_status_bar` | `false` | Swap the gauge for a compact `id + message count` line |
 | `max_context_tokens` | `64000` | Assumed model context window used by the usage gauge |
 | `max_tool_depth` | `1000` | Consecutive tool-calling turns before pausing to confirm |
+| `chat_receive_timeout_ms` | `300000` | Wall-clock ceiling for one chat-completion HTTP response. A provider that accepts the connection and then never responds fails with a timeout instead of wedging the session. Raise it for very slow local models. |
 
 Manage most of these live from the REPL with `/config style <name>`, `/config prompt <template>`, and `/config toggle <key>` -- or toggle permission mode, sandbox bounds, and the status bar mode instantly with `Ctrl+P`, `Ctrl+G`, and `Ctrl+B`.
 

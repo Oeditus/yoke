@@ -1,5 +1,8 @@
 defmodule Yoke.BrainSessionTest do
   use ExUnit.Case, async: false
+  # Starts session actors under `Yoke.Brain.SessionSupervisor`, which only
+  # exists once the application tree is up. See `test/test_helper.exs`.
+  @moduletag :app
   @moduletag tmp_dir: true
 
   alias Yoke.Brain.Session
@@ -399,6 +402,69 @@ defmodule Yoke.BrainSessionTest do
 
   test "cancel_current_turn/1 returns an error when no turn is in flight", %{pid: pid} do
     assert {:error, _reason} = Session.cancel_current_turn(pid)
+  end
+
+  describe "concurrent-turn guards" do
+    # Both `apply_review_fixes/3` and `generate_code_review/3` start a turn.
+    # `send_user_message/2` already refuses to start a second one; these two
+    # must refuse too, otherwise the first turn's `%Task{}` reference in
+    # `active_turn` is overwritten, its `handle_info({ref, result}, ...)`
+    # clause stops matching, and its caller blocks forever on a
+    # `GenServer.call(..., :infinity)` that is never answered.
+    #
+    # The guard is checked before any checkout verification, so the only
+    # precondition is `active_turn != nil`. This mirrors the pattern used by
+    # the `cancel_current_turn/1` test above: fabricate the in-flight turn
+    # inside `:sys.replace_state/2` (so the `%Task{}` belongs to the session
+    # process, exactly as in production) and cancel it explicitly before
+    # teardown.
+    setup %{pid: pid} do
+      test_pid = self()
+
+      :sys.replace_state(pid, fn state ->
+        fake_task =
+          Task.Supervisor.async_nolink(Yoke.TaskEngine.TaskSupervisor, fn ->
+            Process.sleep(:infinity)
+          end)
+
+        tag = make_ref()
+        send(test_pid, {:guarded_turn, fake_task, tag})
+        %{state | active_turn: %{task: fake_task, from: {test_pid, tag}}}
+      end)
+
+      assert_receive {:guarded_turn, fake_task, _tag}, 1_000
+
+      # Cancel the fabricated turn before teardown, exactly as the
+      # `cancel_current_turn/1` test above does, so no stray task outlives
+      # this test.
+      on_exit(fn -> Session.cancel_current_turn(pid) end)
+
+      %{fake_task: fake_task}
+    end
+
+    test "apply_review_fixes/3 refuses to start a turn while one is running", %{pid: pid} do
+      context = %{cwd: "/nonexistent", head_sha: "deadbeef"}
+
+      assert {:error, message} = Session.apply_review_fixes(pid, context, "fix it")
+      assert message =~ "A turn is already running"
+    end
+
+    test "generate_code_review/3 refuses to start a review while a turn is running", %{
+      pid: pid
+    } do
+      assert {:error, message} = Session.generate_code_review(pid, "main", "HEAD")
+      assert message =~ "A turn is already running"
+    end
+
+    test "a refused second turn leaves the first turn's task reference intact", %{pid: pid} do
+      %{active_turn: %{task: task_before}} = :sys.get_state(pid)
+
+      context = %{cwd: "/nonexistent", head_sha: "deadbeef"}
+      assert {:error, _} = Session.apply_review_fixes(pid, context, "fix it")
+      assert {:error, _} = Session.generate_code_review(pid, "main", "HEAD")
+
+      assert %{active_turn: %{task: ^task_before}} = :sys.get_state(pid)
+    end
   end
 
   test "whitelists all ragex tools automatically without asking for user confirmation" do

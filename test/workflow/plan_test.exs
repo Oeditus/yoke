@@ -5,12 +5,12 @@ defmodule Yoke.Workflow.PlanTest do
 
   describe "draft/1,2" do
     test "returns a well-formed {:ok, plan_map} in offline/mock mode" do
-      # In the :test env DeepSeekAPI auto-enables its mock (no api_key), so a
-      # real HTTP call is never made. The mock's split response is free-form
+      # Force mock mode regardless of the developer's configured provider.
+      # The mock's split response is free-form
       # prose (not parseable JSON), so build_plan collapses the split and the
       # plan comes back with an empty steps list -- still a valid, well-formed
       # plan map.
-      assert {:ok, plan} = Plan.draft("Add a login feature with tests")
+      assert {:ok, plan} = Plan.draft("Add a login feature with tests", mock: true)
       assert is_map(plan)
       assert is_binary(plan["summary"]) and plan["summary"] != ""
       assert is_list(plan["steps"])
@@ -34,7 +34,7 @@ defmodule Yoke.Workflow.PlanTest do
     end
 
     test "returns {:ok, plan_map} or {:error, _} without raising for any task text" do
-      case Plan.draft("") do
+      case Plan.draft("", mock: true) do
         {:ok, %{"summary" => summary, "steps" => steps}} ->
           assert is_binary(summary)
           assert is_list(steps)

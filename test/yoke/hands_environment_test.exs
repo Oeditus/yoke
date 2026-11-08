@@ -1,5 +1,8 @@
 defmodule Yoke.Hands.EnvironmentTest do
   use ExUnit.Case, async: false
+  # Exercises `Yoke.TaskEngine.JobManager`, a supervised process.
+  # See `test/test_helper.exs`.
+  @moduletag :app
 
   alias Yoke.Hands.Environment
   alias Yoke.Plugin.DefaultTools

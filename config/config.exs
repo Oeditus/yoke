@@ -34,10 +34,15 @@ config :ragex, :ai, providers: []
 # Configure EXLA to disable log sink when NIF is uncompiled/unavailable.
 # Restrict GPU memory allocation: avoid grabbing all VRAM at once (default to 1/4
 # memory fraction without eager preallocation) so multiple instances can run concurrently.
-# Skipped entirely under the `escript` Mix env, which deliberately excludes
-# exla/nx/bumblebee/image from the dependency tree (see mix.exs) so the
-# standalone `yoke` escript doesn't try to load an unloadable NIF.
-if config_env() != :escript do
+# Keep this in sync with embeddings_deps/0 in mix.exs. Persist the build-time
+# decision so runtime.exs does not re-enable an absent dependency.
+embeddings_enabled? =
+  config_env() != :escript and
+    (config_env() != :test or System.get_env("YOKE_EMBEDDINGS") in ["1", "true"])
+
+config :yoke, :embeddings_enabled, embeddings_enabled?
+
+if embeddings_enabled? do
   gpu_mem_fraction =
     case System.get_env("EXLA_GPU_MEMORY_FRACTION") do
       nil ->
@@ -68,8 +73,6 @@ if config_env() == :test do
   config :yoke, auto_start_ragex: false
   config :dllb, enabled: false
   config :ragex, store_backend: :ets
-  config :nx, :default_backend, Nx.BinaryBackend
-  config :exla, start_log_sink: false
   config :logger, level: :warning
 end
 

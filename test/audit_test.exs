@@ -82,8 +82,35 @@ defmodule Yoke.AuditTest do
     test "detects a source file with no matching test file", %{dir: dir} do
       facts = Audit.collect(dir)
       # bar.ex has bar_test.exs; baz.ex does not.
-      assert "lib/foo/baz.ex" in facts.health.untested_dirs
-      refute "lib/foo/bar.ex" in facts.health.untested_dirs
+      assert "lib/foo/baz.ex" in facts.health.untested_files
+      refute "lib/foo/bar.ex" in facts.health.untested_files
+    end
+
+    test "matches the full relative path, not just the basename", %{dir: dir} do
+      # A test file with the right basename but the wrong directory must not
+      # count as coverage for a source file elsewhere in the tree. Matching
+      # basenames alone reported `lib/foo/baz.ex` as covered by this file.
+      File.mkdir_p!(Path.join(dir, "test/other"))
+      File.write!(Path.join(dir, "test/other/baz_test.exs"), "defmodule Other.BazTest do\nend\n")
+
+      facts = Audit.collect(dir)
+      assert "lib/foo/baz.ex" in facts.health.untested_files
+    end
+
+    test "a mirrored test path counts as coverage", %{dir: dir} do
+      # `lib/foo/nested/deep.ex` is covered by `test/foo/nested/deep_test.exs`
+      # even though no other module shares its basename.
+      File.mkdir_p!(Path.join(dir, "lib/foo/nested"))
+      File.mkdir_p!(Path.join(dir, "test/foo/nested"))
+      File.write!(Path.join(dir, "lib/foo/nested/deep.ex"), "defmodule Foo.Nested.Deep do\nend\n")
+
+      File.write!(
+        Path.join(dir, "test/foo/nested/deep_test.exs"),
+        "defmodule Foo.Nested.DeepTest do\nend\n"
+      )
+
+      facts = Audit.collect(dir)
+      refute "lib/foo/nested/deep.ex" in facts.health.untested_files
     end
 
     test "computes the test-to-source ratio", %{dir: dir} do

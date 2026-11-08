@@ -110,26 +110,23 @@ defmodule Yoke.TaskEngine.Orchestrator do
 
     lock_key = get_lock_resource(tc.name, tc.arguments)
 
-    if lock_key do
-      acquire_lock(lock_key)
+    case with_lock(lock_key, fn -> run_tool(tc, session_state) end) do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
     end
+  end
 
-    try do
-      case Map.get(session_state, :review_context) do
-        nil ->
-          HandsExecutor.execute(
-            session_state.hands,
-            tc.name,
-            effective_arguments(tc, session_state)
-          )
+  defp run_tool(tc, session_state) do
+    case Map.get(session_state, :review_context) do
+      nil ->
+        HandsExecutor.execute(
+          session_state.hands,
+          tc.name,
+          effective_arguments(tc, session_state)
+        )
 
-        context ->
-          Yoke.PRReview.Tools.execute(tc.name, tc.arguments, context)
-      end
-    after
-      if lock_key do
-        release_lock(lock_key)
-      end
+      context ->
+        Yoke.PRReview.Tools.execute(tc.name, tc.arguments, context)
     end
   end
 
@@ -242,16 +239,60 @@ defmodule Yoke.TaskEngine.Orchestrator do
     end
   end
 
+  @doc false
   def get_lock_resource(_, _), do: nil
 
-  defp acquire_lock(resource_key) when is_binary(resource_key) do
+  # How long a worker waits for a contended lock before giving up. A lock is
+  # only held for the duration of one tool call, but a live holder can stall
+  # indefinitely (for example, while awaiting a modal answer). Registry
+  # automatically removes a dead owner's entries, even after :brutal_kill.
+  # Bound the wait on a live owner so the model can see the failure and retry.
+  @lock_timeout_ms 60_000
+  # Poll interval while contended. Deliberately coarser than the old 10ms
+  # spin: a blocked worker used to wake 100x/second for as long as a human
+  # took to answer an `ask_question` modal, burning a scheduler slot for
+  # nothing.
+  @lock_poll_ms 25
+
+  @doc false
+  @spec lock_timeout_ms() :: pos_integer()
+  def lock_timeout_ms, do: @lock_timeout_ms
+
+  # Runs `fun` while holding `resource_key`, or directly when there is no
+  # lock key. Returns `{:ok, fun_result}` or `{:error, reason}` when the lock
+  # could not be acquired before the deadline.
+  defp with_lock(nil, fun), do: {:ok, fun.()}
+
+  defp with_lock(resource_key, fun) when is_binary(resource_key) do
+    case acquire_lock(resource_key, deadline()) do
+      :ok ->
+        try do
+          {:ok, fun.()}
+        after
+          release_lock(resource_key)
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp deadline, do: System.monotonic_time(:millisecond) + @lock_timeout_ms
+
+  defp acquire_lock(resource_key, deadline) do
     case Registry.register(Yoke.TaskEngine.LockRegistry, resource_key, :locked) do
       {:ok, _owner} ->
         :ok
 
       {:error, {:already_registered, _pid}} ->
-        Process.sleep(10)
-        acquire_lock(resource_key)
+        if System.monotonic_time(:millisecond) >= deadline do
+          {:error,
+           "Timed out after #{@lock_timeout_ms}ms waiting for lock '#{resource_key}'. " <>
+             "Another tool call is still holding it; retry once it finishes."}
+        else
+          Process.sleep(@lock_poll_ms)
+          acquire_lock(resource_key, deadline)
+        end
     end
   end
 

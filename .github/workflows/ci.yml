@@ -10,11 +10,8 @@ jobs:
   test:
     name: Test (Elixir ${{matrix.elixir}} / OTP ${{matrix.otp}})
     runs-on: ubuntu-latest
-    env:
-      # Fine is constrained in mix.exs so cold EXLA builds work (docs/CI.md §11.1).
-      XLA_TARGET: cpu
-      EXLA_CPU_ONLY: "true"
-      NX_DEFAULT_BACKEND: Nx.BinaryBackend
+    # Ordinary tests omit optional native libraries (mix.exs).
+    # The linters job separately exercises a cold CPU EXLA build.
     strategy:
       # Each matrix entry reports independently. With fail-fast (the default),
       # one failure cancels the others and their result is unknowable --
@@ -87,14 +84,8 @@ jobs:
     name: Headless seams (no TTY)
     runs-on: ubuntu-latest
     env:
-      # NOTE: `EXLA_TARGET`/`EXLA_BUILD` are read by nothing -- they are dead
-      # config. They are kept because removing them would change nothing, but
-      # *replacing* them with `XLA_TARGET=cpu` changes the deps cache key and
-      # forces a cold `exla` NIF compile, which fails on an exla 1.0.0 / GCC 15
-      # incompatibility (`fine.hpp: try_decode`). See docs/CI.md §6.1.
-      EXLA_TARGET: cpu
-      EXLA_BUILD: "false"
-      NX_DEFAULT_BACKEND: Nx.BinaryBackend
+      # MIX_ENV=test excludes native dependencies by default; no XLA switches
+      # are needed to boot this application on a GPU-less host.
       # Proves the presentation seam degrades: nothing below may emit ANSI.
       CI: "true"
       # Every step in this job must use the same env, otherwise `Compile`
@@ -128,10 +119,7 @@ jobs:
       # Compile as its own step: a cold compile of the full dependency tree
       # (ragex alone is ~205 modules) takes minutes, so a timeout meant to
       # catch a *hang* must not also have to cover compilation.
-      # Do not let a cached NIF hide EXLA/Fine API incompatibilities.
-      - name: Compile (rebuild EXLA from source)
-        env:
-          EXLA_FORCE_REBUILD: "true"
+      - name: Compile (without native dependencies)
         run: mix compile
 
       - name: One-shot prompt completes with stdin closed
@@ -187,7 +175,11 @@ jobs:
           timeout 120 mix run --no-start --no-compile -e '
             case Application.ensure_all_started(:yoke, :temporary) do
               {:ok, apps} ->
-                IO.puts("yoke booted; exla started?: #{:exla in apps}")
+                if :exla in apps or Code.ensure_loaded?(EXLA) do
+                  IO.puts("::error::Default test boot loaded EXLA")
+                  System.halt(1)
+                end
+                IO.puts("yoke booted without EXLA")
               {:error, reason} ->
                 IO.puts("::error title=yoke failed to boot::" <>
                   "See docs/CI.md section 6.1. (#{inspect(elem(reason, 0))})")
@@ -199,14 +191,9 @@ jobs:
     name: Static Analysis
     runs-on: ubuntu-latest
     env:
-      # NOTE: `EXLA_TARGET`/`EXLA_BUILD` are read by nothing -- they are dead
-      # config. They are kept because removing them would change nothing, but
-      # *replacing* them with `XLA_TARGET=cpu` changes the deps cache key and
-      # forces a cold `exla` NIF compile, which fails on an exla 1.0.0 / GCC 15
-      # incompatibility (`fine.hpp: try_decode`). See docs/CI.md §6.1.
-      EXLA_TARGET: cpu
-      EXLA_BUILD: "false"
-      NX_DEFAULT_BACKEND: Nx.BinaryBackend
+      # Dev/prod retain native features; compile them for CPU on CI.
+      XLA_TARGET: cpu
+      EXLA_CPU_ONLY: "true"
     strategy:
       matrix:
         elixir: ['1.20']
@@ -242,6 +229,20 @@ jobs:
         run: mix deps.get
       - name: Run quality checks
         run: mix quality.ci
+
+      # Keep native coverage separate from the default, native-free test tree.
+      - name: Rebuild EXLA and exercise CPU JIT
+        env:
+          EXLA_FORCE_REBUILD: "true"
+        run: |
+          mix deps.compile exla --force
+          mix run --no-start -e '
+            {:ok, _} = Application.ensure_all_started(:exla)
+            result = EXLA.jit(fn x -> Nx.add(x, 1) end, client: :host).(Nx.tensor([1, 2, 3]))
+            %{data: %{buffer: %{client_name: :host}}} = result
+            unless Nx.to_flat_list(result) == [2, 3, 4], do: System.halt(1)
+            IO.puts("EXLA CPU JIT passed")
+          '
 
   quality:
     name: Quality Gate

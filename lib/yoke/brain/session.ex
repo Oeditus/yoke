@@ -418,6 +418,21 @@ defmodule Yoke.Brain.Session do
   end
 
   @impl true
+  # A second turn must be rejected *before* the checkout verification below
+  # runs, and must never reach `handle_call({:send_user_message, ...})`: that
+  # clause would return its own "already running" error, but only after
+  # `verify_fix_checkout/1` had already touched the working tree, and the
+  # caller would see a confusing message about a review it never started.
+  def handle_call(
+        {:apply_review_fixes, _context, _prompt},
+        _from,
+        %{active_turn: active} = state
+      )
+      when not is_nil(active) do
+    {:reply, {:error, "A turn is already running. Wait for it or cancel it first."}, state}
+  end
+
+  @impl true
   def handle_call({:apply_review_fixes, context, prompt}, from, state) do
     with {:ok, root} <- Yoke.Git.root_dir(state.cwd),
          true <- root == context.cwd,
@@ -1224,7 +1239,16 @@ defmodule Yoke.Brain.Session do
 
   # Agent Execution Loop
 
-  defp start_review_turn(state, from, context, opts) do
+  # `start_review_turn/4` is only ever reached from
+  # `handle_call({:generate_code_review, ...})`, whose `active_turn` guard
+  # already rejects a concurrent turn. This assertion keeps that invariant
+  # local to the function that depends on it: overwriting a live `active_turn`
+  # would drop the previous turn's `%Task{}` reference, so its
+  # `handle_info({ref, result}, ...)` clause would no longer match and its
+  # caller would block on a `GenServer.call(..., :infinity)` that never gets
+  # answered.
+  defp start_review_turn(%{active_turn: active} = state, from, context, opts)
+       when is_nil(active) do
     peer_comments = Keyword.get(opts, :peer_comments, context.peer_comments)
     prompt = Yoke.PRReview.review_prompt(context, peer_comments)
 

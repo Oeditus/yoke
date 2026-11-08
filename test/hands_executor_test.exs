@@ -3,6 +3,9 @@ defmodule Yoke.HandsExecutorTest do
   # other modules (cli_output_test, formatter_test) mutate the same key. Under
   # `async: true` they race and this module's ANSI assertions see plain output.
   use ExUnit.Case, async: false
+  # Executes tools through `Yoke.Plugin.Loader`, a supervised process.
+  # See `test/test_helper.exs`.
+  @moduletag :app
 
   alias Yoke.Hands.Executor
 

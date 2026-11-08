@@ -84,7 +84,7 @@ defmodule Yoke.BashTrackerTest do
     assert cat_entry["ineffective"] == true
 
     # Verify top ineffective list
-    assert length(stats.top_ineffective) == 2
+    assert [_, _] = stats.top_ineffective
     assert hd(stats.top_ineffective)["name"] == "grep"
 
     # Verify file was written to disk
@@ -122,5 +122,43 @@ defmodule Yoke.BashTrackerTest do
     assert :ok = BashTracker.clear(cwd: tmp_dir)
     cleared_stats = BashTracker.stats(cwd: tmp_dir)
     assert cleared_stats.total_calls == 0
+  end
+
+  describe "nil cwd tolerance" do
+    # Callers pass `cwd: Map.get(args, "_session_cwd")`, which is `nil` when the
+    # key is absent. `Keyword.get(opts, :cwd, default)` returns `nil` in that
+    # case (the key *is* present), and `Path.join/2` then raised
+    # `FunctionClauseError` inside the `BashTracker` GenServer. Because
+    # `Yoke.Supervisor` uses `:one_for_all`, that crash tore down the entire
+    # supervision tree -- including `Yoke.Brain.SessionSupervisor` -- so an
+    # unrelated test running afterwards failed with `(EXIT) shutdown`.
+    test "store_file_path/1 falls back to the process cwd for nil" do
+      assert BashTracker.store_file_path(nil) == BashTracker.store_file_path(File.cwd!())
+    end
+
+    test "load/1 does not raise for nil" do
+      assert is_map(BashTracker.load(nil))
+    end
+
+    test "record/2 does not crash the tracker when cwd is nil", %{tmp_dir: tmp_dir} do
+      # Route through the GenServer (the crashing path) rather than the
+      # direct helper, and assert the server survives. Under `--no-start` the
+      # tracker is not running, so start it here; the point of the test is the
+      # crash, not the supervision wiring.
+      tracker = Process.whereis(BashTracker) || start_supervised!({BashTracker, cwd: tmp_dir})
+      original = :sys.get_state(tracker)
+
+      :sys.replace_state(tracker, fn _ ->
+        %{analytics: BashTracker.load(tmp_dir), cwd: tmp_dir}
+      end)
+
+      on_exit(fn ->
+        if Process.alive?(tracker), do: :sys.replace_state(tracker, fn _ -> original end)
+      end)
+
+      assert {:ok, _} = BashTracker.record("sleep 1", cwd: nil, session_id: nil, async: false)
+      assert Process.whereis(BashTracker) == tracker
+      assert BashTracker.stats(cwd: tmp_dir).total_calls == 1
+    end
   end
 end

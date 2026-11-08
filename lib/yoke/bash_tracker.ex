@@ -232,7 +232,11 @@ defmodule Yoke.BashTracker do
 
   @doc "Returns path to workspace bash analytics JSON store."
   def store_file_path(cwd \\ ".") do
-    Path.join([cwd, @store_file])
+    # `cwd` may legitimately arrive as `nil`: callers pass
+    # `cwd: Map.get(args, "_session_cwd")` and similar, which is `nil` when the
+    # key is absent. `Path.join/2` raises `FunctionClauseError` on a non-binary,
+    # so normalise here rather than at every call site.
+    Path.join([cwd || File.cwd!(), @store_file])
   end
 
   @doc "Loads analytics data from disk, initializing if not present."
@@ -335,7 +339,10 @@ defmodule Yoke.BashTracker do
 
   @impl true
   def handle_call({:record, command, opts}, _from, state) do
-    cwd = Keyword.get(opts, :cwd, state.cwd)
+    # `Keyword.get/3` returns `nil` when the key is *present* with a `nil`
+    # value, which is exactly what callers send (`cwd: Map.get(args, "_session_cwd")`).
+    # Falling back to the tracker's own cwd keeps the store path a real binary.
+    cwd = Keyword.get(opts, :cwd) || state.cwd
     current_data = if cwd == state.cwd, do: state.analytics, else: load(cwd)
     updated_data = do_record_data(current_data, command, opts)
     save(updated_data, cwd)
@@ -679,7 +686,7 @@ defmodule Yoke.BashTracker do
     end)
   end
 
-  defp get_cwd(opts) when is_list(opts), do: Keyword.get(opts, :cwd, File.cwd!())
+  defp get_cwd(opts) when is_list(opts), do: Keyword.get(opts, :cwd) || File.cwd!()
   defp get_cwd(cwd) when is_binary(cwd), do: cwd
   defp get_cwd(_), do: File.cwd!()
 end

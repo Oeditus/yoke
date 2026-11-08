@@ -6,6 +6,34 @@ defmodule Yoke.Client.DeepSeekAPI do
   """
   require Logger
 
+  # Finite receive timeout for one chat-completion HTTP attempt.
+  #
+  # This used to be `:infinity`, which meant a provider that accepted the TCP
+  # connection and then never responded wedged the session forever: the call
+  # chain is `Session.send_user_message/2` (`:infinity`) -> `run_agent_loop` ->
+  # `chat_completion/3`, so nothing above this point imposed a bound either.
+  # `Yoke.CLI.Fix` documents the hazard and works around it with its own
+  # 600s `Task.yield`. Retries can span multiple receive windows, so the
+  # separate whole-turn timeout remains useful.
+  #
+  # 300s is deliberately generous: a long reasoning-model completion can
+  # legitimately take minutes. It is a liveness backstop, not a latency target.
+  @receive_timeout_ms 300_000
+
+  @doc """
+  Returns the per-request HTTP receive timeout, in milliseconds.
+
+  Overridable via `:yoke, :chat_receive_timeout_ms` so a test can exercise
+  the timeout path without waiting five minutes.
+  """
+  @spec receive_timeout_ms() :: pos_integer()
+  def receive_timeout_ms do
+    case Application.get_env(:yoke, :chat_receive_timeout_ms) do
+      ms when is_integer(ms) and ms > 0 -> ms
+      _ -> @receive_timeout_ms
+    end
+  end
+
   defmodule ClientConfig do
     @moduledoc "Configuration parameters for DeepSeek API requests."
     defstruct model: "deepseek-flash",
@@ -347,7 +375,7 @@ defmodule Yoke.Client.DeepSeekAPI do
     req_opts = [
       json: body,
       headers: headers,
-      receive_timeout: :infinity
+      receive_timeout: receive_timeout_ms()
     ]
 
     post_with_retry(config.endpoint, req_opts)
@@ -361,23 +389,31 @@ defmodule Yoke.Client.DeepSeekAPI do
 
       {:ok, %Req.Response{status: status, body: _err_body}}
       when status in [429, 500, 502, 503, 504] and attempts_left > 1 ->
-        Logger.warning(
-          "[DeepSeekAPI] Transient HTTP #{status} error. Retrying in #{backoff_ms}ms... (#{attempts_left - 1} attempts left)"
-        )
-
-        Process.sleep(backoff_ms)
-        post_with_retry(endpoint, req_opts, attempts_left - 1, backoff_ms * 2)
+        retry(endpoint, req_opts, attempts_left, backoff_ms, "Transient HTTP #{status} error")
 
       {:ok, %Req.Response{status: status, body: err_body}} ->
         {:error, "DeepSeek API returned HTTP status #{status}: #{inspect(err_body)}"}
 
-      {:error, reason} when attempts_left > 1 ->
-        Logger.warning(
-          "[DeepSeekAPI] Transport error #{inspect(reason)}. Retrying in #{backoff_ms}ms... (#{attempts_left - 1} attempts left)"
+      # A provider that accepts the connection and then never responds is the
+      # failure mode `receive_timeout` exists to catch. Treat it as transient
+      # so it goes through the same bounded retry path as a 503, rather than
+      # surfacing as an opaque `%Req.TransportError{}`.
+      {:error, %Req.TransportError{reason: :timeout} = reason} when attempts_left > 1 ->
+        retry(
+          endpoint,
+          req_opts,
+          attempts_left,
+          backoff_ms,
+          "Request timed out (#{inspect(reason)})"
         )
 
-        Process.sleep(backoff_ms)
-        post_with_retry(endpoint, req_opts, attempts_left - 1, backoff_ms * 2)
+      {:error, %Req.TransportError{reason: :timeout}} ->
+        {:error,
+         "HTTP request timed out after #{receive_timeout_ms()}ms. The provider accepted the " <>
+           "connection but never responded; retry, or use a different endpoint."}
+
+      {:error, reason} when attempts_left > 1 ->
+        retry(endpoint, req_opts, attempts_left, backoff_ms, "Transport error #{inspect(reason)}")
 
       {:error, reason} ->
         {:error, "HTTP request failed: #{inspect(reason)}"}
@@ -385,15 +421,25 @@ defmodule Yoke.Client.DeepSeekAPI do
   rescue
     e ->
       if attempts_left > 1 do
-        Logger.warning(
-          "[DeepSeekAPI] Exception during API request (#{Exception.message(e)}). Retrying in #{backoff_ms}ms... (#{attempts_left - 1} attempts left)"
+        retry(
+          endpoint,
+          req_opts,
+          attempts_left,
+          backoff_ms,
+          "Exception (#{Exception.message(e)})"
         )
-
-        Process.sleep(backoff_ms)
-        post_with_retry(endpoint, req_opts, attempts_left - 1, backoff_ms * 2)
       else
         {:error, "API request failed with exception: #{Exception.message(e)}"}
       end
+  end
+
+  defp retry(endpoint, req_opts, attempts_left, backoff_ms, description) do
+    Logger.warning(
+      "[DeepSeekAPI] #{description}. Retrying in #{backoff_ms}ms... (#{attempts_left - 1} attempts left)"
+    )
+
+    Process.sleep(backoff_ms)
+    post_with_retry(endpoint, req_opts, attempts_left - 1, backoff_ms * 2)
   end
 
   @doc "Recursively sanitizes binary strings within data structures to ensure valid UTF-8 encoding."

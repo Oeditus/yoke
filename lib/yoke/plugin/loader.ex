@@ -55,25 +55,45 @@ defmodule Yoke.Plugin.Loader do
     GenServer.call(@name, :list_tools)
   end
 
-  @doc "Executes a named tool with arguments."
+  @doc """
+  Executes a named tool with arguments.
+
+  The tool's own closure runs in the *caller's* process, never inside this
+  GenServer, so a slow or hanging tool cannot block `get_tool` for every other
+  session.
+
+  A tool that raises is reported as `{:error, ...}` (the model can read it and
+  try something else). A tool that `throw`s or `exit`s is reported the same
+  way: without the `catch` clause below, an `exit(:timeout)` inside a tool
+  killed the calling `Task` outright, so the model received *no* tool result
+  at all and the orchestrator reported a generic "Tool process crashed".
+  """
+  @spec execute_tool(String.t(), map(), timeout()) :: {:ok, term()} | {:error, term()}
   def execute_tool(tool_name, args, timeout \\ :infinity) do
     case GenServer.call(@name, {:get_tool, tool_name}, timeout) do
       {:ok, tool_info} ->
-        try do
-          case tool_info.execute.(args) do
-            {:ok, res} -> {:ok, res}
-            {:error, err} -> {:error, err}
-            other -> {:ok, other}
-          end
-        rescue
-          e ->
-            err_msg = "Error executing tool #{tool_name}: #{Exception.message(e)}"
-            {:error, err_msg}
-        end
+        invoke(tool_name, tool_info, args)
 
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp invoke(tool_name, tool_info, args) do
+    case tool_info.execute.(args) do
+      {:ok, res} -> {:ok, res}
+      {:error, err} -> {:error, err}
+      other -> {:ok, other}
+    end
+  rescue
+    e ->
+      {:error, "Error executing tool #{tool_name}: #{Exception.message(e)}"}
+  catch
+    :exit, reason ->
+      {:error, "Tool #{tool_name} exited: #{inspect(reason)}"}
+
+    :throw, value ->
+      {:error, "Tool #{tool_name} threw: #{inspect(value)}"}
   end
 
   # Server Callbacks

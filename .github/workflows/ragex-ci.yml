@@ -90,9 +90,8 @@ jobs:
     name: Advisory Linters (non-blocking)
     runs-on: ubuntu-latest
     env:
-      EXLA_TARGET: cpu
-      EXLA_BUILD: "false"
-      NX_DEFAULT_BACKEND: Nx.BinaryBackend
+      XLA_TARGET: cpu
+      EXLA_CPU_ONLY: "true"
     steps:
       - uses: actions/checkout@v3
       - uses: erlef/setup-beam@v1
