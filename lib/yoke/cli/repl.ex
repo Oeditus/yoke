@@ -2454,14 +2454,24 @@ defmodule Yoke.CLI.Repl do
   def handle_input("/ragex quality", _session_pid, _session_id) do
     IO.puts(Formatter.format_info("Running Ragex Code Quality Analysis against codebase…"))
 
-    case MCPServerManager.execute_ragex_tool("quality_report", %{}) do
-      {:ok, out} ->
-        IO.puts(
-          "\n" <> Formatter.format_markdown("### Ragex Code Quality Report\n\n#{out}") <> "\n"
-        )
+    case MCPServerManager.execute_ragex_tool("analyze_quality", %{
+           "path" => ".",
+           "store_results" => true,
+           "recursive" => true
+         }) do
+      {:ok, _} ->
+        case MCPServerManager.execute_ragex_tool("quality_report", %{}) do
+          {:ok, out} ->
+            IO.puts(
+              "\n" <> Formatter.format_markdown("### Ragex Code Quality Report\n\n#{out}") <> "\n"
+            )
+
+          {:error, err} ->
+            IO.puts(Formatter.format_error(err))
+        end
 
       {:error, err} ->
-        IO.puts(Formatter.format_error(err))
+        IO.puts(Formatter.format_error("Ragex quality analysis failed: #{err}"))
     end
 
     :continue
