@@ -27,6 +27,42 @@ defmodule Yoke.CLIMainTest do
     end
   end
 
+  test "configure_ragex_ai enables Ragex Ollama with the session model" do
+    prior_ai = Application.get_env(:ragex, :ai)
+    prior_providers = Application.get_env(:ragex, :ai_providers)
+
+    try do
+      Main.configure_ragex_ai("qwen3-coder:30b", "http://localhost:11434/v1/chat/completions")
+
+      assert Application.get_env(:ragex, :ai)[:providers] == [:ollama]
+      assert Application.get_env(:ragex, :ai)[:default_provider] == :ollama
+
+      assert Application.get_env(:ragex, :ai_providers)[:ollama][:endpoint] ==
+               "http://localhost:11434"
+
+      assert Application.get_env(:ragex, :ai_providers)[:ollama][:model] == "qwen3-coder:30b"
+    after
+      Application.put_env(:ragex, :ai, prior_ai)
+
+      if is_nil(prior_providers) do
+        Application.delete_env(:ragex, :ai_providers)
+      else
+        Application.put_env(:ragex, :ai_providers, prior_providers)
+      end
+    end
+  end
+
+  test "configure_ragex_ai keeps Ragex AI disabled for non-Ollama endpoints" do
+    prior_ai = Application.get_env(:ragex, :ai)
+
+    try do
+      Main.configure_ragex_ai("deepseek-flash", "https://api.deepseek.com/chat/completions")
+      assert Application.get_env(:ragex, :ai)[:providers] == []
+    after
+      Application.put_env(:ragex, :ai, prior_ai)
+    end
+  end
+
   test "generates valid UUIDs for session tracking" do
     uuid = Main.generate_uuid()
     assert is_binary(uuid)
