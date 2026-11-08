@@ -8,6 +8,9 @@ defmodule Yoke.PRReview.ReviewDismissal do
 
   def marker, do: @marker
 
+  def dismiss(%{pr_number: nil}, _result), do: :ok
+  def dismiss(%{repository: nil}, _result), do: :ok
+
   # Use identity from the posted review, not /user: installation tokens do not
   # support that endpoint. Review IDs also protect newer concurrent reviews.
   def dismiss(context, %{review_id: id, reviewer_id: reviewer_id})

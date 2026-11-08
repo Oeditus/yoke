@@ -5,7 +5,12 @@ defmodule YokeTest do
   @moduletag :app
 
   test "starts a session via top-level API and sends message" do
-    {:ok, session_pid} = Yoke.start_session(session_id: "api_test")
+    session_pid =
+      case Yoke.start_session(session_id: "api_test") do
+        {:ok, session_pid} -> session_pid
+        {:error, {:already_started, session_pid}} -> session_pid
+      end
+
     assert is_pid(session_pid)
 
     {:ok, response} = Yoke.send_message(session_pid, "What tools do you have?")

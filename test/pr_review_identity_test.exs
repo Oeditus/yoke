@@ -4,6 +4,7 @@ defmodule Yoke.PRReview.IdentityTest do
   alias Yoke.Json
   alias Yoke.PRReview
   alias Yoke.PRReview.Context
+  alias Yoke.PRReview.ReviewDismissal
   alias Yoke.Test.ReviewFixture, as: Fixture
 
   setup %{tmp_dir: dir} do
@@ -372,6 +373,25 @@ defmodule Yoke.PRReview.IdentityTest do
     assert {:ok, context} = Context.resolve("HEAD~1 HEAD", repo <> "/../upstream")
     assert context.pr_number == nil
     assert context.repository == nil
+  end
+
+  test "a review context without PR identity skips review dismissal" do
+    assert ReviewDismissal.dismiss(%{pr_number: nil, repository: "example/repo"}, %{
+             review_id: 1,
+             reviewer_id: 2
+           }) == :ok
+
+    assert ReviewDismissal.dismiss(%{pr_number: "42", repository: nil}, %{
+             review_id: 1,
+             reviewer_id: 2
+           }) == :ok
+
+    assert ReviewDismissal.dismiss(%{pr_number: nil, repository: nil}, %{
+             review_id: 1,
+             reviewer_id: 2
+           }) == :ok
+
+    assert ReviewDismissal.dismiss(%{pr_number: nil, repository: nil}, %{}) == :ok
   end
 
   defp previous_review(id, overrides \\ %{}) do
