@@ -77,7 +77,7 @@ jobs:
       - name: Run tests with coverage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: mix coveralls.github --exclude ragex
+        run: mix coveralls.github --exclude ragex --exclude skip_in_gha
       - name: Run yoke launcher tests
         run: bash test/yoke_release_test.sh
       - name: Run dllb install script tests

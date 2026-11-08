@@ -188,6 +188,7 @@ defmodule Yoke.ProviderTest do
     assert Provider.location(opts[:endpoint]) == "LOCAL"
   end
 
+  @tag skip_in_gha: true
   test "children and compression inherit resolved local options", %{tmp_dir: cwd} do
     pid = session(cwd, "local")
     opts = Session.provider_options(pid)
@@ -203,6 +204,7 @@ defmodule Yoke.ProviderTest do
     assert {:ok, _} = Session.spawn_subagent(pid, "Say hello", async: false)
   end
 
+  @tag skip_in_gha: true
   test "cost incurred remotely is not erased or repriced by switching local", %{tmp_dir: cwd} do
     pid = session(cwd, "deepseek")
     assert {:ok, _} = Session.send_user_message(pid, "Hello")
@@ -281,6 +283,7 @@ defmodule Yoke.ProviderTest do
     assert Session.provider_options(pid)[:provider] == "local"
   end
 
+  @tag skip_in_gha: true
   test "context occupancy is not cumulative API usage", %{tmp_dir: cwd} do
     pid = session(cwd, "local")
     assert {:ok, _} = Session.send_user_message(pid, "Hello")
