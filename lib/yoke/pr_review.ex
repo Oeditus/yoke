@@ -11,6 +11,7 @@ defmodule Yoke.PRReview do
   alias Yoke.Json
   alias Yoke.PRReview.Markdown
   alias Yoke.PRReview.Patterns
+  alias Yoke.PRReview.ReviewDismissal
 
   @doc "Builds a review request solely from pinned evidence and explicit review guidance."
   def review_prompt(context, peer_comments \\ []) do
@@ -53,7 +54,18 @@ defmodule Yoke.PRReview do
         |> build_atomic_review_payload(body, event, context.valid_lines)
         |> Map.put("commit_id", context.head_sha)
 
-      post_atomic_review(context.pr_number, payload, context.cwd)
+      with {:ok, result} <- post_atomic_review(context.pr_number, payload, context.cwd),
+           :ok <- maybe_dismiss_change_requests(context, findings, payload, result) do
+        {:ok, result}
+      end
+    end
+  end
+
+  defp maybe_dismiss_change_requests(context, findings, payload, result) do
+    if payload["event"] == "COMMENT" and actionable_findings(findings) == [] do
+      ReviewDismissal.dismiss(context, result)
+    else
+      :ok
     end
   end
 
@@ -416,6 +428,8 @@ defmodule Yoke.PRReview do
     **Code review: #{review_verdict(accepted_findings)}**
 
     #{summary}
+
+    #{ReviewDismissal.marker()}
     """
     |> Markdown.sanitize_review_body()
   end
@@ -639,9 +653,23 @@ defmodule Yoke.PRReview do
           args = ["api", "-X", "POST", api_path, "--input", temp_file]
 
           case System.cmd("gh", args, cd: cwd, stderr_to_stdout: true) do
-            {_out, 0} ->
+            {out, 0} ->
               File.rm(temp_file)
-              {:ok, %{number: pr_num, url: pr_info.url, event: payload["event"]}}
+
+              identity =
+                case Json.decode(out) do
+                  {:ok, %{"id" => id, "user" => %{"id" => reviewer_id}}} ->
+                    %{review_id: id, reviewer_id: reviewer_id}
+
+                  _ ->
+                    %{}
+                end
+
+              {:ok,
+               Map.merge(
+                 %{number: pr_num, url: pr_info.url, event: payload["event"]},
+                 identity
+               )}
 
             {err, _code} ->
               File.rm(temp_file)

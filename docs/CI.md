@@ -694,6 +694,39 @@ run. It never uses `sudo`.
 `scripts/install-dllb.sh` does the same for `dllb-server` (§10.1.1), and is
 skipped entirely when `dllb-version: skip` is set.
 
+### Binary download caching
+
+The action caches only `~/.local/bin/yoke` and `~/.local/bin/dllb-server`.
+An exact cache hit skips the installer, including the latest-release API
+lookup. Both the ordinary CI and Ragex CI workflows also cache dllb.
+
+Keys include the operating system, architecture, installer hash, and release
+tag; yoke keys additionally include the OTP and Elixir versions. Unpinned
+versions use a daily UTC bucket, refreshing the latest release on the first
+cache miss each day. Pin `yoke-version` or `dllb-version` to reuse the same
+release across days. There is no fallback to a different version or day.
+Source-built yoke never uses the downloaded-release cache.
+
+On cache misses, installers retry transient download failures up to three
+times, with bounded connection, request, and retry timeouts. Downloaded bytes
+are still checksum-verified before installation. Failed dllb release lookups
+remain non-fatal unless `DLLB_REQUIRED=1` is set.
+
+### Superseded change requests
+
+A posted review with no actionable findings remains a GitHub `COMMENT`,
+not a formal approval. After posting it successfully, Yoke dismisses its
+older `CHANGES_REQUESTED` reviews from the same GitHub reviewer identity.
+New reviews carry a hidden Yoke identifier; the previous generated
+heading/verdict/summary format is recognized for existing reviews.
+
+Other reviewers' requests and unrelated reviews are left untouched, as are
+newer concurrent reviews. A successful job under `fail-on: never` does not
+trigger dismissal while actionable findings remain. Yoke checks the pinned
+PR identity again before each dismissal, and listing or dismissal failures
+are reported as posting errors. The token needs `pull-requests: write`;
+repository rules restricting review dismissal may still deny the operation.
+
 ---
 
 ### 11.1 `:exla` on CI runners — native dependency compatibility

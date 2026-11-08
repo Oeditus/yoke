@@ -32,6 +32,11 @@ need() {
 need curl
 need sha256sum
 
+download() {
+  curl -fsSL --retry 3 --retry-delay 2 --retry-max-time 90 \
+    --connect-timeout 10 --max-time 30 "$@"
+}
+
 case "$(uname -s)" in
   Linux)  os="linux" ;;
   Darwin) os="darwin" ;;
@@ -52,10 +57,10 @@ esac
 if [ -z "$VERSION" ]; then
   log "Resolving the latest yoke release…"
   VERSION="$(
-    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+    download "https://api.github.com/repos/${REPO}/releases/latest" \
       | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
       | head -n1
-  )"
+  )" || fail "could not resolve the latest release of ${REPO}"
   [ -n "$VERSION" ] || fail "could not determine the latest release of ${REPO}"
 fi
 
@@ -64,8 +69,8 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 log "Downloading yoke ${VERSION}…"
-curl -fsSL "${base}/${BIN_NAME}" -o "${tmp}/${BIN_NAME}"
-curl -fsSL "${base}/${BIN_NAME}.sha256" -o "${tmp}/${BIN_NAME}.sha256"
+download "${base}/${BIN_NAME}" -o "${tmp}/${BIN_NAME}" || fail "download failed: ${base}/${BIN_NAME}"
+download "${base}/${BIN_NAME}.sha256" -o "${tmp}/${BIN_NAME}.sha256" || fail "download failed: ${base}/${BIN_NAME}.sha256"
 
 log "Verifying checksum…"
 # The published file is `sha256sum` output, i.e. "<hash>  <filename>". Compare

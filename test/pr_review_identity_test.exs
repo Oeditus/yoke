@@ -23,6 +23,8 @@ defmodule Yoke.PRReview.IdentityTest do
 
     bin = Path.join(dir, "bin")
     File.mkdir_p!(bin)
+    File.write!(Path.join(bin, "reviews.json"), "[[]]")
+    File.write!(Path.join(bin, "response.json"), Json.encode!(%{id: 1000, user: %{id: 7}}))
 
     File.write!(
       Path.join(bin, "pr.json"),
@@ -48,6 +50,13 @@ defmodule Yoke.PRReview.IdentityTest do
         ;;
       "repo view") printf '%s\\n' 'example/repo' ;;
       "api -X")
+        if [ "$3" = PUT ]; then
+          if [ -f "$root/fail-dismiss" ]; then
+            printf '%s\\n' 'Review dismissal forbidden' >&2
+            exit 1
+          fi
+          exit 0
+        fi
         while [ "$#" -gt 0 ]; do
           if [ "$1" = "--input" ]; then /bin/cp "$2" "$root/posted.json"; break; fi
           shift
@@ -56,8 +65,24 @@ defmodule Yoke.PRReview.IdentityTest do
           printf '%s\\n' 'GitHub Actions is not permitted to approve pull requests.' >&2
           exit 1
         fi
+        if [ -f "$root/fail-post" ]; then exit 1; fi
+        if [ -f "$root/move-after-post.json" ]; then
+          /bin/cp "$root/move-after-post.json" "$root/pr.json"
+        fi
+        /bin/cat "$root/response.json"
         ;;
-      "api "*) printf '%s\\n' '[]' ;;
+      "api "*)
+        case "$2" in
+          */reviews\\?*)
+            if [ -f "$root/fail-list" ]; then
+              printf '%s\\n' 'Review listing forbidden' >&2
+              exit 1
+            fi
+            /bin/cat "$root/reviews.json"
+            ;;
+          *) printf '%s\\n' '[]' ;;
+        esac
+        ;;
       *) exit 1 ;;
     esac
     """)
@@ -104,6 +129,7 @@ defmodule Yoke.PRReview.IdentityTest do
       assert posted["body"] =~ "**Code review: Approved**"
       assert posted["commit_id"] == head
       assert posted["body"] =~ "No actionable issues found."
+      assert posted["body"] =~ "<!-- yoke:code-review:v1 -->"
     end
   end
 
@@ -158,6 +184,7 @@ defmodule Yoke.PRReview.IdentityTest do
     assert calls =~ "repos/example/repo/pulls/42/reviews"
     refute calls =~ "pr view feature"
     refute calls =~ "pr diff"
+    refute calls =~ "--paginate"
   end
 
   test "a moved PR head blocks posting before any external write", %{repo: repo, bin: bin} do
@@ -232,9 +259,130 @@ defmodule Yoke.PRReview.IdentityTest do
     assert context.raw_diff =~ "new_pr_value"
   end
 
+  test "clean reviews dismiss only older Yoke change requests by the same identity", %{
+    repo: repo,
+    bin: bin
+  } do
+    assert {:ok, context} = Context.resolve("42", repo)
+
+    legacy_body =
+      "## \u{1FAA2} Review from Custom assistant\n\n" <>
+        "**Code review: Changes requested**\n\n" <>
+        "There are some comments left. Please address the reported issues.\n"
+
+    pages = [
+      [
+        previous_review(1),
+        previous_review(2, %{"body" => legacy_body}),
+        previous_review(3, %{"user" => %{"id" => 8}}),
+        previous_review(4, %{"body" => "Human review requesting changes"})
+      ],
+      [
+        previous_review(5),
+        previous_review(6, %{"state" => "DISMISSED"}),
+        previous_review(7, %{"state" => "COMMENT"}),
+        previous_review(1001),
+        previous_review(1000)
+      ]
+    ]
+
+    File.write!(Path.join(bin, "reviews.json"), Json.encode!(pages))
+    body = PRReview.build_pr_comment_body([], "", cwd: repo)
+    assert {:ok, %{event: "COMMENT"}} = PRReview.post_context_review(context, [], body)
+    calls = bin |> Path.join("calls") |> File.read!() |> String.split("\n")
+    dismissals = Enum.filter(calls, &String.starts_with?(&1, "api -X PUT "))
+    assert [first, second, third] = dismissals
+    assert first =~ "/reviews/1/dismissals"
+    assert second =~ "/reviews/2/dismissals"
+    assert third =~ "/reviews/5/dismissals"
+    assert Enum.any?(calls, &String.contains?(&1, "--paginate --slurp"))
+  end
+
+  test "listing errors fail loudly after a clean review", %{repo: repo, bin: bin} do
+    assert {:ok, context} = Context.resolve("42", repo)
+    File.write!(Path.join(bin, "fail-list"), "")
+    body = PRReview.build_pr_comment_body([], "", cwd: repo)
+    assert {:error, reason} = PRReview.post_context_review(context, [], body)
+    assert reason =~ "Could not list previous Yoke reviews"
+    refute File.read!(Path.join(bin, "calls")) =~ "api -X PUT"
+  end
+
+  test "malformed review pages never silently clear change requests", %{repo: repo, bin: bin} do
+    assert {:ok, context} = Context.resolve("42", repo)
+    body = PRReview.build_pr_comment_body([], "", cwd: repo)
+
+    for response <- ["not json", "{}", "[{}]", "[[null]]"] do
+      File.write!(Path.join(bin, "reviews.json"), response)
+      assert {:error, reason} = PRReview.post_context_review(context, [], body)
+      assert reason =~ "Could not parse GitHub review pages"
+    end
+
+    refute File.read!(Path.join(bin, "calls")) =~ "api -X PUT"
+  end
+
+  test "dismissal permission errors are reported", %{repo: repo, bin: bin} do
+    assert {:ok, context} = Context.resolve("42", repo)
+    File.write!(Path.join(bin, "reviews.json"), Json.encode!([[previous_review(1)]]))
+    File.write!(Path.join(bin, "fail-dismiss"), "")
+    body = PRReview.build_pr_comment_body([], "", cwd: repo)
+    assert {:error, reason} = PRReview.post_context_review(context, [], body)
+    assert reason =~ "Could not dismiss Yoke review 1"
+    assert reason =~ "forbidden"
+  end
+
+  test "failed review posting never attempts dismissal", %{repo: repo, bin: bin} do
+    assert {:ok, context} = Context.resolve("42", repo)
+    File.write!(Path.join(bin, "fail-post"), "")
+    body = PRReview.build_pr_comment_body([], "", cwd: repo)
+    assert {:error, reason} = PRReview.post_context_review(context, [], body)
+    assert reason =~ "GitHub rejected the review"
+    calls = File.read!(Path.join(bin, "calls"))
+    refute calls =~ "--paginate"
+    refute calls =~ "api -X PUT"
+  end
+
+  test "missing review identity never guesses the bot account", %{repo: repo, bin: bin} do
+    assert {:ok, context} = Context.resolve("42", repo)
+    File.write!(Path.join(bin, "response.json"), "{}")
+    body = PRReview.build_pr_comment_body([], "", cwd: repo)
+    assert {:error, reason} = PRReview.post_context_review(context, [], body)
+    assert reason =~ "no review identity"
+    refute File.read!(Path.join(bin, "calls")) =~ "api -X PUT"
+  end
+
+  test "a head moved after posting prevents dismissal", %{repo: repo, bin: bin} do
+    assert {:ok, context} = Context.resolve("42", repo)
+    File.write!(Path.join(bin, "reviews.json"), Json.encode!([[previous_review(1)]]))
+
+    metadata =
+      bin
+      |> Path.join("pr.json")
+      |> File.read!()
+      |> Json.decode!()
+      |> Map.put("headRefOid", String.duplicate("a", 40))
+
+    File.write!(Path.join(bin, "move-after-post.json"), Json.encode!(metadata))
+    body = PRReview.build_pr_comment_body([], "", cwd: repo)
+    assert {:error, reason} = PRReview.post_context_review(context, [], body)
+    assert reason =~ "changed since review"
+    refute File.read!(Path.join(bin, "calls")) =~ "api -X PUT"
+  end
+
   test "a local review never acquires another PR identity", %{repo: repo} do
     assert {:ok, context} = Context.resolve("HEAD~1 HEAD", repo <> "/../upstream")
     assert context.pr_number == nil
     assert context.repository == nil
+  end
+
+  defp previous_review(id, overrides \\ %{}) do
+    Map.merge(
+      %{
+        "id" => id,
+        "user" => %{"id" => 7},
+        "state" => "CHANGES_REQUESTED",
+        "body" => "<!-- yoke:code-review:v1 -->"
+      },
+      overrides
+    )
   end
 end
