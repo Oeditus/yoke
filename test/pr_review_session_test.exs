@@ -172,6 +172,98 @@ defmodule Yoke.PRReview.SessionTest do
     assert reason =~ "tool limit"
   end
 
+  test "changing unused arguments cannot repeat immutable reads until the CI budget expires", %{
+    repo: repo
+  } do
+    reads =
+      for attempt <- 1..4 do
+        Fixture.tool_choice("read_file", %{"path" => "sample.ex", "attempt" => attempt})
+      end
+
+    pid = session(repo, reads ++ [Fixture.choice("<findings>[]</findings>")])
+    assert {:ok, _} = Session.generate_code_review(pid, "main", "feature")
+
+    for _ <- 1..4, do: assert_receive({:review_request, _}, 5_000)
+    assert_receive {:review_request, final}, 5_000
+    assert Map.get(final, "tools", []) == []
+    assert List.last(final["messages"])["content"] =~ "no new evidence"
+    refute_receive {:review_request, _}
+  end
+
+  test "advancing past EOF is bounded even though every call has a different range", %{repo: repo} do
+    reads =
+      for start <- [100, 200, 300, 400] do
+        Fixture.tool_choice("read_file", %{
+          "path" => "sample.ex",
+          "start_line" => start,
+          "end_line" => start + 50
+        })
+      end
+
+    pid = session(repo, reads ++ [Fixture.choice("<findings>[]</findings>")])
+    assert {:ok, _} = Session.generate_code_review(pid, "main", "feature")
+    for _ <- 1..4, do: assert_receive({:review_request, _}, 5_000)
+    assert_receive {:review_request, final}, 5_000
+    assert Map.get(final, "tools", []) == []
+
+    results = Enum.filter(final["messages"], &(&1["role"] == "tool"))
+    assert [_, _, _, _] = results
+    assert Enum.all?(results, &String.contains?(&1["content"], "past end of file"))
+  end
+
+  test "identical review loops finalize without asking a headless user for permission", %{
+    repo: repo
+  } do
+    read = Fixture.tool_choice("read_file", %{"path" => "sample.ex"})
+    pid = session(repo, [read, read, read, read, Fixture.choice("<findings>[]</findings>")])
+    assert {:ok, _} = Session.generate_code_review(pid, "main", "feature")
+    for _ <- 1..4, do: assert_receive({:review_request, _}, 5_000)
+    assert_receive {:review_request, final}, 5_000
+    assert Map.get(final, "tools", []) == []
+    assert List.last(final["messages"])["content"] =~ "after a loop warning"
+  end
+
+  test "a provider ignoring tool-free finalization fails closed instead of executing more reads",
+       %{
+         repo: repo
+       } do
+    reads =
+      for attempt <- 1..5 do
+        Fixture.tool_choice("read_file", %{"path" => "sample.ex", "attempt" => attempt})
+      end
+
+    pid = session(repo, reads)
+    assert {:ok, before} = Session.get_messages(pid)
+    assert {:error, reason} = Session.generate_code_review(pid, "main", "feature")
+    assert reason =~ "continued requesting tools"
+    assert {:ok, ^before} = Session.get_messages(pid)
+    for _ <- 1..5, do: assert_receive({:review_request, _}, 5_000)
+    refute_receive {:review_request, _}
+  end
+
+  test "successive ranges returning fresh evidence do not trip review progress protection", %{
+    repo: repo
+  } do
+    File.write!(Path.join(repo, "sample.ex"), Enum.map_join(1..6, "\n", &"value_#{&1}") <> "\n")
+    Fixture.commit(repo, "Expand sample")
+
+    reads =
+      for line <- 1..6 do
+        Fixture.tool_choice("read_file", %{
+          "path" => "sample.ex",
+          "start_line" => line,
+          "end_line" => line
+        })
+      end
+
+    pid = session(repo, reads ++ [Fixture.choice("<findings>[]</findings>")])
+    assert {:ok, _} = Session.generate_code_review(pid, "main", "feature")
+    for _ <- 1..6, do: assert_receive({:review_request, _}, 5_000)
+    assert_receive {:review_request, final}, 5_000
+    assert [_ | _] = final["tools"]
+    refute List.last(final["messages"])["content"] =~ "no new evidence"
+  end
+
   test "background notices and model changes survive review completion while concurrent turns are refused",
        %{repo: repo} do
     owner = self()

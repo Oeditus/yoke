@@ -32,6 +32,38 @@ defmodule Yoke.PRReview.ContextTest do
     assert {:ok, ^head} = Yoke.Git.resolve_revision(context.head_sha, repo)
   end
 
+  test "ranges past EOF return actionable feedback, not ambiguous empty output", %{repo: repo} do
+    assert {:ok, context} = Context.resolve("main feature", repo)
+
+    for start <- [2, 100, 1000] do
+      assert {:error, message} =
+               Tools.execute(
+                 "read_file",
+                 %{"path" => "sample.ex", "start_line" => start},
+                 context
+               )
+
+      assert message =~ "past end of file (1 lines)"
+      assert message =~ "finish the review"
+    end
+  end
+
+  test "range reads preserve real trailing blank lines and handle empty files", %{repo: repo} do
+    File.write!(Path.join(repo, "sample.ex"), "value\n\n\n")
+    File.write!(Path.join(repo, "empty.ex"), "")
+    Fixture.commit(repo, "blank and empty files")
+    assert {:ok, context} = Context.resolve("main HEAD", repo)
+
+    assert {:ok, "2: \n3: "} =
+             Tools.execute("read_file", %{"path" => "sample.ex", "start_line" => 2}, context)
+
+    assert {:error, message} =
+             Tools.execute("read_file", %{"path" => "empty.ex", "start_line" => 1}, context)
+
+    assert message =~ "past end of file (0 lines)"
+    assert {:ok, ""} = Tools.execute("read_file", %{"path" => "empty.ex"}, context)
+  end
+
   test "rejects empty, missing, malformed and oversized review ranges", %{repo: repo} do
     File.write!(Path.join(repo, "sample.ex"), "dirty changes\n")
     assert {:error, empty} = Context.resolve("HEAD HEAD", repo)

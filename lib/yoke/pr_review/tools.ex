@@ -158,14 +158,24 @@ defmodule Yoke.PRReview.Tools do
     if is_integer(start_line) and start_line > 0 and
          (is_nil(end_line) or (is_integer(end_line) and end_line >= start_line)) do
       if Map.has_key?(args, "start_line") or end_line do
-        lines = String.split(output, "\n")
+        lines =
+          if output == "",
+            do: [],
+            else: output |> String.replace_suffix("\n", "") |> String.split("\n")
+
         last = end_line || length(lines)
 
-        {:ok,
-         lines
-         |> Enum.slice(start_line - 1, last - start_line + 1)
-         |> Enum.with_index(start_line)
-         |> Enum.map_join("\n", fn {line, n} -> "#{n}: #{line}" end)}
+        if start_line > length(lines) do
+          {:error,
+           "Requested range is past end of file (#{length(lines)} lines). " <>
+             "Use an earlier range or finish the review with the evidence already supplied."}
+        else
+          {:ok,
+           lines
+           |> Enum.slice(start_line - 1, last - start_line + 1)
+           |> Enum.with_index(start_line)
+           |> Enum.map_join("\n", fn {line, n} -> "#{n}: #{line}" end)}
+        end
       else
         {:ok, output}
       end
