@@ -71,6 +71,19 @@ defmodule Yoke.PRReview.ProgressTest do
     end
   end
 
+  test "duplicate tool call ids and nil do not crash progress observation" do
+    progress = Progress.new()
+    calls = [%{id: "call", name: "read_file", arguments: %{"path" => "lib/a.ex"}}]
+
+    messages = [
+      %{"tool_call_id" => "call", "content" => "first"},
+      %{"tool_call_id" => "call", "content" => "second"},
+      %{"tool_call_id" => nil, "content" => "synthetic"}
+    ]
+
+    assert {:ok, _} = Progress.observe(progress, calls, messages, "/repo")
+  end
+
   defp observe(progress, name, args, content) do
     Progress.observe(
       progress,

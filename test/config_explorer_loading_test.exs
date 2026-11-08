@@ -22,13 +22,27 @@ defmodule Yoke.CLI.ConfigExplorerLoadingTest do
     assert output =~ "Loading Settings"
   end
 
-  test "session category lists files without reading or decoding their content" do
+  test "session category loads files and populates their metadata" do
     cwd = Path.join(System.tmp_dir!(), "explorer_listing_#{System.unique_integer([:positive])}")
     directory = Path.join(cwd, ".yoke/sessions")
     File.mkdir_p!(directory)
     on_exit(fn -> File.rm_rf!(cwd) end)
-    path = Path.join(directory, "unreadable_content.lmml")
-    File.write!(path, <<255, 254, 0, 1>>)
+    path = Path.join(directory, "example_session.lmml")
+
+    File.write!(path, """
+    @@@manifest.json
+    {"session_id":"example_session","model":"claude-3-opus","messages":[{"role":"user","content":"Fix the build"}]}
+    @@@
+
+    # User
+    Fix the build
+    """)
+
+    assert [placeholder] =
+             ConfigExplorer.list_session_files(cwd, include_global?: false, metadata?: false)
+
+    assert placeholder.model == "not loaded"
+    assert placeholder.preview == "(open to inspect)"
 
     state =
       ConfigExplorer.new_state(cwd, include_global?: false) |> ConfigExplorer.start_loading()
@@ -38,8 +52,9 @@ defmodule Yoke.CLI.ConfigExplorerLoadingTest do
     assert_receive {:explorer_load, ^ref, :sessions, {:ok, values}}
     assert [session] = values.sessions
     assert session.path == path
-    assert session.model == "not loaded"
-    assert session.preview == "(open to inspect)"
+    assert session.model == "claude-3-opus"
+    assert session.preview == "Fix the build"
+    assert session.msg_count == 1
   end
 
   test "categories complete independently and refresh rejects late results" do

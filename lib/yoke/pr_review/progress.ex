@@ -10,7 +10,10 @@ defmodule Yoke.PRReview.Progress do
   def new, do: %{seen: MapSet.new(), stalled_steps: 0}
 
   def observe(progress, calls, messages, cwd) do
-    results = Map.new(messages, &{&1["tool_call_id"], &1["content"]})
+    results =
+      Enum.reduce(messages, %{}, fn msg, acc ->
+        Map.put(acc, msg["tool_call_id"], msg["content"])
+      end)
 
     fingerprints =
       calls

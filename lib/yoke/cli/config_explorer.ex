@@ -193,8 +193,14 @@ defmodule Yoke.CLI.ConfigExplorer do
   defp load_category(:settings, cwd, _opts), do: %{config: Config.load_config(cwd)}
   defp load_category(:rules, cwd, _opts), do: %{rules: Rules.load_rules(cwd)}
 
-  defp load_category(:sessions, cwd, opts),
-    do: %{sessions: list_session_files(cwd, Keyword.put(opts, :metadata?, false))}
+  defp load_category(:sessions, cwd, opts) do
+    sessions =
+      cwd
+      |> list_session_files(Keyword.put(opts, :metadata?, false))
+      |> Enum.map(&Map.merge(&1, parse_session_metadata(&1.path)))
+
+    %{sessions: sessions}
+  end
 
   defp load_category(:practices, cwd, _opts), do: %{practices: list_practice_files(cwd)}
   defp load_category(:jobs, cwd, _opts), do: %{jobs: list_job_files(cwd)}
@@ -1649,6 +1655,13 @@ defmodule Yoke.CLI.ConfigExplorer do
   end
 
   defp format_item_detail(:sessions, sess, _state) do
+    sess =
+      if Map.get(sess, :model) in [nil, "not loaded"] and File.exists?(sess.path) do
+        Map.merge(sess, parse_session_metadata(sess.path))
+      else
+        sess
+      end
+
     header = [
       "Session ID:   #{sess.id}",
       "File Path:    #{sess.path}",

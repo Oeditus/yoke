@@ -407,5 +407,52 @@ defmodule Yoke.CLI.ConfigExplorerTest do
       assert scrolled_output =~ "read_file"
       assert scrolled_output =~ "Tool Call"
     end
+
+    test "formats conversation detail view and populates metadata if placeholder was present", %{
+      tmp_dir: tmp_dir
+    } do
+      path = Path.join(tmp_dir, ".yoke/sessions/placeholder_sess.lmml")
+
+      File.write!(path, """
+      @@@manifest.json
+      {"session_id":"placeholder_sess","model":"custom-model-v1","messages":[{"role":"user","content":"Hello"}]}
+      @@@
+
+      # User
+      Hello
+      """)
+
+      placeholder_sess = %{
+        id: "placeholder_sess",
+        file: "placeholder_sess.lmml",
+        path: path,
+        size: 100,
+        mtime: {{2026, 11, 8}, {12, 0, 0}},
+        timestamp: "2026-11-08 12:00:00",
+        model: "not loaded",
+        msg_count: 0,
+        preview: "(open to inspect)"
+      }
+
+      base = ConfigExplorer.new_state(tmp_dir)
+
+      state = %{
+        base
+        | active_tab: :sessions,
+          tab_index: 2,
+          cursor: 0,
+          view_mode: :detail,
+          loading: Map.put(base.loading, :sessions, :ready),
+          tree: %{base.tree | sessions: [placeholder_sess]}
+      }
+
+      output =
+        ExUnit.CaptureIO.capture_io(:user, fn ->
+          ConfigExplorer.render_full_screen(state)
+        end)
+
+      assert output =~ "Model:        custom-model-v1"
+      assert output =~ "Total Messages: 1"
+    end
   end
 end
