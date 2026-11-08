@@ -211,6 +211,41 @@ defmodule Yoke.PRReview.SessionTest do
     assert Enum.all?(results, &String.contains?(&1["content"], "past end of file"))
   end
 
+  test "advancing past EOF alternating with non-read tools is bounded and finalizes", %{
+    repo: repo
+  } do
+    calls = [
+      Fixture.tool_choice("read_file", %{
+        "path" => "sample.ex",
+        "start_line" => 100,
+        "end_line" => 150
+      }),
+      Fixture.tool_choice("grep_search", %{"query" => "missing"}),
+      Fixture.tool_choice("read_file", %{
+        "path" => "sample.ex",
+        "start_line" => 200,
+        "end_line" => 250
+      }),
+      Fixture.tool_choice("grep_search", %{"query" => "missing"}),
+      Fixture.tool_choice("read_file", %{
+        "path" => "sample.ex",
+        "start_line" => 300,
+        "end_line" => 350
+      }),
+      Fixture.tool_choice("read_file", %{
+        "path" => "sample.ex",
+        "start_line" => 400,
+        "end_line" => 450
+      })
+    ]
+
+    pid = session(repo, calls ++ [Fixture.choice("<findings>[]</findings>")])
+    assert {:ok, _} = Session.generate_code_review(pid, "main", "feature")
+    for _ <- 1..6, do: assert_receive({:review_request, _}, 5_000)
+    assert_receive {:review_request, final}, 5_000
+    assert Map.get(final, "tools", []) == []
+  end
+
   test "identical review loops finalize without asking a headless user for permission", %{
     repo: repo
   } do

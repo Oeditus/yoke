@@ -33,11 +33,10 @@ defmodule Yoke.PRReview.Progress do
     novel = MapSet.difference(fingerprints, progress.seen)
 
     stalled_steps =
-      if MapSet.size(fingerprints) > 0 and MapSet.size(novel) == 0 and
-           Enum.all?(calls, &(&1.name in ["read_file", "read_files"])) do
-        progress.stalled_steps + 1
-      else
-        0
+      cond do
+        MapSet.size(fingerprints) == 0 -> progress.stalled_steps
+        MapSet.size(novel) == 0 -> progress.stalled_steps + 1
+        true -> 0
       end
 
     updated = %{

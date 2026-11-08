@@ -972,8 +972,6 @@ defmodule Yoke.CLI.Repl do
                 end
               else
                 IO.puts(Formatter.format_info("No findings were accepted by user."))
-                body = Yoke.PRReview.build_pr_comment_body([], "", cwd: ctx.cwd)
-                maybe_post_review_to_github([], body, ctx)
               end
             end
 

@@ -39,7 +39,7 @@ defmodule Yoke.PRReview.Markdown do
   @doc """
   Formats an inline review comment finding for GitHub PR reviews.
   """
-  def format_inline_comment_body(finding) when is_map(finding) do
+  def format_inline_comment_body(finding, opts \\ []) when is_map(finding) do
     severity = Map.get(finding, :severity) || Map.get(finding, "severity") || "medium"
     title = Map.get(finding, :title) || Map.get(finding, "title") || ""
     desc = Map.get(finding, :description) || Map.get(finding, "description") || ""
@@ -47,10 +47,11 @@ defmodule Yoke.PRReview.Markdown do
     file = Map.get(finding, :file) || Map.get(finding, "file")
 
     lang = infer_language(file)
+    suggestion = Keyword.get(opts, :suggestion, true)
 
     formatted_title = format_inline_code(to_string(title))
     formatted_desc = format_markdown_body(to_string(desc), lang: lang)
-    suggestion_block = format_fix_block(to_string(fix), lang: lang)
+    suggestion_block = format_fix_block(to_string(fix), lang: lang, suggestion: suggestion)
 
     header = "**#{severity_marker(severity)} #{formatted_title}**"
 
@@ -60,6 +61,15 @@ defmodule Yoke.PRReview.Markdown do
       |> Enum.reject(&(&1 == ""))
 
     body_parts |> Enum.join("\n\n") |> sanitize_review_body()
+  end
+
+  @doc """
+  Formats an off-diff review finding for the top-level GitHub PR review body,
+  rendering code suggestions in standard fenced code blocks instead of
+  committable inline suggestion fences.
+  """
+  def format_sidenote_body(finding) when is_map(finding) do
+    format_inline_comment_body(finding, suggestion: false)
   end
 
   @doc "Returns the application-owned severity marker for a GitHub review finding."
@@ -156,6 +166,8 @@ defmodule Yoke.PRReview.Markdown do
 
   defp format_fix_block(fix, opts) do
     trimmed = String.trim(fix)
+    suggestion = Keyword.get(opts, :suggestion, true)
+    lang = Keyword.get(opts, :lang, "elixir")
 
     cond do
       trimmed == "" ->
@@ -169,9 +181,13 @@ defmodule Yoke.PRReview.Markdown do
         # Pure prose suggestion, format inline code
         format_inline_code(trimmed)
 
-      true ->
+      suggestion ->
         # Code snippet: wrap in ```suggestion
         "\n```suggestion\n#{trimmed}\n```"
+
+      true ->
+        fence = if is_binary(lang) and lang != "", do: lang, else: ""
+        "\n```#{fence}\n#{trimmed}\n```"
     end
   end
 

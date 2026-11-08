@@ -46,7 +46,7 @@ defmodule Yoke.PRReview do
   end
 
   @doc "Posts findings to the exact PR and commit whose diff was reviewed."
-  def post_context_review(context, findings, body, event \\ nil) do
+  def post_context_review(context, findings, body, event \\ :derived) do
     with :ok <- Yoke.PRReview.Context.verify_current(context),
          :ok <- Yoke.PRReview.Context.validate_findings(findings, context) do
       payload =
@@ -537,15 +537,18 @@ defmodule Yoke.PRReview do
   Builds an atomic GitHub review payload.
   Sorts findings into valid inline comments (lines on the right side of diff)
   and top-level body sidenotes (lines outside diff or general architectural findings).
-  `event` can be "APPROVE", "COMMENT", or "REQUEST_CHANGES".
+  `event` can be "APPROVE", "COMMENT", "REQUEST_CHANGES", or `:derived`.
   """
   def build_atomic_review_payload(
         accepted_findings,
         review_body,
-        event \\ nil,
+        event \\ :derived,
         valid_diff_lines \\ nil
       ) do
-    event_str = normalize_review_event(event || review_event(accepted_findings))
+    event_str =
+      normalize_review_event(
+        if event == :derived, do: review_event(accepted_findings), else: event
+      )
 
     {inline_comments, body_sidenotes} =
       Enum.split_with(accepted_findings, fn f ->
@@ -591,7 +594,7 @@ defmodule Yoke.PRReview do
         sidenotes_text =
           Enum.map_join(novel_sidenotes, "\n", fn f ->
             loc = if f.file, do: "`#{f.file}`#{if f.line, do: ":#{f.line}"}", else: "General"
-            "#### #{loc}\n\n" <> format_inline_comment_body(f)
+            "#### #{loc}\n\n" <> format_sidenote_body(f)
           end)
 
         review_body <> "\n\n### General Observations & Out-of-Diff Notes\n" <> sidenotes_text
@@ -615,6 +618,10 @@ defmodule Yoke.PRReview do
 
   defp format_inline_comment_body(f) do
     Markdown.format_inline_comment_body(f)
+  end
+
+  defp format_sidenote_body(f) do
+    Markdown.format_sidenote_body(f)
   end
 
   @doc """

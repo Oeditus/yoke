@@ -41,12 +41,15 @@ defmodule Yoke.Brain.AgentLoopTest do
                AgentLoop.normalize_arguments(wire)
     end
 
-    test "keeps edit array order and malformed argument text distinct" do
+    test "keeps edit array order distinct and trims malformed argument whitespace" do
       refute AgentLoop.normalize_arguments(%{changes: ["first", "second"]}) ==
                AgentLoop.normalize_arguments(%{changes: ["second", "first"]})
 
-      refute AgentLoop.normalize_arguments("invalid ") ==
+      assert AgentLoop.normalize_arguments("invalid ") ==
                AgentLoop.normalize_arguments("invalid")
+
+      refute AgentLoop.normalize_arguments("invalid1") ==
+               AgentLoop.normalize_arguments("invalid2")
     end
 
     test "internal notices retain the current turn but a multimodal user starts a new one" do

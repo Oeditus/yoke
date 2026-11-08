@@ -170,7 +170,7 @@ defmodule Yoke.Brain.AgentLoop do
   def normalize_arguments(args) when is_binary(args) do
     case Yoke.Json.decode(args) do
       {:ok, decoded} -> normalize_argument_value(decoded)
-      _ -> args
+      _ -> String.trim(args)
     end
   end
 

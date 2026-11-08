@@ -41,13 +41,53 @@ defmodule Yoke.PRReviewTest do
       findings = [inline, off_diff]
       body = PRReview.build_pr_comment_body(findings)
       valid_lines = MapSet.new([{inline.file, inline.line}])
-      payload = PRReview.build_atomic_review_payload(findings, body, nil, valid_lines)
+      payload = PRReview.build_atomic_review_payload(findings, body, :derived, valid_lines)
 
       assert [_] = payload["comments"]
       refute payload["body"] =~ inline.title
       assert [_, _] = String.split(payload["body"], off_diff.title)
       assert payload["body"] =~ off_diff.fix_suggestion
       assert payload["event"] == "REQUEST_CHANGES"
+    end
+
+    test "explicit COMMENT or nil event retains COMMENT even with actionable issues" do
+      issue = review_finding(%{severity: "high", kind: "issue"})
+      body = PRReview.build_pr_comment_body([issue])
+
+      for event <- ["COMMENT", nil] do
+        payload = PRReview.build_atomic_review_payload([issue], body, event)
+        assert payload["event"] == "COMMENT"
+      end
+    end
+
+    test "renders code fix suggestions in regular code fences for off-diff sidenotes and suggestion fences for inline comments" do
+      inline =
+        review_finding(%{
+          file: "lib/live.ex",
+          line: 10,
+          fix_suggestion: "def handle_call(:ping, _from, state), do: {:reply, :pong, state}"
+        })
+
+      off_diff =
+        review_finding(%{
+          file: "lib/deleted.ex",
+          line: nil,
+          title: "Missing cleanup",
+          fix_suggestion: "def cleanup, do: :ok"
+        })
+
+      findings = [inline, off_diff]
+      body = PRReview.build_pr_comment_body(findings)
+      valid_lines = MapSet.new([{inline.file, inline.line}])
+      payload = PRReview.build_atomic_review_payload(findings, body, :derived, valid_lines)
+
+      assert [%{"body" => inline_body}] = payload["comments"]
+
+      assert inline_body =~
+               "```suggestion\ndef handle_call(:ping, _from, state), do: {:reply, :pong, state}\n```"
+
+      refute payload["body"] =~ "```suggestion"
+      assert payload["body"] =~ "```elixir\ndef cleanup, do: :ok\n```"
     end
   end
 

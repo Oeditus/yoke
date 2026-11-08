@@ -2047,82 +2047,50 @@ defmodule Yoke.CLI.ConfigExplorer do
     enter_alternate_screen()
     set_raw_mode()
     state = new_state(cwd, opts)
-    owner = self()
-    input_ref = make_ref()
     reader = Keyword.get(opts, :read_key, &read_key/0)
-    input_pid = spawn(fn -> input_loop(owner, input_ref, reader) end)
     session_ref = make_ref()
 
     try do
       render_full_screen(state)
       state = start_loading(state)
       Process.put(session_ref, state)
-      tui_loop(state, {input_pid, input_ref, session_ref})
+      tui_loop(state, {session_ref, reader})
     after
       cancel_loading(Process.delete(session_ref))
-      Process.exit(input_pid, :kill)
       TerminalOwner.clear()
       restore_tty_mode()
       exit_alternate_screen()
     end
   end
 
-  defp input_loop(owner, ref, reader) do
-    Process.flag(:trap_exit, true)
-    monitor = Process.monitor(owner)
-    input_wait(owner, monitor, ref, reader)
-  end
-
-  defp input_wait(owner, monitor, ref, reader) do
-    receive do
-      {:read, ^ref} ->
-        coordinator = self()
-
-        spawn_link(fn ->
-          key =
-            try do
-              reader.()
-            rescue
-              _ -> :eof
-            catch
-              _, _ -> :eof
-            end
-
-          send(coordinator, {:read_key, ref, key})
-        end)
-
-        input_wait(owner, monitor, ref, reader)
-
-      {:read_key, ^ref, key} ->
-        send(owner, {:explorer_key, ref, key})
-        input_wait(owner, monitor, ref, reader)
-
-      {:EXIT, _pid, _reason} ->
-        input_wait(owner, monitor, ref, reader)
-
-      {:DOWN, ^monitor, :process, ^owner, _} ->
-        exit(:shutdown)
-    end
-  end
-
-  defp tui_loop(state, {input_pid, input_ref, session_ref} = input) do
+  defp tui_loop(state, {session_ref, reader} = input) do
+    state = await_event(state, input)
     Process.put(session_ref, state)
     render_full_screen(state)
     TerminalOwner.set(&erase_for_log/1, &redraw_for_log/1, state)
-    send(input_pid, {:read, input_ref})
-    await_event(state, input)
+
+    key =
+      try do
+        reader.()
+      rescue
+        _ -> :eof
+      catch
+        _, _ -> :eof
+      end
+
+    handle_key(state, key, input)
   end
 
-  defp await_event(state, {_input_pid, input_ref, _session_ref} = input) do
+  defp await_event(state, input) do
     receive do
       {:explorer_load, _, _, _} = message ->
         updated = apply_load_result(state, message)
         render_full_screen(updated)
         TerminalOwner.set(&erase_for_log/1, &redraw_for_log/1, updated)
         await_event(updated, input)
-
-      {:explorer_key, ^input_ref, key} ->
-        handle_key(state, key, input)
+    after
+      0 ->
+        state
     end
   end
 

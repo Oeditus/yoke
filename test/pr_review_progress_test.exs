@@ -41,15 +41,32 @@ defmodule Yoke.PRReview.ProgressTest do
     assert {:stalled, _} = observe(progress, "read_file", a, "a")
   end
 
-  test "new evidence and other tools reset the consecutive stall counter" do
+  test "non-read tools are progress-neutral while new evidence resets stall counter" do
     args = %{"path" => "a.ex"}
     assert {:ok, progress} = observe(Progress.new(), "read_file", args, "old")
     assert {:ok, progress} = observe(progress, "read_file", args, "old")
     assert progress.stalled_steps == 1
     assert {:ok, progress} = observe(progress, "grep_search", %{"query" => "new"}, "match")
-    assert progress.stalled_steps == 0
+    assert progress.stalled_steps == 1
     assert {:ok, progress} = observe(progress, "read_file", args, "new")
     assert progress.stalled_steps == 0
+  end
+
+  test "alternating failing reads with non-read tools preserves stall progress and triggers stall" do
+    args = %{"path" => "a.ex"}
+    grep = %{"query" => "something"}
+    assert {:ok, progress} = observe(Progress.new(), "read_file", args, "err")
+    assert {:ok, progress} = observe(progress, "grep_search", grep, "match")
+    assert progress.stalled_steps == 0
+    assert {:ok, progress} = observe(progress, "read_file", args, "err")
+    assert progress.stalled_steps == 1
+    assert {:ok, progress} = observe(progress, "grep_search", grep, "match")
+    assert progress.stalled_steps == 1
+    assert {:ok, progress} = observe(progress, "read_file", args, "err")
+    assert progress.stalled_steps == 2
+    assert {:ok, progress} = observe(progress, "grep_search", grep, "match")
+    assert progress.stalled_steps == 2
+    assert {:stalled, _} = observe(progress, "read_file", args, "err")
   end
 
   test "read_files batches also track repeated evidence" do
