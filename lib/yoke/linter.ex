@@ -51,9 +51,9 @@ defmodule Yoke.Linter do
       Yoke.Linter.run("oeditus_credo diff")
       Yoke.Linter.run("all project")
   """
-  def run(input \\ "", cwd \\ ".")
+  def run(input \\ "", cwd \\ ".", provider_opts \\ [])
 
-  def run(input, cwd) when is_binary(input) do
+  def run(input, cwd, provider_opts) when is_binary(input) do
     trimmed = String.trim(input)
 
     cond do
@@ -70,8 +70,8 @@ defmodule Yoke.Linter do
         parts = String.split(target_input, " ", trim: true)
         [tool | _] = parts
 
-        case run(target_input, cwd) do
-          {:ok, output} -> Yoke.Linter.Interactive.run(output, tool, cwd)
+        case run(target_input, cwd, provider_opts) do
+          {:ok, output} -> Yoke.Linter.Interactive.run(output, tool, cwd, provider_opts)
           error -> error
         end
 

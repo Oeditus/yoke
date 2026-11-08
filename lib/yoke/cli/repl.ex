@@ -31,7 +31,8 @@ defmodule Yoke.CLI.Repl do
         Yoke.CLI.Main.generate_uuid()
 
     session_opts = [
-      session_id: session_id
+      session_id: session_id,
+      provider: opts[:provider]
     ]
 
     session_opts =
@@ -49,6 +50,7 @@ defmodule Yoke.CLI.Repl do
       end
 
     {:ok, session_pid} = SessionSupervisor.start_session(session_opts)
+    IO.puts(Formatter.format_info(Yoke.Provider.describe(Session.provider_options(session_pid))))
 
     IO.puts(Formatter.format_info("Brain actor initialized for session '#{session_id}'"))
     IO.puts(Formatter.format_success(Yoke.report_serving_processes()))
@@ -151,6 +153,9 @@ defmodule Yoke.CLI.Repl do
       )
     end
 
+    provider_label = Yoke.Provider.location(stats.endpoint)
+    original_builder = prompt_builder
+    prompt_builder = fn -> "[#{provider_label}] " <> original_builder.() end
     prompt_str = prompt_builder.()
 
     compact_status_bar? =
@@ -797,12 +802,12 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
-  def handle_input("/linter " <> args, _session_pid, _session_id) do
+  def handle_input("/linter " <> args, session_pid, _session_id) do
     args = String.trim(args)
 
     IO.puts(Formatter.format_info("Running linter tool: #{args}…"))
 
-    case Yoke.Linter.run(args) do
+    case Yoke.Linter.run(args, ".", Session.provider_options(session_pid)) do
       {:ok, out} ->
         IO.puts("\n#{out}\n")
 
@@ -1364,6 +1369,34 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
+  def handle_input("/provider", session_pid, _session_id) do
+    IO.puts(Formatter.format_info(Yoke.Provider.describe(Session.provider_options(session_pid))))
+    IO.puts("Switch with /provider local | local-qwen | deepseek (generation, not /mode Hands).")
+    :continue
+  end
+
+  def handle_input("/provider " <> name, session_pid, _session_id) do
+    name = String.trim(name)
+
+    case Session.set_provider(session_pid, name) do
+      {:ok, description} ->
+        IO.puts(Formatter.format_success(description))
+
+        if name == "deepseek" do
+          IO.puts(
+            Formatter.format_warning(
+              "REMOTE selected: subsequent requests send this conversation history to DeepSeek. Use /reset for a fresh conversation."
+            )
+          )
+        end
+
+      {:error, reason} ->
+        IO.puts(Formatter.format_error(reason))
+    end
+
+    :continue
+  end
+
   def handle_input("/models", session_pid, session_id) do
     handle_input("/model", session_pid, session_id)
   end
@@ -1374,9 +1407,13 @@ defmodule Yoke.CLI.Repl do
 
     IO.puts(Formatter.format_info("Fetching available models from API endpoint (#{endpoint})…"))
 
-    case DeepSeekAPI.list_models(endpoint: endpoint) do
+    case DeepSeekAPI.list_models(Session.provider_options(session_pid)) do
       {:ok, models} ->
-        IO.puts(Formatter.format_success("Available Models from DeepSeek API:"))
+        IO.puts(
+          Formatter.format_success(
+            "Available models from #{Yoke.Provider.location(endpoint)} provider:"
+          )
+        )
 
         Enum.each(models, fn m ->
           if m == current_model do
@@ -1846,11 +1883,11 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
-  def handle_input("/practices learn " <> args, _session_pid, _session_id),
-    do: handle_practices_learn(args)
+  def handle_input("/practices learn " <> args, session_pid, _session_id),
+    do: handle_practices_learn(args, Session.provider_options(session_pid))
 
-  def handle_input("/practices squeeze " <> args, _session_pid, _session_id),
-    do: handle_practices_learn(args)
+  def handle_input("/practices squeeze " <> args, session_pid, _session_id),
+    do: handle_practices_learn(args, Session.provider_options(session_pid))
 
   def handle_input("/practices delete", _session_pid, _session_id),
     do: handle_practices_delete()
@@ -2264,6 +2301,8 @@ defmodule Yoke.CLI.Repl do
     - **Session ID**: `#{info.session_id}`
     - **Actor PID**: `#{inspect(info.pid)}`
     - **Model**: `#{info.model}`
+    - **Generation Provider**: `#{Yoke.Provider.location(info.endpoint)} #{info.provider || "custom"}`
+    - **Generation Endpoint**: `#{info.endpoint}`
     - **Permission Mode**: `#{info.permission_mode}`
     - **History Length**: `#{info.message_count}` messages
     - **Checkpoints**: `#{info.snapshot_count}` snapshots
@@ -2312,7 +2351,8 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
-  def handle_input("/env", _session_pid, _session_id) do
+  def handle_input("/env", session_pid, _session_id) do
+    provider = Yoke.Provider.describe(Session.provider_options(session_pid))
     env_model = System.get_env("DEEPSEEK_MODEL") || "deepseek-flash (default)"
 
     has_key? =
@@ -2324,6 +2364,7 @@ defmodule Yoke.CLI.Repl do
 
     md = """
     ### Environment & Runtime Configuration
+    - **Active Generation Provider**: `#{provider}`
     - **Operating System**: `#{:os.type() |> inspect()}`
     - **Elixir Version**: `#{System.version()}`
     - **OTP Release**: `#{System.otp_release()}`
@@ -2553,10 +2594,12 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
-  def handle_input("/workflow run " <> rest, _session_pid, _session_id) do
+  def handle_input("/workflow run " <> rest, session_pid, _session_id) do
+    provider_opts = Session.provider_options(session_pid)
+
     case String.split(String.trim(rest), " ", parts: 2) do
-      [name, description] -> do_workflow_run(name, description)
-      [name] -> do_workflow_run(name, "")
+      [name, description] -> do_workflow_run(name, description, provider_opts)
+      [name] -> do_workflow_run(name, "", provider_opts)
       _ -> IO.puts(Formatter.format_error("Usage: /workflow run <name> <task description>"))
     end
 
@@ -3036,10 +3079,10 @@ defmodule Yoke.CLI.Repl do
     end
   end
 
-  defp do_workflow_run(name, description) do
+  defp do_workflow_run(name, description, provider_opts) do
     IO.puts(Formatter.format_info("Starting workflow '#{name}'…"))
 
-    case Yoke.Workflow.Engine.run(name, seed_prompt: description) do
+    case Yoke.Workflow.Engine.run(name, seed_prompt: description, provider_options: provider_opts) do
       {:ok, context} ->
         IO.puts(
           Formatter.format_success("Workflow '#{name}' completed (run '#{context.run_id}').")
@@ -3367,7 +3410,7 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
-  defp handle_practices_learn(args) do
+  defp handle_practices_learn(args, provider_opts) do
     paths = String.split(args, ~r/[,;\s]+/, trim: true)
 
     if paths == [] do
@@ -3377,7 +3420,7 @@ defmodule Yoke.CLI.Repl do
     else
       langs = Yoke.Practices.project_languages()
       lang = Enum.at(langs, 0) || "elixir"
-      Yoke.Practices.squeeze_practices(lang, paths)
+      Yoke.Practices.squeeze_practices(lang, paths, provider_opts)
 
       IO.puts(
         Formatter.format_success(

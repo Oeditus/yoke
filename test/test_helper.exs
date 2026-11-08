@@ -9,7 +9,7 @@ Application.put_env(:nx, :default_backend, Nx.BinaryBackend)
 Application.put_env(:exla, :start_log_sink, false)
 
 if System.get_env("CI") || System.get_env("GITHUB_ACTIONS") do
-  ExUnit.configure(exclude: [ragex: true])
+  ExUnit.configure(exclude: [ragex: true, skip_in_gha: true])
 end
 
 ExUnit.start()

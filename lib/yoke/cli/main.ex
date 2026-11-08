@@ -99,6 +99,13 @@ defmodule Yoke.CLI.Main do
   names a known subcommand, or `nil` otherwise.
   """
   @spec split_subcommand([String.t()]) :: {String.t(), [String.t()]} | nil
+  def split_subcommand(["--provider", name | rest]) do
+    case split_subcommand(rest) do
+      {command, args} -> {command, ["--provider", name | args]}
+      nil -> nil
+    end
+  end
+
   def split_subcommand(args) do
     case Enum.split_while(args, &String.starts_with?(&1, "-")) do
       {_flags, []} ->
@@ -146,6 +153,7 @@ defmodule Yoke.CLI.Main do
         switches: [
           prompt: :string,
           model: :string,
+          provider: :string,
           endpoint: :string,
           conversation: :string,
           resume: :string,
@@ -180,13 +188,15 @@ defmodule Yoke.CLI.Main do
       Application.put_env(:yoke, :project_languages, langs)
     end
 
+    if opts[:provider], do: Yoke.Provider.profile!(opts[:provider])
+
     cond do
       opts[:help] ->
         print_usage()
         halt(0)
 
       opts[:doctor] ->
-        Yoke.CLI.Doctor.print_report()
+        Yoke.CLI.Doctor.print_report(File.cwd!(), opts)
         halt(0)
 
       opts[:update] || "update" in extra_args || "self-update" in extra_args ->
@@ -252,7 +262,7 @@ defmodule Yoke.CLI.Main do
     prompt = opts[:prompt] || Enum.join(extra_args, " ")
     session_id = opts[:conversation] || opts[:resume] || generate_uuid()
 
-    session_opts = [session_id: session_id]
+    session_opts = [session_id: session_id, provider: opts[:provider]]
 
     session_opts =
       if opts[:model] do
@@ -269,6 +279,12 @@ defmodule Yoke.CLI.Main do
       end
 
     {:ok, session_pid} = SessionSupervisor.start_session(session_opts)
+
+    IO.puts(
+      Yoke.CLI.Formatter.format_info(
+        Yoke.Provider.describe(Yoke.Brain.Session.provider_options(session_pid))
+      )
+    )
 
     if opts[:plugin] do
       Yoke.Plugin.Loader.load_file(opts[:plugin])
@@ -374,6 +390,8 @@ defmodule Yoke.CLI.Main do
       -c, --conversation STRING  Resume specific conversation ID
       -p, --prompt STRING        Input prompt to send to agent
       -m, --model STRING         Model selection (deepseek-flash, deepseek-v4-pro, deepseek-reasoner, deepseek-v4-flash-vision-exp)
+          --provider NAME        local (Devstral), local-qwen, or deepseek; selects model and endpoint together
+      -e, --endpoint URL         Custom chat-completions endpoint
           --node STRING          Start local Erlang distributed node name
           --connect STRING       Connect to remote Hands node
           --plugin FILE          Load external Elixir plugin file (.ex or .exs)

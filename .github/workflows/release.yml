@@ -35,7 +35,7 @@ jobs:
       - name: Install dependencies
         run: mix deps.get
       - name: Run tests
-        run: mix test --exclude ragex
+        run: mix test --exclude ragex --exclude skip_in_gha
       - name: Run yoke launcher tests
         run: bash test/yoke_release_test.sh
       - name: Run dllb install script tests

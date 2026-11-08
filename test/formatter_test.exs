@@ -119,7 +119,7 @@ defmodule Yoke.FormatterTest do
            )
 
     assert String.contains?(Formatter.format_user_prompt_str("test_prompt"), "test_prompt")
-    assert String.contains?(Formatter.format_agent_response("Hello"), "DeepSeek >")
+    assert String.contains?(Formatter.format_agent_response("Hello"), "Yoke >")
     assert String.contains?(Formatter.format_error("Failed"), "●")
     assert String.contains?(Formatter.format_success("Done"), "●")
     assert String.contains?(Formatter.format_info("Notice"), "●")
@@ -221,7 +221,7 @@ defmodule Yoke.FormatterTest do
       assert rendered =~ "Thought process here."
       refute rendered =~ "“"
       refute rendered =~ "”"
-      assert rendered =~ "DeepSeek >"
+      assert rendered =~ "Yoke >"
       assert rendered =~ "Here is the result."
     end
   end

@@ -60,6 +60,7 @@ defmodule Yoke.CLI.LineEditor do
     "/nodes",
     "/permissions",
     "/plugins",
+    "/provider",
     "/quit",
     "/ragex",
     "/reset",
@@ -2404,10 +2405,13 @@ defmodule Yoke.CLI.LineEditor do
   end
 
   defp gauge_content(context) do
-    total_tokens = Map.get(context, :total_tokens, 0)
+    total_tokens = Map.get(context, :context_tokens, Map.get(context, :total_tokens, 0))
     cost_usd = Map.get(context, :estimated_cost_usd, 0.0)
     delta = Map.get(context, :last_turn_tokens, 0)
-    max_tokens = context_window_tokens(Map.get(context, :model))
+
+    max_tokens =
+      Map.get(context, :max_context_tokens) || context_window_tokens(Map.get(context, :model))
+
     serving_procs = Map.get(context, :serving_processes, length(Process.list()))
 
     Formatter.format_context_gauge(total_tokens, max_tokens, cost_usd, delta, serving_procs)

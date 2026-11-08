@@ -62,7 +62,11 @@ defmodule Yoke.Workflow.Engine do
         cwd: cwd,
         workflow: definition,
         seed_prompt: seed_prompt,
-        pipeline_item: pipeline_item
+        pipeline_item: pipeline_item,
+        provider_options:
+          Yoke.Provider.resolve(
+            Keyword.get(opts, :provider_options, Keyword.put(opts, :cwd, cwd))
+          )
       }
 
       execute_from(context, definition.steps, 0)
@@ -89,7 +93,12 @@ defmodule Yoke.Workflow.Engine do
 
         true ->
           context =
-            %{run_id: run_id, cwd: cwd, workflow: definition}
+            %{
+              run_id: run_id,
+              cwd: cwd,
+              workflow: definition,
+              provider_options: restore_provider(state["provider_options"], cwd)
+            }
             |> put_if_present(:branch, state["branch"])
             |> put_if_present(:original_branch, state["base_branch"])
             |> put_if_present(:task_description, Store.read_task_description(run_id, cwd))
@@ -171,7 +180,12 @@ defmodule Yoke.Workflow.Engine do
       "status" => status,
       "step_index" => step_index,
       "branch" => Map.get(context, :branch),
-      "base_branch" => Map.get(context, :original_branch)
+      "base_branch" => Map.get(context, :original_branch),
+      "provider_options" =>
+        context
+        |> Map.get(:provider_options, [])
+        |> Keyword.take([:provider, :endpoint, :model, :temperature, :max_context_tokens])
+        |> Map.new(fn {k, v} -> {to_string(k), v} end)
     }
 
     fields = if reason, do: Map.put(base, "reason", to_string(reason)), else: base
@@ -220,14 +234,22 @@ defmodule Yoke.Workflow.Engine do
       %{"role" => "user", "content" => user_prompt}
     ]
 
-    default_model =
-      System.get_env("DEEPSEEK_MODEL") ||
-        Map.get(Yoke.Config.load_config("."), "model", "deepseek-flash")
+    call_opts = Keyword.merge(Map.get(context, :provider_options, cwd: context.cwd), opts)
 
-    case DeepSeekAPI.chat_completion(messages, [], Keyword.put_new(opts, :model, default_model)) do
+    case DeepSeekAPI.chat_completion(messages, [], call_opts) do
       {:ok, %{content: content}} when is_binary(content) -> {:ok, content}
       {:ok, %{content: nil}} -> {:ok, ""}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp restore_provider(nil, cwd), do: Yoke.Provider.resolve(cwd: cwd)
+
+  defp restore_provider(saved, cwd) do
+    [:provider, :endpoint, :model, :temperature, :max_context_tokens]
+    |> Enum.map(fn key -> {key, saved[to_string(key)]} end)
+    |> Enum.reject(fn {_key, value} -> value in [nil, :null] end)
+    |> Keyword.put(:cwd, cwd)
+    |> Yoke.Provider.resolve()
   end
 end
