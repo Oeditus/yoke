@@ -78,10 +78,8 @@ defmodule Yoke.CLI.Spinner do
       :ok
     end
 
-    # Publish the unpaused state before spawning or waking a watcher.
-    # Otherwise it can consume its wake, see paused=true, and park for 30s.
+    # Resume the Ctrl+Q watcher if one was paused for a modal.
     Yoke.CLI.Interrupt.resume()
-    Yoke.CLI.Interrupt.wake_watcher()
   end
 
   @doc """

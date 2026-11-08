@@ -27,11 +27,12 @@ end
 #
 # `:ragex` and `:skip_in_gha` are excluded on CI for the reasons documented in
 # `docs/CI_PLAN.md`; the two exclusions compose.
+# `mix test --no-start` never starts the application, so the supervisor is absent.
+no_start? = Process.whereis(Yoke.Supervisor) == nil
+
 excluded =
   []
-  |> then(fn acc ->
-    if "--no-start" in System.argv(), do: [:app | acc], else: acc
-  end)
+  |> then(fn acc -> if no_start?, do: [:app | acc], else: acc end)
   |> then(fn acc ->
     if System.get_env("CI") || System.get_env("GITHUB_ACTIONS"),
       do: [:ragex, :skip_in_gha | acc],
