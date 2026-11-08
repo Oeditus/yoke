@@ -69,6 +69,34 @@ defmodule Yoke.PRReview.IdentityTest do
     %{repo: repo, bin: bin, head: head, base: upstream.base, upstream: upstream.repo}
   end
 
+  test "clean and endorsement-only pinned reviews approve the reviewed commit", %{
+    repo: repo,
+    bin: bin,
+    head: head
+  } do
+    assert {:ok, context} = Context.resolve("42", repo)
+
+    endorsement = %{
+      id: 1,
+      file: "sample.ex",
+      line: 1,
+      title: "Clear contract",
+      description: "The implementation is easy to follow.",
+      kind: "endorsement",
+      severity: "info",
+      fix_suggestion: ""
+    }
+
+    for findings <- [[], [endorsement]] do
+      body = PRReview.build_pr_comment_body(findings, "", cwd: repo)
+      assert {:ok, %{event: "APPROVE"}} = PRReview.post_context_review(context, findings, body)
+      posted = bin |> Path.join("posted.json") |> File.read!() |> Json.decode!()
+      assert posted["event"] == "APPROVE"
+      assert posted["commit_id"] == head
+      assert posted["body"] =~ "No actionable issues found."
+    end
+  end
+
   test "PR review fetches exact remote commits instead of stale local branches", %{
     repo: repo,
     head: head,
@@ -114,7 +142,7 @@ defmodule Yoke.PRReview.IdentityTest do
     assert {:ok, %{number: "42"}} = PRReview.post_context_review(context, [finding], body)
     posted = bin |> Path.join("posted.json") |> File.read!() |> Json.decode!()
     assert posted["commit_id"] == head
-    assert posted["event"] == "COMMENT"
+    assert posted["event"] == "REQUEST_CHANGES"
     assert [%{"path" => "sample.ex", "line" => 1, "side" => "RIGHT"}] = posted["comments"]
     calls = File.read!(Path.join(bin, "calls"))
     assert calls =~ "repos/example/repo/pulls/42/reviews"

@@ -166,25 +166,45 @@ defmodule Yoke.Brain.AgentLoop do
     {name, normalize_arguments(args)}
   end
 
-  @doc "Recursively normalizes argument maps/strings for deterministic comparison."
+  @doc "Decodes the outer argument JSON while preserving exact nested values."
   def normalize_arguments(args) when is_binary(args) do
     case Yoke.Json.decode(args) do
-      {:ok, decoded} -> normalize_arguments(decoded)
-      _ -> String.trim(args)
+      {:ok, decoded} -> normalize_argument_value(decoded)
+      _ -> args
     end
   end
 
-  def normalize_arguments(args) when is_map(args) do
-    args
-    |> Enum.map(fn {k, v} -> {to_string(k), normalize_arguments(v)} end)
-    |> Enum.sort_by(fn {k, _v} -> k end)
+  def normalize_arguments(args), do: normalize_argument_value(args)
+
+  # Strings inside an already decoded argument object are tool input, not
+  # another JSON envelope. Whitespace, JSON-looking source and scalar types
+  # matter to edits; maps must also stay distinct from arrays.
+  defp normalize_argument_value(args) when is_map(args) do
+    Map.new(args, fn {k, v} -> {to_string(k), normalize_argument_value(v)} end)
   end
 
-  def normalize_arguments(args) when is_list(args) do
-    Enum.map(args, &normalize_arguments/1)
+  defp normalize_argument_value(args) when is_list(args) do
+    Enum.map(args, &normalize_argument_value/1)
   end
 
-  def normalize_arguments(args), do: args
+  defp normalize_argument_value(args), do: args
+
+  @doc "Whether the model's next response is answering an outstanding loop warning."
+  def loop_warning_pending?(messages) when is_list(messages) do
+    case List.last(messages) do
+      msg when is_map(msg) ->
+        role = Map.get(msg, "role") || Map.get(msg, :role)
+        content = Map.get(msg, "content") || Map.get(msg, :content)
+
+        role == "user" and is_binary(content) and
+          String.starts_with?(content, "SYSTEM NOTICE: Repetitive tool loop detected")
+
+      _ ->
+        false
+    end
+  end
+
+  def loop_warning_pending?(_), do: false
 
   @doc "Formats a detected cycle pattern for display in user notices and logs."
   def format_cycle_description(cycle) when is_list(cycle) do
@@ -202,8 +222,10 @@ defmodule Yoke.Brain.AgentLoop do
 
   def format_cycle_description(_), do: ""
 
-  defp format_args_for_display(args) when is_list(args) do
-    Enum.map_join(args, ", ", fn
+  defp format_args_for_display(args) when is_map(args) do
+    args
+    |> Enum.sort()
+    |> Enum.map_join(", ", fn
       {k, v} when is_binary(v) ->
         short_v = if String.length(v) > 80, do: String.slice(v, 0, 77) <> "...", else: v
         "#{k}: #{inspect(short_v)}"

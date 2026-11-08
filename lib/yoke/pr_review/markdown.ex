@@ -52,14 +52,23 @@ defmodule Yoke.PRReview.Markdown do
     formatted_desc = format_markdown_body(to_string(desc), lang: lang)
     suggestion_block = format_fix_block(to_string(fix), lang: lang)
 
-    header = "**[#{String.upcase(to_string(severity))}] #{formatted_title}**"
+    header = "**#{severity_marker(severity)} #{formatted_title}**"
 
     body_parts =
       [header, formatted_desc, suggestion_block]
       |> Enum.map(&String.trim/1)
       |> Enum.reject(&(&1 == ""))
 
-    body_parts |> Enum.join("\n\n") |> strip_emojis()
+    body_parts |> Enum.join("\n\n") |> sanitize_review_body()
+  end
+
+  @doc "Returns the application-owned severity marker for a GitHub review finding."
+  def severity_marker(severity) do
+    case severity |> to_string() |> String.trim() |> String.downcase() do
+      "high" -> "🔴"
+      "medium" -> "🟡"
+      _ -> "🔵"
+    end
   end
 
   @doc """
@@ -80,13 +89,20 @@ defmodule Yoke.PRReview.Markdown do
   end
 
   @doc """
-  Enforces emoji-free review output except for the branding marker in the first header.
+  Removes decorative emojis while retaining branding and severity circles.
   """
   def sanitize_review_body("## 🪢 Review from " <> rest) do
-    "## 🪢 Review from " <> strip_emojis(rest)
+    "## 🪢 Review from " <> sanitize_review_body(rest)
   end
 
-  def sanitize_review_body(text), do: strip_emojis(text)
+  def sanitize_review_body(text) when is_binary(text) do
+    text
+    |> String.split(~r/([🔴🟡🔵])/u, include_captures: true)
+    |> Enum.map_join(fn
+      marker when marker in ["🔴", "🟡", "🔵"] -> marker
+      part -> strip_emojis(part)
+    end)
+  end
 
   @doc """
   Formats single-line prose or inline text (such as titles or summary lines),

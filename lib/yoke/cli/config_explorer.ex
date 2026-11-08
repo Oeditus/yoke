@@ -78,6 +78,132 @@ defmodule Yoke.CLI.ConfigExplorer do
     }
   end
 
+  @doc false
+  def start_loading(state) do
+    cancel_loading(state)
+    owner = self()
+    ref = make_ref()
+    loader = Keyword.get(state.load_options, :loader, &load_category/3)
+    timeout = Keyword.get(state.load_options, :load_timeout, 5_000)
+
+    pid =
+      spawn(fn ->
+        Process.flag(:trap_exit, true)
+        owner_ref = Process.monitor(owner)
+
+        workers =
+          Map.new(@tabs, fn tab ->
+            coordinator = self()
+
+            worker =
+              spawn_link(fn ->
+                result =
+                  try do
+                    {:ok, loader.(tab, state.cwd, state.load_options)}
+                  rescue
+                    error -> {:error, Exception.message(error)}
+                  catch
+                    kind, reason -> {:error, inspect({kind, reason})}
+                  end
+
+                send(coordinator, {:loaded, self(), tab, result})
+              end)
+
+            timer = Process.send_after(self(), {:timeout, worker, tab}, timeout)
+            {worker, {tab, timer}}
+          end)
+
+        loading_loop(owner, owner_ref, ref, workers)
+      end)
+
+    %{state | load_ref: ref, loader_pid: pid, loading: Map.new(@tabs, &{&1, :loading})}
+  end
+
+  @doc false
+  def cancel_loading(%{loader_pid: pid}) when is_pid(pid) do
+    monitor = Process.monitor(pid)
+    Process.exit(pid, :kill)
+
+    receive do
+      {:DOWN, ^monitor, :process, ^pid, _} -> :ok
+    end
+  end
+
+  def cancel_loading(_state), do: :ok
+
+  defp loading_loop(_owner, _owner_ref, _ref, workers) when map_size(workers) == 0,
+    do: :ok
+
+  defp loading_loop(owner, owner_ref, ref, workers) do
+    receive do
+      {:DOWN, ^owner_ref, :process, ^owner, _} ->
+        Enum.each(workers, fn {pid, _} -> Process.exit(pid, :kill) end)
+
+      {:loaded, pid, tab, result} ->
+        finish_category(owner, owner_ref, ref, workers, pid, tab, result)
+
+      {:timeout, pid, tab} ->
+        Process.exit(pid, :kill)
+        finish_category(owner, owner_ref, ref, workers, pid, tab, {:error, "Loading timed out"})
+
+      {:EXIT, pid, reason} ->
+        case Map.get(workers, pid) do
+          {tab, _timer} ->
+            finish_category(owner, owner_ref, ref, workers, pid, tab, {:error, inspect(reason)})
+
+          nil ->
+            loading_loop(owner, owner_ref, ref, workers)
+        end
+    end
+  end
+
+  defp finish_category(owner, owner_ref, ref, workers, pid, tab, result) do
+    case Map.pop(workers, pid) do
+      {nil, _} ->
+        loading_loop(owner, owner_ref, ref, workers)
+
+      {{^tab, timer}, remaining} ->
+        Process.cancel_timer(timer)
+        send(owner, {:explorer_load, ref, tab, result})
+        loading_loop(owner, owner_ref, ref, remaining)
+    end
+  end
+
+  @doc false
+  def apply_load_result(%{load_ref: ref} = state, {:explorer_load, ref, tab, result}) do
+    if Map.get(state.loading, tab) == :loading do
+      case result do
+        {:ok, values} ->
+          %{
+            state
+            | tree: Map.merge(state.tree, values),
+              loading: Map.put(state.loading, tab, :ready)
+          }
+
+        {:error, reason} ->
+          %{state | loading: Map.put(state.loading, tab, {:error, reason})}
+      end
+    else
+      state
+    end
+  end
+
+  def apply_load_result(state, _message), do: state
+
+  defp load_category(:settings, cwd, _opts), do: %{config: Config.load_config(cwd)}
+  defp load_category(:rules, cwd, _opts), do: %{rules: Rules.load_rules(cwd)}
+
+  defp load_category(:sessions, cwd, opts),
+    do: %{sessions: list_session_files(cwd, Keyword.put(opts, :metadata?, false))}
+
+  defp load_category(:practices, cwd, _opts), do: %{practices: list_practice_files(cwd)}
+  defp load_category(:jobs, cwd, _opts), do: %{jobs: list_job_files(cwd)}
+  defp load_category(:skills, cwd, _opts), do: %{skills: list_skill_files(cwd)}
+  defp load_category(:diagnostics, cwd, _opts), do: %{errors: read_error_log(cwd)}
+
+  defp load_category(:analytics, cwd, _opts),
+    do: %{analytics: read_bash_analytics(cwd), patterns: list_review_patterns(cwd)}
+
   @doc """
   Lists session files from the workspace `.yoke/sessions` directory and the
   global `~/.yoke/sessions` directory, newest first.
@@ -108,7 +234,11 @@ defmodule Yoke.CLI.ConfigExplorer do
               case File.stat(full_path) do
                 {:ok, stat} ->
                   id = String.replace(file, ~r/\.(lmml|lmmlz)$/, "")
-                  meta = parse_session_metadata(full_path)
+
+                  meta =
+                    if Keyword.get(opts, :metadata?, true),
+                      do: parse_session_metadata(full_path),
+                      else: %{model: "not loaded", msg_count: 0, preview: "(open to inspect)"}
 
                   [
                     Map.merge(meta, %{
@@ -456,8 +586,25 @@ defmodule Yoke.CLI.ConfigExplorer do
   # TUI State Management
   # ---------------------------------------------------------------------
 
-  def new_state(cwd) do
-    tree = scan_directory_tree(cwd)
+  def new_state(cwd, opts \\ []) do
+    tree = %{
+      local_dir: Path.join(cwd, ".yoke"),
+      global_dir: Path.expand("~/.yoke"),
+      config: %{},
+      rules: [],
+      sessions: [],
+      practices: [],
+      jobs: [],
+      skills: [],
+      errors: %{
+        file_path: Path.join(cwd, ".yoke/ERRORS_TO_FIX.lmml"),
+        count: 0,
+        entries: [],
+        content: ""
+      },
+      patterns: [],
+      analytics: %{}
+    }
 
     %{
       cwd: cwd,
@@ -467,7 +614,11 @@ defmodule Yoke.CLI.ConfigExplorer do
       cursor: 0,
       view_mode: :list,
       detail_scroll: 0,
-      status_notice: nil
+      status_notice: nil,
+      load_options: opts,
+      load_ref: nil,
+      loader_pid: nil,
+      loading: Map.new(@tabs, &{&1, :pending})
     }
   end
 
@@ -511,6 +662,10 @@ defmodule Yoke.CLI.ConfigExplorer do
   # Interactive Operations (Expand, Toggle, Edit, Delete, Add)
   # ---------------------------------------------------------------------
 
+  def handle_select(%{active_tab: tab, loading: loading} = state)
+      when :erlang.map_get(tab, loading) != :ready,
+      do: state
+
   def handle_select(state) do
     case state.view_mode do
       :list ->
@@ -538,6 +693,10 @@ defmodule Yoke.CLI.ConfigExplorer do
         %{state | view_mode: :list, detail_scroll: 0}
     end
   end
+
+  def handle_toggle(%{active_tab: tab, loading: loading} = state)
+      when :erlang.map_get(tab, loading) != :ready,
+      do: state
 
   def handle_toggle(state) do
     case state.active_tab do
@@ -573,6 +732,10 @@ defmodule Yoke.CLI.ConfigExplorer do
         state
     end
   end
+
+  def handle_edit(%{active_tab: tab, loading: loading} = state)
+      when :erlang.map_get(tab, loading) != :ready,
+      do: state
 
   def handle_edit(state) do
     case state.active_tab do
@@ -703,6 +866,10 @@ defmodule Yoke.CLI.ConfigExplorer do
     end
   end
 
+  def handle_delete(%{active_tab: tab, loading: loading} = state)
+      when :erlang.map_get(tab, loading) != :ready,
+      do: state
+
   def handle_delete(state) do
     case state.active_tab do
       :rules ->
@@ -781,6 +948,11 @@ defmodule Yoke.CLI.ConfigExplorer do
         state
     end
   end
+
+  def handle_add_rule(%{active_tab: tab, loading: loading} = state)
+      when :erlang.map_get(tab, loading) != :ready or
+             :erlang.map_get(:rules, loading) != :ready,
+      do: state
 
   def handle_add_rule(state) do
     input =
@@ -932,8 +1104,8 @@ defmodule Yoke.CLI.ConfigExplorer do
   end
 
   def refresh_state(state, notice \\ nil) do
-    updated_tree = scan_directory_tree(state.cwd)
-    %{state | tree: updated_tree, status_notice: notice}
+    state = start_loading(state)
+    %{state | status_notice: notice}
   end
 
   def display_width(str) when is_binary(str), do: Formatter.display_width(str)
@@ -990,9 +1162,26 @@ defmodule Yoke.CLI.ConfigExplorer do
     viewport_rows = max(5, rows - 6)
 
     content_lines =
-      case state.view_mode do
-        :list -> render_list_viewport(state, cols, viewport_rows, theme)
-        :detail -> render_detail_viewport(state, cols, viewport_rows, theme)
+      case Map.get(state.loading, state.active_tab, :ready) do
+        status when status in [:pending, :loading] ->
+          [
+            format_box_row(
+              "Loading #{tab_label(state.active_tab)}... Navigate or press q to exit.",
+              cols,
+              theme.border
+            )
+          ] ++
+            pad_empty_rows(viewport_rows - 1, cols, theme.border)
+
+        {:error, reason} ->
+          [format_box_row("Unable to load: #{reason}. Press r to retry.", cols, theme.border)] ++
+            pad_empty_rows(viewport_rows - 1, cols, theme.border)
+
+        :ready ->
+          case state.view_mode do
+            :list -> render_list_viewport(state, cols, viewport_rows, theme)
+            :detail -> render_detail_viewport(state, cols, viewport_rows, theme)
+          end
       end
 
     # 5. Status Notice Line or Divider
@@ -1025,7 +1214,7 @@ defmodule Yoke.CLI.ConfigExplorer do
         content_lines ++
         [div_line, info_line, footer_line]
 
-    IO.write(:user, Enum.join(full_output, "\r\n"))
+    IO.write(:user, "\e[H" <> Enum.join(full_output, "\r\n"))
     state
   end
 
@@ -1841,94 +2030,160 @@ defmodule Yoke.CLI.ConfigExplorer do
   # TUI Main Loop & Raw Mode Terminal Controls
   # ---------------------------------------------------------------------
 
-  def run_tty(cwd, _opts) do
+  def run_tty(cwd, opts) do
     enter_alternate_screen()
     set_raw_mode()
-    state = new_state(cwd)
+    state = new_state(cwd, opts)
+    owner = self()
+    input_ref = make_ref()
+    reader = Keyword.get(opts, :read_key, &read_key/0)
+    input_pid = spawn(fn -> input_loop(owner, input_ref, reader) end)
+    session_ref = make_ref()
 
     try do
-      tui_loop(state)
+      render_full_screen(state)
+      state = start_loading(state)
+      Process.put(session_ref, state)
+      tui_loop(state, {input_pid, input_ref, session_ref})
     after
+      cancel_loading(Process.delete(session_ref))
+      Process.exit(input_pid, :kill)
       TerminalOwner.clear()
       restore_tty_mode()
       exit_alternate_screen()
     end
   end
 
-  defp tui_loop(state) do
+  defp input_loop(owner, ref, reader) do
+    Process.flag(:trap_exit, true)
+    monitor = Process.monitor(owner)
+    input_wait(owner, monitor, ref, reader)
+  end
+
+  defp input_wait(owner, monitor, ref, reader) do
+    receive do
+      {:read, ^ref} ->
+        coordinator = self()
+
+        spawn_link(fn ->
+          key =
+            try do
+              reader.()
+            rescue
+              _ -> :eof
+            catch
+              _, _ -> :eof
+            end
+
+          send(coordinator, {:read_key, ref, key})
+        end)
+
+        input_wait(owner, monitor, ref, reader)
+
+      {:read_key, ^ref, key} ->
+        send(owner, {:explorer_key, ref, key})
+        input_wait(owner, monitor, ref, reader)
+
+      {:EXIT, _pid, _reason} ->
+        input_wait(owner, monitor, ref, reader)
+
+      {:DOWN, ^monitor, :process, ^owner, _} ->
+        exit(:shutdown)
+    end
+  end
+
+  defp tui_loop(state, {input_pid, input_ref, session_ref} = input) do
+    Process.put(session_ref, state)
     render_full_screen(state)
     TerminalOwner.set(&erase_for_log/1, &redraw_for_log/1, state)
+    send(input_pid, {:read, input_ref})
+    await_event(state, input)
+  end
 
-    case read_key() do
+  defp await_event(state, {_input_pid, input_ref, _session_ref} = input) do
+    receive do
+      {:explorer_load, _, _, _} = message ->
+        updated = apply_load_result(state, message)
+        render_full_screen(updated)
+        TerminalOwner.set(&erase_for_log/1, &redraw_for_log/1, updated)
+        await_event(updated, input)
+
+      {:explorer_key, ^input_ref, key} ->
+        handle_key(state, key, input)
+    end
+  end
+
+  defp handle_key(state, key, input) do
+    case key do
       :tab ->
-        tui_loop(switch_tab(state, 1))
+        tui_loop(switch_tab(state, 1), input)
 
       :shift_tab ->
-        tui_loop(switch_tab(state, -1))
+        tui_loop(switch_tab(state, -1), input)
 
       :right ->
-        tui_loop(switch_tab(state, 1))
+        tui_loop(switch_tab(state, 1), input)
 
       :left ->
-        tui_loop(switch_tab(state, -1))
+        tui_loop(switch_tab(state, -1), input)
 
       :up ->
-        tui_loop(move_cursor(state, -1))
+        tui_loop(move_cursor(state, -1), input)
 
       :down ->
-        tui_loop(move_cursor(state, 1))
+        tui_loop(move_cursor(state, 1), input)
 
       :page_up ->
-        tui_loop(move_cursor(state, -10))
+        tui_loop(move_cursor(state, -10), input)
 
       :page_down ->
-        tui_loop(move_cursor(state, 10))
+        tui_loop(move_cursor(state, 10), input)
 
       :home ->
-        tui_loop(%{state | cursor: 0, detail_scroll: 0})
+        tui_loop(%{state | cursor: 0, detail_scroll: 0}, input)
 
       :enter ->
-        tui_loop(handle_select(state))
+        tui_loop(handle_select(state), input)
 
       :space ->
-        tui_loop(handle_toggle(state))
+        tui_loop(handle_toggle(state), input)
 
       {:char, ?e} ->
-        tui_loop(handle_edit(state))
+        tui_loop(handle_edit(state), input)
 
       {:char, ?a} ->
-        tui_loop(handle_add_rule(state))
+        tui_loop(handle_add_rule(state), input)
 
       {:char, ?d} ->
-        tui_loop(handle_delete(state))
+        tui_loop(handle_delete(state), input)
 
       {:char, ?r} ->
-        tui_loop(refresh_state(state, "Refreshed configuration tree."))
+        tui_loop(refresh_state(state, "Refreshed configuration tree."), input)
 
       {:char, ?q} ->
         if state.view_mode == :detail do
-          tui_loop(%{state | view_mode: :list, detail_scroll: 0})
+          tui_loop(%{state | view_mode: :list, detail_scroll: 0}, input)
         else
           :ok
         end
 
       :escape ->
         if state.view_mode == :detail do
-          tui_loop(%{state | view_mode: :list, detail_scroll: 0})
+          tui_loop(%{state | view_mode: :list, detail_scroll: 0}, input)
         else
           :ok
         end
 
-      key when key in [:ctrl_c, :ctrl_q] ->
+      key when key in [:ctrl_c, :ctrl_q, :eof] ->
         :ok
 
       {:char, c} when c >= ?1 and c <= ?8 ->
         idx = c - ?1
         tab = Enum.at(@tabs, idx)
-        tui_loop(%{state | tab_index: idx, active_tab: tab, cursor: 0, view_mode: :list})
+        tui_loop(%{state | tab_index: idx, active_tab: tab, cursor: 0, view_mode: :list}, input)
 
       _ ->
-        tui_loop(state)
+        tui_loop(state, input)
     end
   end
 

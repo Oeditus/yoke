@@ -1525,7 +1525,7 @@ defmodule Yoke.Brain.Session do
       {:loop, %{period: period, count: count, cycle: cycle} = loop_info} ->
         cycle_desc = AgentLoop.format_cycle_description(cycle)
 
-        if previous_message_was_loop_warning?(state.messages) do
+        if AgentLoop.loop_warning_pending?(state.messages) do
           Logger.warning(
             "[Brain.Session] Model ignored previous loop break warning and repeated cycle (period #{period}, repeated #{count} times):\n#{cycle_desc}"
           )
@@ -1925,31 +1925,6 @@ defmodule Yoke.Brain.Session do
       _ ->
         {{:error, "Turn stopped by user: agent stuck in infinite tool loop."},
          %{state | status: :idle, suppress_tools: false}}
-    end
-  end
-
-  defp previous_message_was_loop_warning?(messages) do
-    if is_list(messages) do
-      messages
-      |> Enum.reverse()
-      |> Enum.find_value(false, fn msg ->
-        role = Map.get(msg, "role") || Map.get(msg, :role)
-        content = Map.get(msg, "content") || Map.get(msg, :content) || ""
-
-        cond do
-          role == "user" and
-              String.starts_with?(content, "SYSTEM NOTICE: Repetitive tool loop detected") ->
-            true
-
-          role == "user" ->
-            false
-
-          true ->
-            nil
-        end
-      end)
-    else
-      false
     end
   end
 

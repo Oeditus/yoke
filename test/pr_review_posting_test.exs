@@ -103,6 +103,45 @@ defmodule Yoke.PRReviewPostingTest do
     refute File.exists?(Path.join(directory, "comment.md"))
   end
 
+  test "severity circles survive the actual gh payload", %{directory: directory} do
+    for severity <- ["high", "medium", "low", "info"] do
+      finding = %{
+        file: "lib/test.ex",
+        line: 1,
+        severity: severity,
+        kind: "issue",
+        title: "Missing guard",
+        description: "The caller crashes. :warning:",
+        fix_suggestion: "Add a guard."
+      }
+
+      body = PRReview.build_pr_comment_body([finding])
+      payload = PRReview.build_atomic_review_payload([finding], body)
+
+      assert {:ok, %{event: "REQUEST_CHANGES"}} =
+               PRReview.post_atomic_review("42", payload, directory)
+
+      posted = directory |> Path.join("payload.json") |> File.read!() |> Json.decode!()
+      assert [%{"body" => comment}] = posted["comments"]
+      assert comment =~ Markdown.severity_marker(severity)
+      refute comment =~ ":warning:"
+      refute posted["body"] =~ "Missing guard"
+    end
+  end
+
+  test "review decisions never silently degrade to a conversation comment", %{
+    directory: directory
+  } do
+    File.write!(Path.join(directory, "fail-api"), "")
+
+    for event <- ["APPROVE", "REQUEST_CHANGES"] do
+      payload = %{"event" => event, "body" => "Review", "comments" => []}
+      assert {:error, message} = PRReview.post_atomic_review("42", payload, directory)
+      assert message =~ "No fallback comment was posted"
+      refute File.exists?(Path.join(directory, "comment.md"))
+    end
+  end
+
   test "direct posting and its review fallback enforce the same policy", %{directory: directory} do
     body = "## \u{1FAA2} Review from Alice\nNotes \u{1F680} :warning:"
 

@@ -473,39 +473,48 @@ defmodule Yoke.Client.DeepSeekAPI do
         Map.get(msg, "reasoning") ||
         thinking_from_tags
 
-    parsed_tool_calls =
-      Enum.map(tool_calls, fn tc ->
-        fn_data = Map.get(tc, "function", %{})
-        args_raw = Map.get(fn_data, "arguments", "{}")
+    with {:ok, parsed_tool_calls} <- parse_tool_calls(tool_calls) do
+      usage_map = %{
+        prompt_tokens: Map.get(usage, "prompt_tokens", 0),
+        completion_tokens: Map.get(usage, "completion_tokens", 0),
+        total_tokens: Map.get(usage, "total_tokens", 0)
+      }
 
-        args =
-          case Yoke.Json.decode(args_raw) do
-            {:ok, parsed} -> parsed
-            _ -> %{}
-          end
+      {:ok,
+       %{
+         role: "assistant",
+         content: content,
+         reasoning_content: reasoning_content,
+         finish_reason: Map.get(choice, "finish_reason"),
+         tool_calls: parsed_tool_calls,
+         usage: usage_map
+       }}
+    end
+  end
 
-        %{
-          id: Map.get(tc, "id"),
-          name: Map.get(fn_data, "name"),
-          arguments: args
-        }
-      end)
+  defp parse_tool_calls(tool_calls) do
+    Enum.reduce_while(tool_calls, {:ok, []}, fn tc, {:ok, calls} ->
+      fn_data = Map.get(tc, "function", %{})
+      raw = Map.get(fn_data, "arguments", "{}")
+      decoded = if is_binary(raw), do: Yoke.Json.decode(raw), else: {:ok, raw}
 
-    usage_map = %{
-      prompt_tokens: Map.get(usage, "prompt_tokens", 0),
-      completion_tokens: Map.get(usage, "completion_tokens", 0),
-      total_tokens: Map.get(usage, "total_tokens", 0)
-    }
+      case decoded do
+        {:ok, args} when is_map(args) ->
+          call = %{id: Map.get(tc, "id"), name: Map.get(fn_data, "name"), arguments: args}
+          {:cont, {:ok, [call | calls]}}
 
-    {:ok,
-     %{
-       role: "assistant",
-       content: content,
-       reasoning_content: reasoning_content,
-       finish_reason: Map.get(choice, "finish_reason"),
-       tool_calls: parsed_tool_calls,
-       usage: usage_map
-     }}
+        _ ->
+          # Never erase malformed edit requests into identical empty calls.
+          # Do not echo argument content: it may contain private file data.
+          {:halt,
+           {:error,
+            "Invalid tool arguments for #{Map.get(fn_data, "name")}: expected a JSON object."}}
+      end
+    end)
+    |> case do
+      {:ok, calls} -> {:ok, Enum.reverse(calls)}
+      error -> error
+    end
   end
 
   @doc "Normalizes an LLM API endpoint URL to ensure valid full chat completions path."

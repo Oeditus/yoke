@@ -142,7 +142,7 @@ defmodule Yoke.CLI.Formatter do
       #{cyan()}/finish [files] [--commit-only]#{reset()} or #{cyan()}/pr#{reset()} Format, structured commit (5 sections) & PR
       #{cyan()}/god [on|off|status]#{reset()}    Toggle God mode (auto-answer all model questions/confirmations)
       #{cyan()}/guide#{reset()} or #{cyan()}/docs#{reset()}        Display Getting Started & Customization Guide summary
-      #{cyan()}/help#{reset()}                   Show this help menu
+      #{cyan()}/help [command]#{reset()}         Show command menu or detailed help (e.g. /help workflow)
       #{cyan()}/import <path> [id]#{reset()}     Import an external session .lmml or JSON file into Yoke's session store
       #{cyan()}/jobs [kill <id>|kill all]#{reset()} List or kill background jobs
       #{cyan()}/lessons [add <text>]#{reset()}   View or record operational lessons learned in project/lessons.md
@@ -643,8 +643,10 @@ defmodule Yoke.CLI.Formatter do
 
     #{bold()}Design & Review Standards:#{reset()}
       • #{bold()}Human-in-the-loop:#{reset()} Claude/DeepSeek proposes; engineer decides every comment.
-      • #{bold()}Atomic Reviews:#{reset()} Submits review event (#{green()}APPROVE#{reset()}, #{cyan()}COMMENT#{reset()}, #{red()}REQUEST_CHANGES#{reset()})
-        with right-side diff inline comments and committable ```suggestion blocks in a single call.
+      • #{bold()}Atomic Reviews:#{reset()} Requests changes when accepted issues remain; approves clean or endorsement-only reviews.
+        Posting is opt-in, with right-side diff comments and committable ```suggestion blocks in a single call.
+        Severity uses red (high), yellow (medium), and blue (low/info) circles.
+        The main review is brief; finding details appear only inline, or once in off-diff observations.
       • #{bold()}Self-Critique:#{reset()} 10-point checklist filtering false flags, bikeshedding, and linters.
       • #{bold()}Typography:#{reset()} Enforces real em dashes (—) and proper typographic quotes (“ ” and ‘ ’).
       • #{bold()}Endorsements:#{reset()} Optional plain-text praise is separate from issues and never becomes a fix request.
