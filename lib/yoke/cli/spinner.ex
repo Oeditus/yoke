@@ -68,13 +68,6 @@ defmodule Yoke.CLI.Spinner do
 
   @doc "Resumes spinner redraws after a previous `pause/0`. Safe to call even if the spinner isn't running."
   def resume do
-    # Wake a Ctrl+Q watcher that parked itself while the modal owned the TTY
-    # (`Yoke.CLI.Interrupt.watch_for_interrupt/1`). Sent unconditionally and
-    # harmlessly ignored when no watcher is parked, so ordering relative to
-    # `Interrupt.resume/0` below does not matter.
-    Yoke.CLI.Interrupt.wake_watcher()
-    Yoke.CLI.Interrupt.resume()
-
     if active?() do
       try do
         GenServer.call(__MODULE__, :resume, 500)
@@ -84,6 +77,11 @@ defmodule Yoke.CLI.Spinner do
     else
       :ok
     end
+
+    # Publish the unpaused state before spawning or waking a watcher.
+    # Otherwise it can consume its wake, see paused=true, and park for 30s.
+    Yoke.CLI.Interrupt.resume()
+    Yoke.CLI.Interrupt.wake_watcher()
   end
 
   @doc """

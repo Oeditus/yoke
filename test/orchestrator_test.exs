@@ -71,44 +71,42 @@ defmodule Yoke.TaskEngine.OrchestratorTest do
   end
 
   describe "lock acquisition" do
-    # A lock is held only for the duration of one tool call. Before the
-    # deadline, a contended worker recursed forever, waking 100x/second: a
-    # batch holding two `ask_question` calls spun for as long as the human
-    # took to answer, and a lock leaked by a `:brutal_kill`ed task (which
-    # skips `after` blocks, and therefore `release_lock/1`) deadlocked every
-    # later write to that path permanently.
+    # Exercise actual contention on the tool's file_lock key, rather than
+    # waiting for an unrelated lock holder to exit before starting a tool.
     test "a contended lock is acquired once the holder releases it" do
-      key = "test_lock:#{System.unique_integer([:positive])}"
+      path = Path.join(System.tmp_dir!(), "lock_ok_#{System.unique_integer([:positive])}.txt")
+      key = Orchestrator.get_lock_resource("write_file", %{"path" => path})
+      caller = self()
+      on_exit(fn -> File.rm(path) end)
 
-      # Hold the lock from a separate process, release it shortly after.
       holder =
         spawn_link(fn ->
           {:ok, _} = Registry.register(Yoke.TaskEngine.LockRegistry, key, :locked)
-          Process.sleep(100)
-          Registry.unregister(Yoke.TaskEngine.LockRegistry, key)
+          send(caller, :lock_held)
+          receive do: (:release -> Registry.unregister(Yoke.TaskEngine.LockRegistry, key))
         end)
 
-      ref = Process.monitor(holder)
-      assert_receive {:DOWN, ^ref, :process, ^holder, _}, 2_000
+      on_exit(fn -> if Process.alive?(holder), do: Process.exit(holder, :kill) end)
+      assert_receive :lock_held
 
-      # The lock is now free; a write to the same path must succeed rather
-      # than hang or fail.
       session_state = %{hands: %Yoke.Hands.Executor{mode: :local}}
-      path = Path.join(System.tmp_dir!(), "lock_ok_#{System.unique_integer([:positive])}.txt")
 
-      results =
-        Orchestrator.execute_batch(
-          [%{id: "w1", name: "write_file", arguments: %{"path" => path, "content" => "ok"}}],
-          session_state
-        )
+      worker =
+        Task.async(fn ->
+          Orchestrator.execute_batch(
+            [%{id: "w1", name: "write_file", arguments: %{"path" => path, "content" => "ok"}}],
+            session_state
+          )
+        end)
 
-      assert [{_tc, {:ok, _}}] = results
-      on_exit(fn -> File.rm(path) end)
+      assert Task.yield(worker, 50) == nil
+      refute File.exists?(path)
+      send(holder, :release)
+      assert [{_tc, {:ok, _}}] = Task.await(worker)
+      assert File.read!(path) == "ok"
     end
 
-    test "the lock wait is bounded rather than infinite" do
-      # Guards against a regression to unbounded recursion: the deadline must
-      # be a finite, positive number of milliseconds.
+    test "the configured lock wait is finite and positive" do
       assert is_integer(Orchestrator.lock_timeout_ms())
       assert Orchestrator.lock_timeout_ms() > 0
     end

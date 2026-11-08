@@ -5,8 +5,11 @@ Application.put_env(:yoke, :history_file, test_history_path)
 Application.put_env(:yoke, :auto_start_ragex, false)
 Application.put_env(:yoke, :system_halt_enabled, false)
 Application.put_env(:yoke, :god_mode, true)
-Application.put_env(:nx, :default_backend, Nx.BinaryBackend)
-Application.put_env(:exla, :start_log_sink, false)
+
+if Application.get_env(:yoke, :embeddings_enabled, false) do
+  Application.put_env(:nx, :default_backend, Nx.BinaryBackend)
+  Application.put_env(:exla, :start_log_sink, false)
+end
 
 # `mix test --no-start` skips `app.start`, so `Yoke.Supervisor` and everything
 # under it (`Yoke.Registry`, `Yoke.Brain.SessionSupervisor`, the TaskEngine,

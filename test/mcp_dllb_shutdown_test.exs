@@ -184,6 +184,40 @@ defmodule Yoke.MCPDllbShutdownTest do
              :sys.get_state(ServerManager)
   end
 
+  test "shutdown settles an in-flight activation without blocking manager queries", %{root: root} do
+    {project, proc, instance_file} = register_instance(root, "in_flight")
+    {_other, other_proc, other_file} = register_instance(root, "unrelated")
+    manager = Process.whereis(ServerManager)
+    activation_tag = make_ref()
+    shutdown_tag = make_ref()
+    :sys.suspend(DllbPM)
+
+    try do
+      send(manager, {:"$gen_call", {self(), activation_tag}, {:activate_dllb_project, project}})
+
+      assert [{_ref, %{project: ^project}}] =
+               Map.to_list(:sys.get_state(manager).dllb_activations)
+
+      assert is_list(ServerManager.list_servers())
+
+      send(manager, {:"$gen_call", {self(), shutdown_tag}, :stop_ragex})
+      assert :sys.get_state(manager).ragex_status == :stopped
+      refute_receive {^shutdown_tag, :ok}, 20
+      assert is_list(ServerManager.list_servers())
+    after
+      :sys.resume(DllbPM)
+    end
+
+    assert_receive {^activation_tag, {:error, :shutting_down}}, 3_000
+    assert_receive {^shutdown_tag, :ok}, 3_000
+    assert Port.info(proc) == nil
+    refute File.exists?(instance_file)
+    assert Port.info(other_proc) != nil
+    assert File.exists?(other_file)
+    assert :sys.get_state(manager).dllb_activations == %{}
+    assert :sys.get_state(manager).dllb_projects == MapSet.new()
+  end
+
   test "late startup messages cannot recreate a stopped instance", %{root: root} do
     assert :ok = ServerManager.stop_ragex()
 

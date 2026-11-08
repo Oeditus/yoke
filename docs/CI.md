@@ -717,14 +717,27 @@ hide the problem until a dependency update or cache eviction triggers a rebuild.
 and `mix.lock` locks Fine 0.1.6. The three-component requirement excludes 0.2,
 including during `mix deps.update --all`. Remove or revise this constraint
 only after upgrading EXLA to a version supporting Fine's new decoder API.
-Fine remains excluded from the escript dependency tree.
+Fine remains excluded from the escript and default test dependency trees.
 
-The CI, Ragex CI, and release workflows set `XLA_TARGET=cpu` to select the
+Ordinary `mix test` omits the optional Bumblebee/Nx/EXLA/Image group completely;
+it boots Yoke and Ragex without CUDA/NCCL and without loading EXLA. Both config
+files honor the build-time `:yoke, :embeddings_enabled` setting. Selecting
+`Nx.BinaryBackend` or empty EXLA clients alone cannot prevent EXLA application
+startup, and changing an environment variable cannot repair an existing CUDA NIF.
+
+`YOKE_EMBEDDINGS=true mix test` opts back into native integration testing.
+Its artifacts are isolated in `_build/test_native`, honoring `MIX_BUILD_ROOT`,
+so alternating modes cannot reuse a stale native-enabled `.app` file.
+Dev/prod builds retain the native group by default; escript builds always
+exclude it. Native-enabled jobs in the CI, Ragex CI, and release workflows set
+`XLA_TARGET=cpu` to select the
 CPU-only XLA archive and `EXLA_CPU_ONLY=true` to skip CUDA detection during
 the NIF build. `EXLA_TARGET` and `EXLA_BUILD` are not supported settings.
 Native builds must work without a warm cache; caches are an optimization,
-not a compatibility workaround. The headless job sets `EXLA_FORCE_REBUILD=true`
-for compilation so a cached NIF cannot hide another decoder API mismatch.
+not a compatibility workaround. The headless job asserts EXLA is absent on
+the default test boot path. The linters job separately forces an EXLA source
+rebuild and runs a CPU JIT smoke test, so native coverage is retained without
+making every unit-test run depend on this stack.
 
 #### OTP matrix and native caches
 

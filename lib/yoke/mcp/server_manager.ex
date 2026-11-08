@@ -89,7 +89,14 @@ defmodule Yoke.MCP.ServerManager do
   def init(_opts) do
     Process.flag(:trap_exit, true)
 
-    state = %{servers: %{}, waiting_callers: [], dllb_projects: MapSet.new(), ragex_task: nil}
+    state = %{
+      servers: %{},
+      waiting_callers: [],
+      dllb_projects: MapSet.new(),
+      ragex_task: nil,
+      dllb_activations: %{},
+      shutdown_callers: []
+    }
 
     if Application.get_env(:yoke, :auto_start_ragex, true) do
       send(self(), :auto_start_ragex)
@@ -108,6 +115,16 @@ defmodule Yoke.MCP.ServerManager do
     cwd = project_dir()
     task = start_ragex_task(cwd, [])
     {:noreply, %{state | ragex_status: :starting, ragex_task: task}}
+  end
+
+  def handle_info({ref, result}, state) when is_map_key(state.dllb_activations, ref) do
+    Process.demonitor(ref, [:flush])
+    finish_dllb_activation(ref, result, state)
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state)
+      when is_map_key(state.dllb_activations, ref) do
+    finish_dllb_activation(ref, {:error, {:activation_exited, reason}}, state)
   end
 
   def handle_info(msg, state) do
@@ -153,19 +170,6 @@ defmodule Yoke.MCP.ServerManager do
     end)
 
     {:noreply, %{state | ragex_status: :ready, waiting_callers: [], ragex_task: nil}}
-  end
-
-  @impl true
-  def handle_cast({:dllb_project_activated, project, :ok, from}, state) do
-    # Record before indexing begins, so failed or unfinished initialization
-    # cannot leave an instance outside Yoke's shutdown scope.
-    GenServer.reply(from, :ok)
-    {:noreply, %{state | dllb_projects: MapSet.put(state.dllb_projects, project)}}
-  end
-
-  def handle_cast({:dllb_project_activated, _project, {:error, _reason} = error, from}, state) do
-    GenServer.reply(from, error)
-    {:noreply, state}
   end
 
   @impl true
@@ -220,6 +224,10 @@ defmodule Yoke.MCP.ServerManager do
   end
 
   @impl true
+  def handle_call({:start_ragex, _target_dir, _opts}, _from, %{shutdown_callers: [_ | _]} = state) do
+    {:reply, {:error, :shutting_down}, state}
+  end
+
   def handle_call({:start_ragex, target_dir, opts}, from, state) do
     case state.ragex_status do
       :starting ->
@@ -245,19 +253,14 @@ defmodule Yoke.MCP.ServerManager do
   # the blocking call there too and reply asynchronously.
   def handle_call({:activate_dllb_project, target_dir}, from, state) do
     project = Path.expand(target_dir)
-    server = self()
+    task = Task.async(fn -> activate_dllb_project_safely(project) end)
+    activation = %{task: task, project: project, from: from}
 
-    {:ok, _pid} =
-      Task.start(fn ->
-        result = activate_dllb_project_safely(project)
-        GenServer.cast(server, {:dllb_project_activated, project, result, from})
-      end)
-
-    {:noreply, state}
+    {:noreply, %{state | dllb_activations: Map.put(state.dllb_activations, task.ref, activation)}}
   end
 
   @impl true
-  def handle_call(:stop_ragex, _from, state) do
+  def handle_call(:stop_ragex, from, state) do
     stop_ragex_task(state.ragex_task)
     Enum.each(state.dllb_projects, &stop_dllb_project/1)
 
@@ -266,15 +269,17 @@ defmodule Yoke.MCP.ServerManager do
       caller -> GenServer.reply(caller, {:error, :shutting_down})
     end)
 
-    {:reply, :ok,
-     %{
-       state
-       | servers: Map.delete(state.servers, "ragex"),
-         dllb_projects: MapSet.new(),
-         ragex_status: :stopped,
-         ragex_task: nil,
-         waiting_callers: []
-     }}
+    state = %{
+      state
+      | servers: Map.delete(state.servers, "ragex"),
+        dllb_projects: MapSet.new(),
+        ragex_status: :stopped,
+        ragex_task: nil,
+        waiting_callers: [],
+        shutdown_callers: [from | state.shutdown_callers]
+    }
+
+    {:noreply, finish_shutdown(state)}
   end
 
   @impl true
@@ -319,8 +324,51 @@ defmodule Yoke.MCP.ServerManager do
   @impl true
   def terminate(_reason, state) do
     stop_ragex_task(state.ragex_task)
+
+    # Killing an activation Task would not cancel its in-flight call to
+    # DllbPM: the daemon could still be created after cleanup. Settle it first.
+    Enum.each(state.dllb_activations, fn {_ref, activation} ->
+      await_dllb_activation(activation.task)
+      stop_dllb_project(activation.project)
+    end)
+
     Enum.each(state.dllb_projects, &stop_dllb_project/1)
     :ok
+  end
+
+  defp finish_dllb_activation(ref, result, state) do
+    {activation, pending} = Map.pop!(state.dllb_activations, ref)
+    state = %{state | dllb_activations: pending}
+
+    state =
+      if state.ragex_status == :stopped do
+        stop_dllb_project(activation.project)
+        GenServer.reply(activation.from, {:error, :shutting_down})
+        state
+      else
+        GenServer.reply(activation.from, result)
+
+        if result == :ok do
+          %{state | dllb_projects: MapSet.put(state.dllb_projects, activation.project)}
+        else
+          state
+        end
+      end
+
+    {:noreply, finish_shutdown(state)}
+  end
+
+  defp finish_shutdown(%{dllb_activations: pending} = state) when map_size(pending) == 0 do
+    Enum.each(state.shutdown_callers, &GenServer.reply(&1, :ok))
+    %{state | shutdown_callers: []}
+  end
+
+  defp finish_shutdown(state), do: state
+
+  defp await_dllb_activation(task) do
+    Task.await(task, :infinity)
+  catch
+    :exit, _ -> :ok
   end
 
   defp start_ragex_task(target_dir, opts) do

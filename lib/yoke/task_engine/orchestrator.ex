@@ -243,11 +243,10 @@ defmodule Yoke.TaskEngine.Orchestrator do
   def get_lock_resource(_, _), do: nil
 
   # How long a worker waits for a contended lock before giving up. A lock is
-  # only held for the duration of one tool call, so anything approaching this
-  # bound means the holder leaked it (e.g. its `Task` was `:brutal_kill`ed by
-  # the batch timeout, which skips `after` blocks and therefore
-  # `release_lock/1`). Waiting forever would deadlock every later write to
-  # that path; failing the call lets the model see the problem and retry.
+  # only held for the duration of one tool call, but a live holder can stall
+  # indefinitely (for example, while awaiting a modal answer). Registry
+  # automatically removes a dead owner's entries, even after :brutal_kill.
+  # Bound the wait on a live owner so the model can see the failure and retry.
   @lock_timeout_ms 60_000
   # Poll interval while contended. Deliberately coarser than the old 10ms
   # spin: a blocked worker used to wake 100x/second for as long as a human

@@ -136,6 +136,38 @@ defmodule Yoke.CLI.SpinnerTest do
       assert_receive :watcher_woken, 1_000
     end
 
+    test "resume publishes unpaused state before waking the watcher" do
+      alias Yoke.CLI.Interrupt
+
+      {:ok, spinner} = Spinner.start(title: "Paused")
+      Spinner.pause()
+      caller = self()
+
+      watcher =
+        spawn_link(fn ->
+          receive do
+            {:yoke_interrupt, :resume} -> send(caller, :watcher_woken)
+          end
+        end)
+
+      Interrupt.__put_watcher_for_test__(watcher)
+      :sys.suspend(spinner)
+
+      on_exit(fn ->
+        if Process.alive?(spinner), do: :sys.resume(spinner)
+        Interrupt.__put_watcher_for_test__(nil)
+      end)
+
+      resumer = Task.async(fn -> Spinner.resume() end)
+      await_resume_call(spinner, 200)
+      refute_receive :watcher_woken, 20
+
+      :sys.resume(spinner)
+      assert :ok = Task.await(resumer)
+      assert_receive :watcher_woken
+      refute Spinner.paused?()
+    end
+
     test "wake_watcher/0 is a no-op when no watcher is parked" do
       alias Yoke.CLI.Interrupt
 
@@ -145,4 +177,18 @@ defmodule Yoke.CLI.SpinnerTest do
       assert :ok = Interrupt.wake_watcher()
     end
   end
+
+  defp await_resume_call(spinner, attempts) when attempts > 0 do
+    {:messages, messages} = Process.info(spinner, :messages)
+
+    if Enum.any?(messages, &match?({:"$gen_call", _, :resume}, &1)) do
+      :ok
+    else
+      Process.sleep(1)
+      await_resume_call(spinner, attempts - 1)
+    end
+  end
+
+  defp await_resume_call(_spinner, 0),
+    do: flunk("Spinner.resume did not reach the paused spinner")
 end

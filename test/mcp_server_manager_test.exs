@@ -34,25 +34,41 @@ defmodule Yoke.MCPServerManagerTest do
     # `handle_call` blocked this GenServer's mailbox -- and therefore every
     # `get_tool` and MCP call in every session -- for as long as the external
     # process took to come up.
-    test "the manager answers other calls while activation is in flight" do
+    @tag :tmp_dir
+    test "the manager answers other calls while activation is in flight", %{tmp_dir: project} do
+      alias Ragex.Dllb.ProjectManager, as: DllbPM
+
       pid = Process.whereis(MCPServerManager)
       assert is_pid(pid)
+      manager_state = :sys.get_state(pid)
+      dllb_state = :sys.get_state(DllbPM)
+      mode = Application.get_env(:ragex, :dllb_mode)
 
-      task =
-        Task.async(fn ->
-          GenServer.call(pid, {:activate_dllb_project, "/tmp/yoke_no_such_project"}, 10_000)
-        end)
+      on_exit(fn ->
+        :sys.replace_state(pid, fn _ -> manager_state end)
+        :sys.replace_state(DllbPM, fn _ -> dllb_state end)
+        Application.put_env(:ragex, :dllb_mode, mode)
+      end)
 
-      # While activation is in flight, an unrelated call must return
-      # promptly. A blocking implementation would queue behind it.
-      {micros, servers} = :timer.tc(fn -> MCPServerManager.list_servers() end)
+      Application.put_env(:ragex, :dllb_mode, :per_project)
+      info = %{project_path: project, owned?: false, proc: nil, pool_pid: nil}
 
-      assert is_list(servers)
-      assert micros < 1_000_000, "list_servers/0 blocked for #{micros}us during activation"
+      :sys.replace_state(DllbPM, &%{&1 | instances: Map.put(&1.instances, project, info)})
+      :sys.replace_state(pid, &%{&1 | ragex_status: :ready})
+      tag = make_ref()
+      :sys.suspend(DllbPM)
 
-      # The caller still receives a reply (success or a diagnosable error).
-      result = Task.await(task, 15_000)
-      assert result == :ok or match?({:error, _}, result)
+      try do
+        # Same sender guarantees activation precedes the query in the mailbox;
+        # the suspended manager guarantees activation cannot finish first.
+        send(pid, {:"$gen_call", {self(), tag}, {:activate_dllb_project, project}})
+        assert is_list(GenServer.call(pid, :list_servers, 1_000))
+      after
+        :sys.resume(DllbPM)
+      end
+
+      assert_receive {^tag, :ok}, 1_000
+      assert :ok = MCPServerManager.stop_ragex()
     end
   end
 

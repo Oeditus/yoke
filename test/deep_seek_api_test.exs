@@ -1,5 +1,6 @@
 defmodule Yoke.DeepSeekAPITest do
-  use ExUnit.Case, async: true
+  # This module changes process-wide model/timeout configuration.
+  use ExUnit.Case, async: false
 
   alias Yoke.Client.DeepSeekAPI
 
@@ -7,7 +8,7 @@ defmodule Yoke.DeepSeekAPITest do
     messages = [%{"role" => "user", "content" => "Hello DeepSeek"}]
 
     assert {:ok, %{content: content}} =
-             DeepSeekAPI.chat_completion(messages, [], model: "deepseek-chat")
+             DeepSeekAPI.chat_completion(messages, [], model: "deepseek-chat", mock: true)
 
     assert is_binary(content)
   end
@@ -16,7 +17,7 @@ defmodule Yoke.DeepSeekAPITest do
     messages = [%{"role" => "user", "content" => "Explain quantum physics"}]
 
     assert {:ok, %{content: content, reasoning_content: reasoning}} =
-             DeepSeekAPI.chat_completion(messages, [], model: "deepseek-reasoner")
+             DeepSeekAPI.chat_completion(messages, [], model: "deepseek-reasoner", mock: true)
 
     assert is_binary(content)
     assert is_binary(reasoning)
@@ -26,7 +27,7 @@ defmodule Yoke.DeepSeekAPITest do
     messages = [%{"role" => "user", "content" => "Explain quantum physics"}]
 
     assert {:ok, %{content: content, reasoning_content: nil}} =
-             DeepSeekAPI.chat_completion(messages, [], model: "deepseek-flash")
+             DeepSeekAPI.chat_completion(messages, [], model: "deepseek-flash", mock: true)
 
     assert is_binary(content)
   end
@@ -107,7 +108,7 @@ defmodule Yoke.DeepSeekAPITest do
       messages = [%{"role" => "user", "content" => "Hello"}]
 
       assert {:ok, %{content: content}} =
-               DeepSeekAPI.chat_completion(messages, [], max_tokens: 64_000)
+               DeepSeekAPI.chat_completion(messages, [], max_tokens: 64_000, mock: true)
 
       assert is_binary(content)
     end
@@ -215,8 +216,8 @@ defmodule Yoke.DeepSeekAPITest do
     # `chat_completion/3`, a provider that accepted the TCP connection and
     # then never responded wedged the session permanently. `yoke fix`
     # documented the hazard and worked around it with its own 600s
-    # `Task.yield`; bounding it at the source makes that workaround
-    # redundant rather than load-bearing.
+    # `Task.yield`; the per-attempt timeout bounds stalled receives, but
+    # retries mean the separate whole-turn timeout is still useful.
     test "the receive timeout is finite and generous enough for slow models" do
       timeout = DeepSeekAPI.receive_timeout_ms()
 
@@ -270,7 +271,7 @@ defmodule Yoke.DeepSeekAPITest do
       # timeout -- it does not surface as an opaque transport error, and it
       # does not hang.
       assert {:error, message} = result
-      assert message =~ "timed out" or message =~ "HTTP request failed"
+      assert message =~ "HTTP request timed out after 150ms"
     end
   end
 

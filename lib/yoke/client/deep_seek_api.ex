@@ -6,14 +6,15 @@ defmodule Yoke.Client.DeepSeekAPI do
   """
   require Logger
 
-  # Wall-clock ceiling for one chat-completion HTTP response.
+  # Finite receive timeout for one chat-completion HTTP attempt.
   #
   # This used to be `:infinity`, which meant a provider that accepted the TCP
   # connection and then never responded wedged the session forever: the call
   # chain is `Session.send_user_message/2` (`:infinity`) -> `run_agent_loop` ->
   # `chat_completion/3`, so nothing above this point imposed a bound either.
   # `Yoke.CLI.Fix` documents the hazard and works around it with its own
-  # 600s `Task.yield`; bounding it here removes the need for that workaround.
+  # 600s `Task.yield`. Retries can span multiple receive windows, so the
+  # separate whole-turn timeout remains useful.
   #
   # 300s is deliberately generous: a long reasoning-model completion can
   # legitimately take minutes. It is a liveness backstop, not a latency target.

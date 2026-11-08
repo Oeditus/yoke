@@ -16,9 +16,11 @@ defmodule Yoke.ContextCompressorTest do
       %{"role" => "assistant", "content" => "Refactored session.ex successfully"}
     ]
 
-    assert {:ok, new_messages, summary} = ContextCompressor.compress_messages(messages)
+    assert {:ok, new_messages, summary} =
+             ContextCompressor.compress_messages(messages, mock: true)
+
     assert is_binary(summary)
-    assert length(new_messages) == 2
+    assert [_, _] = new_messages
     assert Enum.at(new_messages, 0)["role"] == "system"
 
     assert String.contains?(
