@@ -2980,11 +2980,14 @@ defmodule Yoke.CLI.Repl do
 
   defp maybe_post_review_to_github(accepted_findings, pr_body, ctx) do
     event = Yoke.PRReview.review_event(accepted_findings)
-    post_question = "Submit #{event} review to GitHub?"
+    verdict = Yoke.PRReview.review_verdict(accepted_findings)
+    review_label = if event == "COMMENT", do: "#{verdict} (comment only)", else: verdict
+    post_question = "Submit code review: #{review_label}?"
+    submit_option = "Submit code review: #{review_label}"
 
     post_options = [
       "Skip posting to GitHub (Recommended)",
-      "Submit #{event} review"
+      submit_option
     ]
 
     post_choice = Yoke.CLI.QuestionPrompt.ask_single_question(post_question, post_options)
@@ -2996,7 +2999,7 @@ defmodule Yoke.CLI.Repl do
         _ -> "Skip posting to GitHub"
       end
 
-    if selected_post == "Submit #{event} review" do
+    if selected_post == submit_option do
       case Yoke.PRReview.post_context_review(ctx, accepted_findings, pr_body, event) do
         {:ok, pr_info} ->
           comments_count =
@@ -3004,7 +3007,7 @@ defmodule Yoke.CLI.Repl do
 
           IO.puts(
             Formatter.format_success(
-              "Successfully posted #{event} review with #{comments_count} inline comment(s) to GitHub PR ##{pr_info.number} (#{pr_info.url})"
+              "Successfully posted code review: #{review_label}, with #{comments_count} inline comment(s) to GitHub PR ##{pr_info.number} (#{pr_info.url})"
             )
           )
 

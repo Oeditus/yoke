@@ -173,9 +173,17 @@ defmodule Yoke.PRReview do
   """
   def actionable_findings(findings), do: Enum.reject(findings, &endorsement?/1)
 
-  @doc "Selects the GitHub decision from actionable findings, never from endorsements."
+  @doc "Returns the code-review verdict independently of GitHub approval permissions."
+  def review_verdict(findings) do
+    if actionable_findings(findings) == [], do: "Approved", else: "Changes requested"
+  end
+
+  @doc """
+  Selects the GitHub event from actionable findings. A clean code review is
+  published as a COMMENT, not a formal PR approval that can satisfy merge rules.
+  """
   def review_event(findings) do
-    if actionable_findings(findings) == [], do: "APPROVE", else: "REQUEST_CHANGES"
+    if actionable_findings(findings) == [], do: "COMMENT", else: "REQUEST_CHANGES"
   end
 
   defp parse_int(str) do
@@ -404,6 +412,8 @@ defmodule Yoke.PRReview do
 
     """
     ## 🪢 Review from #{assistant_name}
+
+    **Code review: #{review_verdict(accepted_findings)}**
 
     #{summary}
     """

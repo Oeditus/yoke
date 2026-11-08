@@ -11,6 +11,8 @@ defmodule Yoke.PRReviewTest do
         payload = PRReview.build_atomic_review_payload([issue], body)
         assert payload["event"] == "REQUEST_CHANGES"
         assert PRReview.review_event([issue]) == "REQUEST_CHANGES"
+        assert PRReview.review_verdict([issue]) == "Changes requested"
+        assert payload["body"] =~ "**Code review: Changes requested**"
         assert [%{"body" => comment}] = payload["comments"]
         assert comment =~ PRReview.Markdown.severity_marker(severity)
         refute payload["body"] =~ issue.title
@@ -19,14 +21,16 @@ defmodule Yoke.PRReviewTest do
       end
     end
 
-    test "approves clean and endorsement-only reviews" do
+    test "clean and endorsement-only verdicts are comments, not formal PR approvals" do
       endorsement = review_finding(%{kind: "endorsement", title: "Clean design"})
 
       for findings <- [[], [endorsement]] do
         body = PRReview.build_pr_comment_body(findings)
         payload = PRReview.build_atomic_review_payload(findings, body)
-        assert PRReview.review_event(findings) == "APPROVE"
-        assert payload["event"] == "APPROVE"
+        assert PRReview.review_verdict(findings) == "Approved"
+        assert PRReview.review_event(findings) == "COMMENT"
+        assert payload["event"] == "COMMENT"
+        assert payload["body"] =~ "**Code review: Approved**"
         assert payload["body"] =~ "No actionable issues found."
       end
     end

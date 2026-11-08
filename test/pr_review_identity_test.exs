@@ -52,6 +52,10 @@ defmodule Yoke.PRReview.IdentityTest do
           if [ "$1" = "--input" ]; then /bin/cp "$2" "$root/posted.json"; break; fi
           shift
         done
+        if /bin/grep -Eq '"event"[[:space:]]*:[[:space:]]*"APPROVE"' "$root/posted.json"; then
+          printf '%s\\n' 'GitHub Actions is not permitted to approve pull requests.' >&2
+          exit 1
+        fi
         ;;
       "api "*) printf '%s\\n' '[]' ;;
       *) exit 1 ;;
@@ -69,12 +73,17 @@ defmodule Yoke.PRReview.IdentityTest do
     %{repo: repo, bin: bin, head: head, base: upstream.base, upstream: upstream.repo}
   end
 
-  test "clean and endorsement-only pinned reviews approve the reviewed commit", %{
+  test "clean pinned CR verdicts publish when GitHub Actions cannot approve PRs", %{
     repo: repo,
     bin: bin,
     head: head
   } do
     assert {:ok, context} = Context.resolve("42", repo)
+    body = PRReview.build_pr_comment_body([], "", cwd: repo)
+
+    assert {:error, message} = PRReview.post_context_review(context, [], body, "APPROVE")
+    assert message =~ "GitHub Actions is not permitted to approve pull requests."
+    assert message =~ "No fallback comment was posted."
 
     endorsement = %{
       id: 1,
@@ -89,9 +98,10 @@ defmodule Yoke.PRReview.IdentityTest do
 
     for findings <- [[], [endorsement]] do
       body = PRReview.build_pr_comment_body(findings, "", cwd: repo)
-      assert {:ok, %{event: "APPROVE"}} = PRReview.post_context_review(context, findings, body)
+      assert {:ok, %{event: "COMMENT"}} = PRReview.post_context_review(context, findings, body)
       posted = bin |> Path.join("posted.json") |> File.read!() |> Json.decode!()
-      assert posted["event"] == "APPROVE"
+      assert posted["event"] == "COMMENT"
+      assert posted["body"] =~ "**Code review: Approved**"
       assert posted["commit_id"] == head
       assert posted["body"] =~ "No actionable issues found."
     end

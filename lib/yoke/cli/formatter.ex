@@ -643,7 +643,9 @@ defmodule Yoke.CLI.Formatter do
 
     #{bold()}Design & Review Standards:#{reset()}
       • #{bold()}Human-in-the-loop:#{reset()} Claude/DeepSeek proposes; engineer decides every comment.
-      • #{bold()}Atomic Reviews:#{reset()} Requests changes when accepted issues remain; approves clean or endorsement-only reviews.
+      • #{bold()}Atomic Reviews:#{reset()} Requests changes when accepted issues remain.
+        Clean or endorsement-only results say "Code review: Approved" in a regular review comment,
+        without submitting a formal PR approval or satisfying merge-approval requirements.
         Posting is opt-in, with right-side diff comments and committable ```suggestion blocks in a single call.
         Severity uses red (high), yellow (medium), and blue (low/info) circles.
         The main review is brief; finding details appear only inline, or once in off-diff observations.
