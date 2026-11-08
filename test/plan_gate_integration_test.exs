@@ -9,6 +9,9 @@ defmodule Yoke.PlanGateIntegrationTest do
   decision logic lives in `Yoke.PlanGate` (see plan_gate_test.exs).
   """
   use ExUnit.Case, async: false
+  # Starts session actors under `Yoke.Brain.SessionSupervisor`.
+  # See `test/test_helper.exs`.
+  @moduletag :app
 
   alias Yoke.Brain.Session
   alias Yoke.Brain.SessionSupervisor

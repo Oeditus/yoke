@@ -6,6 +6,9 @@ defmodule Yoke.Hands.CIModeTest do
   must be unable to mutate the checkout unless the policy explicitly opts in.
   """
   use ExUnit.Case, async: true
+  # Executes tools through `Yoke.Plugin.Loader`, a supervised process.
+  # See `test/test_helper.exs`.
+  @moduletag :app
   @moduletag :tmp_dir
 
   alias Yoke.Hands.Executor

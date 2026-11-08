@@ -123,4 +123,32 @@ defmodule Yoke.BashTrackerTest do
     cleared_stats = BashTracker.stats(cwd: tmp_dir)
     assert cleared_stats.total_calls == 0
   end
+
+  describe "nil cwd tolerance" do
+    # Callers pass `cwd: Map.get(args, "_session_cwd")`, which is `nil` when the
+    # key is absent. `Keyword.get(opts, :cwd, default)` returns `nil` in that
+    # case (the key *is* present), and `Path.join/2` then raised
+    # `FunctionClauseError` inside the `BashTracker` GenServer. Because
+    # `Yoke.Supervisor` uses `:one_for_all`, that crash tore down the entire
+    # supervision tree -- including `Yoke.Brain.SessionSupervisor` -- so an
+    # unrelated test running afterwards failed with `(EXIT) shutdown`.
+    test "store_file_path/1 falls back to the process cwd for nil" do
+      assert BashTracker.store_file_path(nil) == BashTracker.store_file_path(File.cwd!())
+    end
+
+    test "load/1 does not raise for nil" do
+      assert is_map(BashTracker.load(nil))
+    end
+
+    test "record/2 does not crash the tracker when cwd is nil" do
+      # Route through the GenServer (the crashing path) rather than the
+      # direct helper, and assert the server survives. Under `--no-start` the
+      # tracker is not running, so start it here; the point of the test is the
+      # crash, not the supervision wiring.
+      start_supervised!(BashTracker)
+
+      assert {:ok, _} = BashTracker.record("sleep 1", cwd: nil, session_id: nil, async: false)
+      assert Process.whereis(BashTracker) != nil
+    end
+  end
 end

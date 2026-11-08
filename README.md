@@ -721,6 +721,7 @@ Options: `-n/--no-run`, `-a/--apply`, `-p/--previous`, `--command <cmd>`, `--his
 | `compact_status_bar` | `false` | Swap the gauge for a compact `id + message count` line |
 | `max_context_tokens` | `64000` | Assumed model context window used by the usage gauge |
 | `max_tool_depth` | `1000` | Consecutive tool-calling turns before pausing to confirm |
+| `chat_receive_timeout_ms` | `300000` | Wall-clock ceiling for one chat-completion HTTP response. A provider that accepts the connection and then never responds fails with a timeout instead of wedging the session. Raise it for very slow local models. |
 
 Manage most of these live from the REPL with `/config style <name>`, `/config prompt <template>`, and `/config toggle <key>` -- or toggle permission mode, sandbox bounds, and the status bar mode instantly with `Ctrl+P`, `Ctrl+G`, and `Ctrl+B`.
 

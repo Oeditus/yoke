@@ -1,5 +1,8 @@
 defmodule Yoke.MCPDllbShutdownTest do
   use ExUnit.Case, async: false
+  # Drives `Yoke.MCP.ServerManager`, a supervised process.
+  # See `test/test_helper.exs`.
+  @moduletag :app
 
   alias Ragex.Dllb.ProjectManager, as: DllbPM
   alias Yoke.CLI.Main

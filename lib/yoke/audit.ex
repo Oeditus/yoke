@@ -106,7 +106,7 @@ defmodule Yoke.Audit do
       base_branch: safe(fn -> Yoke.Git.default_base_branch(cwd) end, nil),
       test_to_source_ratio:
         if(source_count == 0, do: nil, else: Float.round(test_count / source_count, 2)),
-      untested_dirs: untested_dirs(cwd, source_files, test_files)
+      untested_files: untested_files(cwd, source_files, test_files)
     }
   end
 
@@ -114,18 +114,38 @@ defmodule Yoke.Audit do
   # `lib/foo/bar.ex` -> `test/foo/bar_test.exs`; anything else is reported as
   # "no obvious test file" rather than "untested" (it may be covered
   # indirectly, which is exactly what the agent should verify).
-  defp untested_dirs(cwd, source_files, test_files) do
-    test_basenames = MapSet.new(test_files, &Path.basename/1)
+  #
+  # The comparison is on the *whole relative path*, not just the basename.
+  # Matching basenames alone reported `lib/yoke/ci/lint.ex` as untested
+  # whenever some unrelated `lint_test.exs` lived anywhere in `test/`, and
+  # conversely reported `lib/foo/bar.ex` as untested even when
+  # `test/foo/bar_test.exs` existed but a *different* module owned the same
+  # basename. Both directions made the audit's own measurements untrustworthy,
+  # which matters because the audit is a product feature whose output is
+  # presented as ground truth.
+  defp untested_files(cwd, source_files, test_files) do
+    test_paths = MapSet.new(test_files, &relative(&1, cwd))
 
     source_files
     |> Enum.filter(&String.ends_with?(&1, ".ex"))
-    |> Enum.reject(fn path ->
-      expected = String.replace_suffix(Path.basename(path), ".ex", "_test.exs")
-      MapSet.member?(test_basenames, expected)
-    end)
-    |> Enum.map(&Path.relative_to(&1, cwd))
+    |> Enum.reject(fn path -> MapSet.member?(test_paths, expected_test_path(path, cwd)) end)
+    |> Enum.map(&relative(&1, cwd))
+    |> Enum.sort()
     |> Enum.take(@max_modules_listed)
   end
+
+  # `lib/foo/bar.ex` -> `test/foo/bar_test.exs`. Elixir projects keep tests
+  # under `test/` mirroring the `lib/` tree, so the sibling path is derived by
+  # swapping the leading segment and appending `_test.exs`.
+  defp expected_test_path(source_path, cwd) do
+    relative = relative(source_path, cwd)
+
+    relative
+    |> String.replace_prefix("lib/", "test/")
+    |> String.replace_suffix(".ex", "_test.exs")
+  end
+
+  defp relative(path, cwd), do: Path.relative_to(Path.expand(path), Path.expand(cwd))
 
   defp markers(cwd, files) do
     files
@@ -223,9 +243,9 @@ defmodule Yoke.Audit do
       end
 
     untested =
-      case health.untested_dirs do
+      case health.untested_files do
         [] -> "  (none — every source file has a matching test file)"
-        dirs -> Enum.map_join(dirs, "\n", &"  • `#{&1}`")
+        files -> Enum.map_join(files, "\n", &"  • `#{&1}`")
       end
 
     """

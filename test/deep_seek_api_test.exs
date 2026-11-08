@@ -209,6 +209,71 @@ defmodule Yoke.DeepSeekAPITest do
     end
   end
 
+  describe "HTTP receive timeout" do
+    # The response timeout used to be `:infinity`. Because the call chain is
+    # `Session.send_user_message/2` (`:infinity`) -> `run_agent_loop` ->
+    # `chat_completion/3`, a provider that accepted the TCP connection and
+    # then never responded wedged the session permanently. `yoke fix`
+    # documented the hazard and worked around it with its own 600s
+    # `Task.yield`; bounding it at the source makes that workaround
+    # redundant rather than load-bearing.
+    test "the receive timeout is finite and generous enough for slow models" do
+      timeout = DeepSeekAPI.receive_timeout_ms()
+
+      assert is_integer(timeout)
+      assert timeout > 0
+      # A long reasoning completion can legitimately take minutes.
+      assert timeout >= 60_000
+    end
+
+    test "a silently-stalled provider fails instead of hanging forever" do
+      # `Req` needs its own supervision tree (`Req.Finch`) to issue a request.
+      {:ok, _} = Application.ensure_all_started(:req)
+
+      # Shrink the production timeout so the real timeout path is exercised
+      # without waiting five minutes.
+      prior = Application.get_env(:yoke, :chat_receive_timeout_ms)
+      Application.put_env(:yoke, :chat_receive_timeout_ms, 150)
+
+      on_exit(fn ->
+        if prior,
+          do: Application.put_env(:yoke, :chat_receive_timeout_ms, prior),
+          else: Application.delete_env(:yoke, :chat_receive_timeout_ms)
+      end)
+
+      # A listener that accepts the connection and then never writes a byte.
+      {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+      {:ok, port} = :inet.port(listen)
+
+      # Accept in the background so the client's connect succeeds.
+      acceptor =
+        spawn_link(fn ->
+          {:ok, _socket} = :gen_tcp.accept(listen)
+          Process.sleep(:infinity)
+        end)
+
+      on_exit(fn ->
+        Process.exit(acceptor, :kill)
+        :gen_tcp.close(listen)
+      end)
+
+      result =
+        DeepSeekAPI.chat_completion(
+          [%{"role" => "user", "content" => "hi"}],
+          [],
+          endpoint: "http://127.0.0.1:#{port}/v1/chat/completions",
+          api_key: "not-needed",
+          model: "deepseek-flash"
+        )
+
+      # Every attempt times out, so the retry loop exhausts and reports the
+      # timeout -- it does not surface as an opaque transport error, and it
+      # does not hang.
+      assert {:error, message} = result
+      assert message =~ "timed out" or message =~ "HTTP request failed"
+    end
+  end
+
   describe "sanitize_utf8/1" do
     test "preserves valid UTF-8 strings" do
       assert DeepSeekAPI.sanitize_utf8("Hello World 🚀") == "Hello World 🚀"

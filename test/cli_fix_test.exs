@@ -1,5 +1,8 @@
 defmodule Yoke.CLI.FixTest do
   use ExUnit.Case, async: false
+  # Drives `yoke fix`, which starts a session actor.
+  # See `test/test_helper.exs`.
+  @moduletag :app
 
   alias Yoke.CLI.Fix
 

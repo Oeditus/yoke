@@ -1,5 +1,8 @@
 defmodule Yoke.ContextExpanderTest do
   use ExUnit.Case, async: true
+  # Expands `@error` references against a live session's message history.
+  # See `test/test_helper.exs`.
+  @moduletag :app
 
   alias Yoke.CLI.ContextExpander
 

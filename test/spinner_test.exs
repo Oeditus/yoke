@@ -106,4 +106,43 @@ defmodule Yoke.CLI.SpinnerTest do
     Spinner.stop()
     refute Spinner.paused?()
   end
+
+  describe "interrupt watcher wake-up" do
+    # The Ctrl+Q watcher used to poll `Spinner.paused?()` every 120ms while a
+    # modal owned the TTY -- a process spinning at ~8Hz for as long as the
+    # human took to answer. It now parks in a `receive` and `Spinner.resume/0`
+    # wakes it explicitly.
+    test "resume/0 wakes a parked interrupt watcher" do
+      alias Yoke.CLI.Interrupt
+
+      Interrupt.ensure_started_for_test()
+      test_pid = self()
+
+      # Stand in for the watcher process: record the wake message instead of
+      # entering the raw-mode read loop.
+      watcher =
+        spawn_link(fn ->
+          receive do
+            {:yoke_interrupt, :resume} -> send(test_pid, :watcher_woken)
+          after
+            2_000 -> send(test_pid, :watcher_timed_out)
+          end
+        end)
+
+      Interrupt.__put_watcher_for_test__(watcher)
+
+      Spinner.resume()
+
+      assert_receive :watcher_woken, 1_000
+    end
+
+    test "wake_watcher/0 is a no-op when no watcher is parked" do
+      alias Yoke.CLI.Interrupt
+
+      Interrupt.ensure_started_for_test()
+      Interrupt.__put_watcher_for_test__(nil)
+
+      assert :ok = Interrupt.wake_watcher()
+    end
+  end
 end

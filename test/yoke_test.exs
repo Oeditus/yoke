@@ -1,5 +1,8 @@
 defmodule YokeTest do
   use ExUnit.Case
+  # `Yoke.start_session/1` needs `Yoke.Brain.SessionSupervisor`.
+  # See `test/test_helper.exs`.
+  @moduletag :app
 
   test "starts a session via top-level API and sends message" do
     {:ok, session_pid} = Yoke.start_session(session_id: "api_test")

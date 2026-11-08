@@ -1,5 +1,8 @@
 defmodule Yoke.CLI.InteractionServerTest do
   use ExUnit.Case, async: false
+  # `Yoke.CLI.InteractionServer` is a supervised process.
+  # See `test/test_helper.exs`.
+  @moduletag :app
 
   alias Yoke.CLI.InteractionServer
   alias Yoke.CLI.QuestionPrompt

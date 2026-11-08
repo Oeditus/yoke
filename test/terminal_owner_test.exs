@@ -3,6 +3,10 @@ defmodule Yoke.CLI.TerminalOwnerTest do
   # (mirroring its real single-foreground-surface usage), so concurrent
   # tests would stomp on each other's registrations.
   use ExUnit.Case, async: false
+  # `Yoke.CLI.TerminalOwner` is a supervised process, and this module's
+  # `on_exit` calls `clear/0` on it. Without the tag, `--no-start` fails in the
+  # teardown callback with `(EXIT) no process`. See `test/test_helper.exs`.
+  @moduletag :app
   import ExUnit.CaptureIO
 
   alias Yoke.CLI.TerminalOwner

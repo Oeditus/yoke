@@ -18,19 +18,43 @@ defmodule Yoke.CLI.Interrupt do
   Known limitation: while a permission-confirmation or `ask_question`
   modal is on-screen (i.e. `Yoke.CLI.Spinner` is paused -- see
   `Yoke.CLI.Spinner.with_paused/1`), the keystroke watcher below
-  backs off entirely rather than competing with that modal for keystrokes.
+  backs off rather than competing with that modal for keystrokes.
   Ctrl+Q is only recognized while the spinner itself is actively showing
   ("AI is responding"), not while the AI is waiting on a modal answer --
   use the modal's own Ctrl+C ("deny"/"cancelled") in that case.
+
+  That back-off is a *blocking* `receive`, not a poll: `Spinner.resume/0`
+  sends `{:yoke_interrupt, :resume}` when the modal closes, which wakes the
+  watcher immediately. It used to re-check `Spinner.paused?()` every 120ms,
+  which spun a process at ~8Hz for the entire duration of the modal.
   """
   alias Yoke.Brain.Session
   alias Yoke.CLI.Spinner
 
+  use Agent
+
   @ctrl_q "\x11"
   @ctrl_o "\x0f"
-  @paused_poll_interval_ms 120
 
-  use Agent
+  @doc false
+  # Sent by `Yoke.CLI.Spinner.resume/0` to wake a watcher that parked itself
+  # while a modal owned the TTY.
+  def resume_message, do: {:yoke_interrupt, :resume}
+
+  @doc false
+  # Test seam: starts the agent without requiring the application tree.
+  def ensure_started_for_test, do: ensure_started()
+
+  @doc false
+  # Test seam: installs a stand-in watcher process (or `nil`) so the wake
+  # path can be exercised without entering the raw-mode read loop.
+  def __put_watcher_for_test__(watcher) do
+    ensure_started()
+
+    Agent.update(__MODULE__, fn _ ->
+      %{watcher: watcher, ref: nil, session_pid: self()}
+    end)
+  end
 
   @doc "Starts the (named, singleton) Interrupt agent."
   def start_link(_opts \\ []) do
@@ -74,6 +98,35 @@ defmodule Yoke.CLI.Interrupt do
 
       _ ->
         :ok
+    end
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  @doc """
+  Wakes a keystroke watcher that parked itself because a modal owned the TTY.
+
+  Called by `Yoke.CLI.Spinner.resume/0` once the modal closes, so the watcher
+  can re-enter its raw-mode read loop immediately instead of polling
+  `Spinner.paused?()` on a timer. A no-op when no watcher is parked.
+  """
+  @spec wake_watcher() :: :ok
+  def wake_watcher do
+    case Process.whereis(__MODULE__) do
+      nil ->
+        :ok
+
+      _ ->
+        case Agent.get(__MODULE__, & &1) do
+          %{watcher: watcher} when is_pid(watcher) ->
+            send(watcher, resume_message())
+            :ok
+
+          _ ->
+            :ok
+        end
     end
   rescue
     _ -> :ok
@@ -159,10 +212,15 @@ defmodule Yoke.CLI.Interrupt do
     if Spinner.active?() and Spinner.paused?() do
       # A confirmation/question modal (or the max-tool-depth "continue?"
       # prompt) currently owns the TTY -- see the moduledoc's "Known
-      # limitation" -- back off and check again shortly rather than racing
-      # it for keystrokes.
-      Process.sleep(@paused_poll_interval_ms)
-      watch_for_interrupt(session_pid)
+      # limitation". Park until the modal closes rather than racing it for
+      # keystrokes. `Spinner.resume/0` sends `resume_message/0`; the timeout
+      # is only a safety net in case that message is ever missed, so it is
+      # deliberately long (a human reading a modal is not a stall).
+      receive do
+        {:yoke_interrupt, :resume} -> watch_for_interrupt(session_pid)
+      after
+        30_000 -> watch_for_interrupt(session_pid)
+      end
     else
       # Re-assert raw mode on every iteration: a modal that just finished
       # (`Yoke.CLI.QuestionPrompt`) unconditionally restores

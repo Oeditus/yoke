@@ -1,5 +1,8 @@
 defmodule Yoke.MCPServerManagerTest do
   use ExUnit.Case, async: false
+  # Drives `Yoke.MCP.ServerManager`, a supervised process.
+  # See `test/test_helper.exs`.
+  @moduletag :app
 
   alias Yoke.MCP.ServerManager, as: MCPServerManager
 
@@ -23,6 +26,34 @@ defmodule Yoke.MCPServerManagerTest do
   test "handles removing connected MCP server gracefully" do
     assert {:error, msg} = MCPServerManager.remove_server("non_existent_server")
     assert msg =~ "not connected"
+  end
+
+  describe "activate_dllb_project does not block the manager" do
+    # `DllbPM.set_active_project/1` starts (or re-targets) a `dllb-server` OS
+    # process and waits for it to accept connections. Running that inline in
+    # `handle_call` blocked this GenServer's mailbox -- and therefore every
+    # `get_tool` and MCP call in every session -- for as long as the external
+    # process took to come up.
+    test "the manager answers other calls while activation is in flight" do
+      pid = Process.whereis(MCPServerManager)
+      assert is_pid(pid)
+
+      task =
+        Task.async(fn ->
+          GenServer.call(pid, {:activate_dllb_project, "/tmp/yoke_no_such_project"}, 10_000)
+        end)
+
+      # While activation is in flight, an unrelated call must return
+      # promptly. A blocking implementation would queue behind it.
+      {micros, servers} = :timer.tc(fn -> MCPServerManager.list_servers() end)
+
+      assert is_list(servers)
+      assert micros < 1_000_000, "list_servers/0 blocked for #{micros}us during activation"
+
+      # The caller still receives a reply (success or a diagnosable error).
+      result = Task.await(task, 15_000)
+      assert result == :ok or match?({:error, _}, result)
+    end
   end
 
   test "reanalyzes directory with ragex on each subsequent run when branch files change" do

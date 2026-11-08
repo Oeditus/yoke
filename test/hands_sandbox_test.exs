@@ -1,5 +1,8 @@
 defmodule Yoke.HandsSandboxTest do
   use ExUnit.Case, async: false
+  # Executes tools through `Yoke.Plugin.Loader`, a supervised process.
+  # See `test/test_helper.exs`.
+  @moduletag :app
 
   alias Yoke.Hands.Executor, as: HandsExecutor
 

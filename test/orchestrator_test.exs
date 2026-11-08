@@ -1,5 +1,8 @@
 defmodule Yoke.TaskEngine.OrchestratorTest do
   use ExUnit.Case, async: true
+  # `execute_batch/3` needs `Yoke.TaskEngine.TaskSupervisor`.
+  # See `test/test_helper.exs`.
+  @moduletag :app
 
   alias Yoke.TaskEngine.Orchestrator
 
@@ -64,6 +67,50 @@ defmodule Yoke.TaskEngine.OrchestratorTest do
       # the batch timeout as before.
       assert {:error, bash_msg} = bash_res
       assert bash_msg =~ "timed out"
+    end
+  end
+
+  describe "lock acquisition" do
+    # A lock is held only for the duration of one tool call. Before the
+    # deadline, a contended worker recursed forever, waking 100x/second: a
+    # batch holding two `ask_question` calls spun for as long as the human
+    # took to answer, and a lock leaked by a `:brutal_kill`ed task (which
+    # skips `after` blocks, and therefore `release_lock/1`) deadlocked every
+    # later write to that path permanently.
+    test "a contended lock is acquired once the holder releases it" do
+      key = "test_lock:#{System.unique_integer([:positive])}"
+
+      # Hold the lock from a separate process, release it shortly after.
+      holder =
+        spawn_link(fn ->
+          {:ok, _} = Registry.register(Yoke.TaskEngine.LockRegistry, key, :locked)
+          Process.sleep(100)
+          Registry.unregister(Yoke.TaskEngine.LockRegistry, key)
+        end)
+
+      ref = Process.monitor(holder)
+      assert_receive {:DOWN, ^ref, :process, ^holder, _}, 2_000
+
+      # The lock is now free; a write to the same path must succeed rather
+      # than hang or fail.
+      session_state = %{hands: %Yoke.Hands.Executor{mode: :local}}
+      path = Path.join(System.tmp_dir!(), "lock_ok_#{System.unique_integer([:positive])}.txt")
+
+      results =
+        Orchestrator.execute_batch(
+          [%{id: "w1", name: "write_file", arguments: %{"path" => path, "content" => "ok"}}],
+          session_state
+        )
+
+      assert [{_tc, {:ok, _}}] = results
+      on_exit(fn -> File.rm(path) end)
+    end
+
+    test "the lock wait is bounded rather than infinite" do
+      # Guards against a regression to unbounded recursion: the deadline must
+      # be a finite, positive number of milliseconds.
+      assert is_integer(Orchestrator.lock_timeout_ms())
+      assert Orchestrator.lock_timeout_ms() > 0
     end
   end
 end

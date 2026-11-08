@@ -163,6 +163,9 @@ my_app deepseek-chat >
 - **`Ctrl+B`**: Toggle idle status bar mode (gauge ⇄ compact session line)
 - **`Ctrl+O`**: Toggle tool call log expansion mode (collapsed/truncated ⇄ expanded/full text)
 - **`Ctrl+Q`**: Interrupt active AI turn while responding
+  - Works while the AI is streaming or running tools. While a confirmation or
+    `ask_question` modal owns the terminal, the modal's own `Ctrl+C` (deny /
+    cancel) is the interrupt path; `Ctrl+Q` resumes as soon as the modal closes.
 
 ---
 

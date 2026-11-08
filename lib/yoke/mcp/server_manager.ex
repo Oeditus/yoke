@@ -156,6 +156,19 @@ defmodule Yoke.MCP.ServerManager do
   end
 
   @impl true
+  def handle_cast({:dllb_project_activated, project, :ok, from}, state) do
+    # Record before indexing begins, so failed or unfinished initialization
+    # cannot leave an instance outside Yoke's shutdown scope.
+    GenServer.reply(from, :ok)
+    {:noreply, %{state | dllb_projects: MapSet.put(state.dllb_projects, project)}}
+  end
+
+  def handle_cast({:dllb_project_activated, _project, {:error, _reason} = error, from}, state) do
+    GenServer.reply(from, error)
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_call(:await_ragex, from, state) do
     case state.ragex_status do
       :starting ->
@@ -224,18 +237,23 @@ defmodule Yoke.MCP.ServerManager do
     {:reply, {:error, :shutting_down}, state}
   end
 
-  def handle_call({:activate_dllb_project, target_dir}, _from, state) do
+  # `DllbPM.set_active_project/1` starts (or re-targets) a `dllb-server` OS
+  # process and waits for it to accept connections. Running that inline blocks
+  # this GenServer's mailbox -- and therefore *every* `get_tool` and MCP call
+  # in every session -- for as long as the external process takes to come up.
+  # It already runs inside the `start_ragex_task` Task, so the fix is to keep
+  # the blocking call there too and reply asynchronously.
+  def handle_call({:activate_dllb_project, target_dir}, from, state) do
     project = Path.expand(target_dir)
+    server = self()
 
-    case DllbPM.set_active_project(project) do
-      :ok ->
-        # Record before indexing begins, so failed or unfinished initialization
-        # cannot leave an instance outside Yoke's shutdown scope.
-        {:reply, :ok, %{state | dllb_projects: MapSet.put(state.dllb_projects, project)}}
+    {:ok, _pid} =
+      Task.start(fn ->
+        result = activate_dllb_project_safely(project)
+        GenServer.cast(server, {:dllb_project_activated, project, result, from})
+      end)
 
-      {:error, _reason} = error ->
-        {:reply, error, state}
-    end
+    {:noreply, state}
   end
 
   @impl true
@@ -766,6 +784,18 @@ defmodule Yoke.MCP.ServerManager do
     _ -> :ok
   catch
     _, _ -> :ok
+  end
+
+  # `DllbPM.set_active_project/1` starts (or re-targets) a `dllb-server` OS
+  # process and can block for as long as that external process takes to accept
+  # connections. It is therefore never called from a `handle_call` clause; see
+  # `handle_call({:activate_dllb_project, ...})`.
+  defp activate_dllb_project_safely(project) do
+    DllbPM.set_active_project(project)
+  rescue
+    e -> {:error, Exception.message(e)}
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
 
   @doc "Returns the active user project directory (preserving YOKE_PROJECT_DIR from launcher)."

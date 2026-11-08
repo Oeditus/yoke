@@ -1,5 +1,8 @@
 defmodule Yoke.CLIReplTest do
   use ExUnit.Case, async: false
+  # Starts session actors and drives REPL commands that reach the
+  # application tree. See `test/test_helper.exs`.
+  @moduletag :app
 
   alias Yoke.Brain.SessionSupervisor
   alias Yoke.CLI.Repl
