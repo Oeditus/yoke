@@ -7,6 +7,7 @@ defmodule Yoke.CLI.Doctor do
 
   alias Yoke.CLI.Formatter
 
+  @native_features_selected Application.compile_env(:yoke, :embeddings_enabled, false)
   @native_apps [:bumblebee, :nx, :exla, :image]
 
   defstruct [:status, :checks, :summary]
@@ -39,12 +40,18 @@ defmodule Yoke.CLI.Doctor do
         {app, :code.where_is_file(String.to_charlist("#{app}.app")) != :non_existing}
       end)
 
-    selected = if native_features_selected(), do: "enabled", else: "disabled"
+    optional_features_report(@native_features_selected, availability)
+  end
+
+  @doc false
+  @spec optional_features_report(boolean(), [{atom(), boolean()}]) :: map()
+  def optional_features_report(native_features_selected?, availability) do
+    selected = if native_features_selected?, do: "enabled", else: "disabled"
 
     %{
       category: "Optional Native Features",
       status:
-        if(native_features_selected() and not Enum.all?(availability, &elem(&1, 1)),
+        if(native_features_selected? and not Enum.all?(availability, &elem(&1, 1)),
           do: :warning,
           else: :ok
         ),
@@ -253,6 +260,4 @@ defmodule Yoke.CLI.Doctor do
 
     header <> items <> footer
   end
-
-  defp native_features_selected, do: Application.get_env(:yoke, :embeddings_enabled, false)
 end

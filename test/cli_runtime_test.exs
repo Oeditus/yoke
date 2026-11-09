@@ -186,6 +186,23 @@ defmodule Yoke.CLI.RuntimeTest do
     assert Application.started_applications() == before_apps
   end
 
+  test "optional feature reports handle enabled and disabled builds with missing dependencies" do
+    available = [bumblebee: true, nx: true, exla: true, image: true]
+    missing = Keyword.put(available, :exla, false)
+
+    for {selected?, availability, status, label} <- [
+          {false, available, :ok, "disabled"},
+          {false, missing, :ok, "disabled"},
+          {true, available, :ok, "enabled"},
+          {true, missing, :warning, "enabled"}
+        ] do
+      report = Doctor.optional_features_report(selected?, availability)
+      assert report.status == status
+      assert report.details =~ "Compiled embeddings/image selection: #{label}."
+      assert report.details =~ "exla: #{if availability[:exla], do: "present", else: "absent"}"
+    end
+  end
+
   defp fake_executable(bin, name, script) do
     path = Path.join(bin, name)
     File.write!(path, script)
