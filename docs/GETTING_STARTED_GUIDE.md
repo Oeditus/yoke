@@ -38,9 +38,9 @@ yoke --plugin path/to/my_plugin.exs
 - `/model [chat|reasoner]` — Switch between `deepseek-chat` (V3) and `deepseek-reasoner` (R1).
 - `/mode [local|remote|docker]` — Switch Hands execution environment (Local host, Remote Erlang node, Docker container).
 - `/ragex` — Mount first-class **Ragex** code intelligence engine (SCIP symbol graphs & AST search).
-- `/checkpoint [label]` / `/undo` — Create state snapshot or revert to previous checkpoint.
+- `/checkpoint` — List snapshot IDs, labels, and turns. `/checkpoint <label>` saves a new snapshot; `/undo` identifies and restores the latest conversation/provider state, not working-tree files.
 - `/subagent <prompt>` — Spawn an independent background BEAM worker process for sub-tasks.
-- `/compact` — Compress conversation history to save tokens.
+- `/compact` — Compress conversation history and report before/after context-token estimates and percentage change.
 
 ### Context Expansion (`@` references)
 Attach rich context directly inside prompts:

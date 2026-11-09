@@ -20,6 +20,42 @@ defmodule Yoke.PRReview.FindingsTest do
     )
   end
 
+  test "completed nonempty reviews without a payload mean no issues" do
+    for text <- [
+          "I have enough verified context. Here is the review. **Summary:** The change is sound.",
+          "No missing tests or bugs found.",
+          "- lib/example.ex:42 Missing error handling"
+        ] do
+      assert {:error, _} = Findings.parse(text)
+      assert {:ok, []} = Findings.parse_review(text)
+      assert [] = Yoke.PRReview.parse_findings(text)
+    end
+  end
+
+  test "review parsing does not hide blank, invalid or attempted malformed payloads" do
+    for text <- [
+          "",
+          " \n ",
+          nil,
+          <<255>>,
+          "<findings>[broken]</findings>",
+          "<findings",
+          "</findings>",
+          "```json\n{malformed}\n```",
+          "```json findings\n[]",
+          fence([%{"setting" => true}], "json"),
+          envelope([%{}]),
+          envelope([]) <> "\n" <> envelope([])
+        ] do
+      assert {:error, _} = Findings.parse_review(text)
+    end
+  end
+
+  test "review parsing retains structured issues rather than treating all responses as empty" do
+    assert {:ok, [%{title: "Handle failed requests", kind: "issue"}]} =
+             Findings.parse_review(envelope([finding()]))
+  end
+
   defp envelope(payload), do: "<findings>#{Json.encode!(payload)}</findings>"
   defp fence(payload, label \\ "json findings"), do: "```#{label}\n#{Json.encode!(payload)}\n```"
 

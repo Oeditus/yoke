@@ -99,6 +99,31 @@ defmodule Yoke.PRReview.IdentityTest do
     %{repo: repo, bin: bin, head: head, base: upstream.base, upstream: upstream.repo}
   end
 
+  test "a completed review without a payload posts no issues and dismisses its previous request",
+       %{
+         repo: repo,
+         bin: bin,
+         head: head
+       } do
+    assert {:ok, context} = Context.resolve("42", repo)
+    File.write!(Path.join(bin, "reviews.json"), Json.encode!([[previous_review(1)]]))
+
+    assert {:ok, [] = findings} =
+             PRReview.Findings.parse_review(
+               "I have enough verified context. Here is the review. **Summary:** No issues."
+             )
+
+    body = PRReview.build_pr_comment_body(findings, "", cwd: repo)
+    assert {:ok, %{event: "COMMENT"}} = PRReview.post_context_review(context, findings, body)
+    posted = bin |> Path.join("posted.json") |> File.read!() |> Json.decode!()
+    assert posted["commit_id"] == head
+    assert posted["comments"] == []
+    assert posted["body"] =~ "No actionable issues found."
+
+    assert File.read!(Path.join(bin, "calls")) =~
+             "api -X PUT repos/example/repo/pulls/42/reviews/1/dismissals"
+  end
+
   test "clean pinned CR verdicts publish when GitHub Actions cannot approve PRs", %{
     repo: repo,
     bin: bin,

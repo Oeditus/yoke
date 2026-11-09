@@ -117,13 +117,94 @@ defmodule Yoke.PRReview.SessionTest do
     assert tool["content"] =~ "unavailable"
   end
 
-  test "malformed, unrelated, off-diff and truncated outputs are errors, not clean reviews", %{
+  test "completed prose without structured findings is a clean review", %{repo: repo} do
+    content = "I have enough verified context. Here is the review. **Summary:** No issues found."
+    pid = session(repo, [Fixture.choice(content)])
+
+    assert {:ok, %{content: ^content}} =
+             Session.generate_code_review(pid, "main", "feature")
+
+    assert {:ok, messages} = Session.get_messages(pid)
+    assert List.last(messages)["content"] == content
+    assert_receive {:review_request, _}, 5_000
+  end
+
+  test "interactive review proceeds to the clean-review path when no payload was returned", %{
+    repo: repo
+  } do
+    pid = session(repo, [Fixture.choice("The committed changes preserve the existing contract.")])
+
+    output =
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert :continue = Yoke.CLI.Repl.handle_input("/cr main feature", pid, "test")
+      end)
+
+    assert output =~ "Review completed: no new findings to triage."
+    assert output =~ "Local branch review only."
+    refute output =~ "No valid structured findings payload found."
+    assert_receive {:review_request, _}, 5_000
+  end
+
+  test "CI emits a passing zero-issue artifact for a completed review without a payload", %{
+    repo: repo
+  } do
+    keys = [:interaction, :auto_start_ragex, :non_interactive, :output_mode]
+    original = Map.new(keys, &{&1, Application.fetch_env(:yoke, &1)})
+    dllb = Application.fetch_env(:ragex, :dllb_server_bin)
+    env = Map.new(~w(DLLB_SERVER_BIN GITHUB_STEP_SUMMARY), &{&1, System.get_env(&1)})
+
+    on_exit(fn ->
+      for {key, value} <- original do
+        case value do
+          {:ok, value} -> Application.put_env(:yoke, key, value)
+          :error -> Application.delete_env(:yoke, key)
+        end
+      end
+
+      case dllb do
+        {:ok, value} -> Application.put_env(:ragex, :dllb_server_bin, value)
+        :error -> Application.delete_env(:ragex, :dllb_server_bin)
+      end
+
+      for {key, value} <- env do
+        if value, do: System.put_env(key, value), else: System.delete_env(key)
+      end
+    end)
+
+    System.put_env("GITHUB_STEP_SUMMARY", Path.join(repo, "summary.md"))
+    pid = session(repo, [Fixture.choice("The implementation is consistent with its callers.")])
+    assert {:ok, context} = Context.resolve("main feature", repo)
+    output = Path.join(repo, "review.json")
+
+    assert {:ok, result} =
+             Yoke.CI.Review.run(
+               cwd: repo,
+               session: pid,
+               review_context: context,
+               fail_on: "high",
+               output: output
+             )
+
+    assert result.exit_code == 0
+    assert %{findings: [], issues: [], findings_count: 0, failed?: false} = result.report
+    assert result.posted == :not_requested
+
+    assert %{"summary" => %{"findings_count" => 0}} =
+             output |> File.read!() |> Yoke.Json.decode!()
+
+    assert_receive {:review_request, _}, 5_000
+  end
+
+  test "blank, malformed, unrelated, off-diff and truncated outputs remain errors", %{
     repo: repo
   } do
     for {content, finish} <- [
-          {"No missing tests or bugs found.", "stop"},
+          {"", "stop"},
+          {" \n ", "stop"},
           {"<findings>[broken]</findings>", "stop"},
           {"```json\n[{\"setting\":true}]\n```", "stop"},
+          {"No missing tests or bugs found.", "length"},
+          {"No missing tests or bugs found.", "content_filter"},
           {"<findings>[]</findings>", "length"},
           {"<findings>[]</findings>", "content_filter"},
           {"<findings>" <>

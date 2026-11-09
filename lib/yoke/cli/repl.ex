@@ -71,55 +71,6 @@ defmodule Yoke.CLI.Repl do
     loop(session_pid, session_id, history)
   end
 
-  defp handle_review_fixes(session_pid, ctx, fix_prompt) do
-    IO.puts("\nYoke Code Review Fix Prompt:\n" <> fix_prompt)
-
-    case Yoke.PRReview.Context.verify_fix_checkout(ctx) do
-      :ok ->
-        options = ["No, I will apply them later (Recommended)", "Yes, apply fixes now"]
-
-        if review_yes?("Would you like Yoke to examine and apply these fixes now?", options) do
-          case Yoke.PRReview.Context.verify_fix_checkout(ctx) do
-            :ok ->
-              prompt = "Repository: #{ctx.cwd}\nReviewed head: #{ctx.head_sha}\n\n" <> fix_prompt
-
-              run_review_turn(
-                session_pid,
-                fn -> Session.apply_review_fixes(session_pid, ctx, prompt) end,
-                "Applying Code Review fixes… (Ctrl+Q to interrupt)"
-              )
-              |> print_review_result()
-
-            {:error, error} ->
-              IO.puts(Formatter.format_warning(error))
-          end
-        end
-
-      {:error, error} ->
-        IO.puts(Formatter.format_warning(error))
-    end
-  end
-
-  defp maybe_record_review_patterns(findings, ctx) do
-    options = ["No, skip pattern update (Recommended)", "Yes, update living review patterns"]
-
-    if review_yes?("Record accepted findings in .yoke/review_patterns.md?", options) do
-      reference = if ctx.pr_number, do: "PR ##{ctx.pr_number}", else: "Commit #{ctx.head_sha}"
-      Enum.each(findings, &Yoke.PRReview.Patterns.record_finding(&1, reference, ctx.cwd))
-
-      IO.puts(
-        Formatter.format_success("Updated living review patterns in .yoke/review_patterns.md")
-      )
-    end
-  end
-
-  defp review_yes?(question, options) do
-    case Yoke.Interaction.ask(:review_fix, %{question: question, options: options}) do
-      :approve -> true
-      _ -> false
-    end
-  end
-
   def loop(session_pid, session_id, history \\ [], console_mode? \\ false)
 
   # "Pure console" mode: entered/exited via the `!!` flip-flop command.
@@ -387,11 +338,29 @@ defmodule Yoke.CLI.Repl do
   end
 
   def handle_input("/compact", session_pid, _session_id) do
+    before_tokens = Session.get_token_stats(session_pid).context_tokens
     IO.puts(Formatter.format_info("Compressing conversation context…"))
 
     case Session.compact_context(session_pid) do
       {:ok, summary} ->
+        after_tokens = Session.get_token_stats(session_pid).context_tokens
+
+        change =
+          if before_tokens == 0,
+            do: 0.0,
+            else: (after_tokens - before_tokens) / before_tokens * 100
+
+        percentage = :erlang.float_to_binary(change, decimals: 1)
+        percentage = if change >= 0, do: "+" <> percentage, else: percentage
+
         IO.puts(Formatter.format_success("Context successfully compressed!"))
+
+        IO.puts(
+          Formatter.format_info(
+            "Estimated current context tokens: #{before_tokens} -> #{after_tokens} (#{percentage}%)."
+          )
+        )
+
         md = "### Compressed Context Summary\n" <> summary
         IO.puts("\n" <> Formatter.format_markdown(md) <> "\n")
 
@@ -961,8 +930,8 @@ defmodule Yoke.CLI.Repl do
                 accepted_issues = Yoke.PRReview.actionable_findings(accepted_findings)
 
                 if accepted_issues != [] do
-                  handle_review_fixes(session_pid, ctx, fix_prompt)
-                  maybe_record_review_patterns(accepted_issues, ctx)
+                  Yoke.PRReview.CLI.handle_review_fixes(session_pid, ctx, fix_prompt)
+                  Yoke.PRReview.CLI.maybe_record_review_patterns(accepted_issues, ctx)
                 else
                   IO.puts(
                     Formatter.format_info(
@@ -2079,12 +2048,52 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
-  def handle_input("/checkpoint" <> rest, session_pid, _session_id) do
-    label = String.trim(rest)
-    label = if label == "", do: nil, else: label
+  def handle_input("/checkpoint", session_pid, _session_id) do
+    case Session.list_checkpoints(session_pid) do
+      [] ->
+        IO.puts(
+          Formatter.format_info("No checkpoints saved. Use /checkpoint <label> to save one.")
+        )
 
-    {:ok, cp} = Session.checkpoint(session_pid, label)
-    IO.puts(Formatter.format_success("Saved snapshot: '#{cp.label}' (ID: #{cp.id})"))
+      checkpoints when is_list(checkpoints) ->
+        IO.puts(Formatter.format_info("Saved checkpoints (newest first):"))
+
+        Enum.each(checkpoints, fn cp ->
+          IO.puts("  ID: #{cp.id} | label: #{cp.label} | turn: #{cp.turn}")
+        end)
+
+      {:error, error} ->
+        IO.puts(Formatter.format_error("Could not list checkpoints: #{inspect(error)}"))
+
+      other ->
+        IO.puts(Formatter.format_error("Unexpected checkpoint list reply: #{inspect(other)}"))
+    end
+
+    :continue
+  end
+
+  def handle_input("/checkpoint " <> rest, session_pid, session_id) do
+    case String.trim(rest) do
+      "" ->
+        handle_input("/checkpoint", session_pid, session_id)
+
+      label ->
+        case Session.checkpoint(session_pid, label) do
+          {:ok, %{id: id, label: saved_label, turn: turn}} ->
+            IO.puts(
+              Formatter.format_success(
+                "Saved snapshot: '#{saved_label}' (ID: #{id}, turn: #{turn})"
+              )
+            )
+
+          {:error, error} ->
+            IO.puts(Formatter.format_error("Could not save checkpoint: #{inspect(error)}"))
+
+          other ->
+            IO.puts(Formatter.format_error("Unexpected checkpoint reply: #{inspect(other)}"))
+        end
+    end
+
     :continue
   end
 
@@ -2095,6 +2104,9 @@ defmodule Yoke.CLI.Repl do
 
       {:error, err} ->
         IO.puts(Formatter.format_error(err))
+
+      other ->
+        IO.puts(Formatter.format_error("Unexpected undo reply: #{inspect(other)}"))
     end
 
     :continue
@@ -2117,8 +2129,17 @@ defmodule Yoke.CLI.Repl do
 
       num_str ->
         case Integer.parse(num_str) do
-          {limit, ""} when limit > 0 -> do_session_list(limit)
-          _ -> do_session_list(@resume_page_size)
+          {limit, ""} when limit > 0 ->
+            do_session_list(limit)
+
+          _ ->
+            IO.puts(
+              Formatter.format_warning(
+                "Invalid /session list argument '#{num_str}'. Use a positive count or all; showing the recent #{@resume_page_size} sessions."
+              )
+            )
+
+            do_session_list(@resume_page_size)
         end
     end
   end
@@ -2319,7 +2340,8 @@ defmodule Yoke.CLI.Repl do
     - **Checkpoints**: `#{info.snapshot_count}` snapshots
     - **Hands Execution Target**: `#{info.hands_mode}` (`#{info.hands_target}`)
     - **Active Tools Count**: `#{info.tools_count}` registered
-    - **Serving BEAM Processes**: `#{info.serving_processes}` active (`#{info.active_task_workers}` parallel task workers)
+    - **Active Task Workers**: `#{info.active_task_workers}`
+    - **Session Actors**: `#{info.active_sessions}`
     - **System Process Status**: `#{info.serving_report}`
     """
 
@@ -2952,20 +2974,6 @@ defmodule Yoke.CLI.Repl do
     end
 
     :continue
-  end
-
-  defp run_review_turn(session_pid, fun, title) do
-    Yoke.CLI.Spinner.run(fn -> Yoke.CLI.Interrupt.run(session_pid, fun) end, title: title)
-  end
-
-  defp print_review_result({:ok, %{content: content}}) do
-    IO.puts("\n" <> Formatter.format_agent_response(content) <> "\n")
-    Formatter.flush()
-  end
-
-  defp print_review_result({:error, error}) do
-    IO.puts(Formatter.format_error(error))
-    Formatter.flush()
   end
 
   defp maybe_post_review_to_github(_findings, _body, %{pr_number: nil}) do

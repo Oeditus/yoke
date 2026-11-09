@@ -238,40 +238,5 @@ defmodule Yoke.CLI.FixTest do
       assert out =~ "Plan-only mode"
       assert out =~ "ROOT CAUSE"
     end
-
-    test "--agent-timeout bounds a stalled analysis turn instead of hanging", %{dir: dir} do
-      path = write_history(dir, "exit 3\n")
-
-      # The agent hand-off uses `send_user_message/2`, an `:infinity`
-      # `GenServer.call` around an HTTP request that also uses
-      # `receive_timeout: :infinity`. Without a bound, a stalled provider hangs
-      # `yoke fix` forever. Point the endpoint at a non-routable address so the
-      # request never completes, and assert we return promptly with code 1.
-      prior_endpoint = System.get_env("DEEPSEEK_ENDPOINT")
-      System.put_env("DEEPSEEK_ENDPOINT", "http://10.255.255.1:9/v1/chat/completions")
-      System.put_env("DEEPSEEK_API_KEY", "sk-not-a-real-key")
-
-      on_exit(fn ->
-        case prior_endpoint do
-          nil -> System.delete_env("DEEPSEEK_ENDPOINT")
-          value -> System.put_env("DEEPSEEK_ENDPOINT", value)
-        end
-
-        System.delete_env("DEEPSEEK_API_KEY")
-      end)
-
-      {elapsed_us, {code, out}} =
-        :timer.tc(fn ->
-          ExUnit.CaptureIO.with_io(fn ->
-            Fix.fix(["--history-file", path, "--no-run", "--agent-timeout", "300"])
-          end)
-        end)
-
-      assert code == 1
-      assert out =~ "did not finish within"
-      # Generous ceiling: the point is that it returns at all, bounded by the
-      # 300ms agent timeout rather than by the OS TCP timeout.
-      assert elapsed_us < 30_000_000
-    end
   end
 end

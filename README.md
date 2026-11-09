@@ -354,7 +354,7 @@ Run `yoke` completely offline against local LLM servers without requiring API ke
 ### 6. One-Command Global Installation & Updates
 - Install globally to `~/.local/bin/yoke` via `mix yoke.install` or `install.sh`.
 - Run `yoke` smoothly from **any** workspace directory.
-- Perform background in-place self-updates anytime using `yoke --update` or `/update`.
+- Run in-place self-updates using `yoke --update` or `/update`. Updates wait for the pull and release build to finish and report failures rather than announcing success in advance.
 
 ### 7. Pure Console Mode (`!!`)
 - Type `!!` on its own line to flip `yoke` completely out of the way: no Brain/Hands actors, no LLM turns, no slash-command dispatch -- just a bare `sh -c` passthrough with live-streamed output.
@@ -615,9 +615,10 @@ The full reference lives in [`docs/cheat_sheet.md`](docs/cheat_sheet.md); the es
 | `/resume [id]` | Resume specific session ID or open interactive conversation picker modal |
 | `/session [list\|switch\|cleanup]` | Inspect, switch, or prune persisted workspace sessions |
 | `/status` | Alias for `/session` -- active session & system status |
-| `/checkpoint [label]` | Create a manual temporal state snapshot |
-| `/undo` | Roll back state to previous temporal checkpoint |
-| `/compact` | Compress conversation context to save tokens |
+| `/checkpoint` | List checkpoints with ID, label, and turn |
+| `/checkpoint <label>` | Save a labeled conversation snapshot |
+| `/undo` | Restore the latest conversation checkpoint and identify what was restored |
+| `/compact` | Compress context and show before/after token estimates and percentage change |
 | `/export [json\|markdown]` | Export full session transcript to disk |
 | `/history [search <query>]` | Show or search persistent REPL input history |
 | `/cost` \| `/tokens` | Display token usage breakdown and cumulative session cost |
@@ -681,7 +682,7 @@ memory updates are also opt-in and happen after fix handling.
 | `/workflow [list\|run\|status\|resume\|abort\|init]` | Run customizable multi-step workflows (branch, describe, split & parallelize, test/docs, lint, commit) |
 | `/config [style\|prompt\|toggle]` | Manage prompt styles and UI toggles |
 | `/env` | Show runtime environment (Elixir/OTP version, model, workspace) |
-| `/update` | Background self-update `yoke` release to latest code |
+| `/update` | Update the release in the foreground and report its actual result |
 
 #### Utility
 | Command | Action |
@@ -720,6 +721,19 @@ $ yoke fix "mix compile"            # explicit command instead of history
 ```
 
 Options: `-n/--no-run`, `-a/--apply`, `-p/--previous`, `--command <cmd>`, `--history-file <path>`, `--timeout <ms>`, `--session <id>`, `-h/--help`. Exit codes: `0` the command succeeded, `1` it failed and a plan was produced, `2` usage error, `3` no command found in history.
+
+`--agent-timeout <ms>` bounds the analysis turn separately from command replay.
+On timeout, Yoke cancels the turn and attempts to save its triage prompt and
+session. After a successful save it prints the session ID and an explicit
+continuation command using `yoke -c <id>`. This starts a new turn from saved
+context; it does not resurrect the cancelled task. Persistence failures are
+reported without claiming the session is resumable.
+Independently started background jobs retain their own lifecycle; inspect them
+with `/jobs`. Cancelling a turn does not undo side effects already performed.
+
+Conversation checkpoints restore messages and provider settings, not
+working-tree files. `/checkpoint` lists them without creating a new one;
+use `/checkpoint <label>` to save a snapshot before an operation.
 
 ---
 

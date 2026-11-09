@@ -43,7 +43,7 @@ yoke "Analyze project architecture in @mix.exs"
 yoke -m deepseek-coder "Write a binary search algorithm in @lib/search.ex"
 yoke --model deepseek-reasoner "Diagnose race condition in @lib/worker.ex"
 
-# Run in background self-update mode
+# Update in the foreground and report the pull/build result
 yoke --update
 
 # Replay the last terminal command, analyse the failure, and plan a fix
@@ -63,7 +63,7 @@ yoke --help
 | `--prompt <str>` | `-p <str>` | Input prompt string for one-shot execution |
 | `--model <name>` | `-m <name>` | Select model (`deepseek-chat`, `deepseek-coder`, `deepseek-reasoner`) |
 | `--provider <name>` | — | Select model and endpoint together: `local` (Devstral), `local-qwen`, `deepseek` |
-| `--update` | `-u` | Trigger background release update to latest git codebase |
+| `--update` | `-u` | Update the release in the foreground and report its actual result |
 | `--node <name>` | — | Start local Erlang distributed node |
 | `--connect <node>`| — | Connect to remote Erlang Hands worker node |
 | `--plugin <path>` | — | Load external Elixir plugin script (`.ex` or `.exs`) |
@@ -130,15 +130,16 @@ my_app deepseek-chat >
 | `/model <alias>` | Switch model (`chat`, `coder`, `reasoner`, `openrouter-r1`, `ollama-r1`) | `/model reasoner` |
 | `/provider [name]` | Show transport or atomically select `local`, `local-qwen`, or `deepseek` | `/provider local` |
 | `/mode <target>` | Set execution target (`local`, `docker <id>`, `remote <node>`) | `/mode local` |
-| `/compact` | Compress conversation context window to save tokens | `/compact` |
-| `/undo` | Roll back conversation state to previous temporal checkpoint | `/undo` |
-| `/checkpoint [lbl]` | Create a manual temporal state snapshot | `/checkpoint "Before refactoring"` |
+| `/compact` | Compress context and show token estimates before/after and percentage change | `/compact` |
+| `/undo` | Restore and identify the latest conversation checkpoint (not working-tree files) | `/undo` |
+| `/checkpoint` | List checkpoint IDs, labels, and turns without creating one | `/checkpoint` |
+| `/checkpoint <label>` | Save a labeled conversation snapshot | `/checkpoint Before refactoring` |
 | `/config` | Manage prompt styles (`starship`, `compact`) and UI settings | `/config style starship` |
 | `/plugins [reload]` | List tools or hot-reload custom plugins live without resetting state | `/plugins reload` |
 | `/mcp [list\|add]` | Mount or inspect Model Context Protocol (MCP) servers | `/mcp list` |
 | `/ragex` | Mount Ragex MCP server for AST refactoring & SCIP semantic search | `/ragex` |
 | `/skills [name]` | List available skills or execute a skill instruction file | `/skills` |
-| `/update` | Refresh production OTP release in background (`yoke --update`) | `/update` |
+| `/update` | Refresh the production release in the foreground and report success/failure | `/update` |
 | `/alias [list\|show\|add\|rm\|run]` | Manage and run reusable session command aliases (or `/<alias>`) | `/alias list` |
 | `/finish [files] [--commit-only]` | Complete work: format, structured commit (5 sections) & create PR | `/finish lib/app.ex` |
 | `/pr [files] [--commit-only]` | Alias for `/finish` (supports `--commit-only` / `-c`) | `/pr --commit-only` |
@@ -287,6 +288,17 @@ Declare and execute prepared command sequences in the active session:
 
 ### Session State Persistence
 All REPL and one-shot sessions automatically save their GenServer state, snapshots, and conversation messages to `.yoke/sessions/<session_id>.lmml` -- an `lmml` narrative (a Markdown-superset markup for LLM conversations). The file is plain, self-contained Markdown that any Markdown viewer renders sensibly, yet round-trips every structured message losslessly through its inline-embed model. Legacy `.json` session files from earlier versions are still read transparently on resume.
+
+`/checkpoint` lists existing snapshot metadata; `/checkpoint <label>` creates
+a new snapshot. `/undo` identifies the snapshot restored and affects the
+conversation/provider settings, not files on disk.
+
+When a `yoke fix` analysis exceeds `--agent-timeout <ms>`, Yoke cancels it
+before cleanup and attempts to persist the triage context. If saving succeeds,
+the output includes a session ID and a `yoke -c <id>` continuation command.
+Continuation is a new turn using that context, not a resumed background task.
+Independently started jobs retain their lifecycle and can be inspected with
+`/jobs`; cancellation does not roll back external side effects.
 
 ### Exit Resume Banner
 Upon exit via `/exit`, `/quit`, or `Ctrl+D`, `yoke` prints your exact conversation UUID:

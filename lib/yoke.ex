@@ -54,7 +54,8 @@ defmodule Yoke do
 
     active_sessions =
       if Process.whereis(Yoke.Registry) != nil do
-        Registry.count(Yoke.Registry)
+        Registry.select(Yoke.Registry, [{{:"$1", :_, :_}, [], [:"$1"]}])
+        |> Enum.count(&(is_binary(&1) and String.starts_with?(&1, "session_")))
       else
         0
       end
@@ -67,10 +68,10 @@ defmodule Yoke do
     }
   end
 
-  @doc "Returns a human-readable status banner of serving processes."
+  @doc "Returns a human-readable status banner of active task workers and sessions."
   def report_serving_processes do
     status = process_status()
 
-    "⚡ #{status.total_serving_processes} BEAM processes serving (#{status.active_task_workers} parallel task workers, #{status.active_sessions} session actors, #{status.schedulers_online} online schedulers)"
+    "#{status.active_task_workers} active task workers, #{status.active_sessions} session actors"
   end
 end

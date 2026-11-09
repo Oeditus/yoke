@@ -51,10 +51,8 @@ defmodule Yoke.CLI.Fix do
   # tail (summary), so the middle is elided.
   @max_capture_chars 24_000
 
-  # How long the analysis turn may run before `yoke fix` gives up and reports
-  # that the triage is still valid. The underlying call chain uses `:infinity`
-  # timeouts, so this is the only thing standing between a stalled provider and
-  # a permanently wedged CLI.
+  # Bound the entire analysis turn independently of finite per-request HTTP
+  # timeouts: tool iterations and provider retries can span several requests.
   @default_agent_timeout_ms 600_000
 
   # How long to wait for a session to shut down before killing it outright.
@@ -76,7 +74,14 @@ defmodule Yoke.CLI.Fix do
         2
 
       true ->
-        run(opts, extra)
+        case Yoke.CLI.Main.validate_provider(opts) do
+          :ok ->
+            run(opts, extra)
+
+          {:error, message} ->
+            IO.puts(Formatter.format_error(message))
+            2
+        end
     end
   end
 
@@ -423,10 +428,9 @@ defmodule Yoke.CLI.Fix do
   # wait: the user already has the triage report on screen, so hanging is
   # strictly worse than giving up.
   #
-  # The turn itself is bounded by `:agent_timeout` because the underlying
-  # `send_user_message/2` is a `GenServer.call` with an `:infinity` timeout
-  # wrapped around an HTTP request that also uses `receive_timeout: :infinity`.
-  # Without a bound here, a stalled provider hangs `yoke fix` forever.
+  # `send_user_message/2` waits indefinitely for the complete turn; the
+  # per-request HTTP timeout does not bound repeated calls and tool iterations.
+  # Cancel the active turn and verify persisted recovery on this outer deadline.
   defp dispatch_to_agent(prompt, opts) do
     session_id = opts[:session] || Yoke.CLI.Main.generate_uuid()
     timeout = opts[:agent_timeout] || @default_agent_timeout_ms
@@ -465,10 +469,11 @@ defmodule Yoke.CLI.Fix do
     :exit, _ -> :ok
   end
 
-  defp run_turn(session_pid, prompt, timeout) do
+  @doc false
+  def run_turn(session_pid, prompt, timeout) do
     task = Task.async(fn -> Yoke.Brain.Session.send_user_message(session_pid, prompt) end)
 
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+    case Task.yield(task, timeout) do
       {:ok, {:ok, %{content: content}}} ->
         IO.puts("\n" <> Formatter.format_agent_response(content) <> "\n")
         Formatter.flush()
@@ -486,12 +491,27 @@ defmodule Yoke.CLI.Fix do
         1
 
       nil ->
+        # Killing the waiting caller alone does not stop Session's supervised
+        # agent-loop task. Stop the caller first so it cannot submit a late
+        # turn after cancellation, then cancel before checkpointing or cleanup.
+        Task.shutdown(task, :brutal_kill)
+        cancellation = Yoke.Brain.Session.cancel_current_turn(session_pid)
+
         IO.puts(
           Formatter.format_error(
-            "Agent turn did not finish within #{div(timeout, 1000)}s; the triage above is still valid."
+            "Agent turn did not finish within #{timeout}ms; the triage above is still valid."
           )
         )
 
+        if cancellation == :ok do
+          IO.puts(
+            Formatter.format_info(
+              "Active turn cancelled. Independently started jobs retain their own lifecycle; inspect them with /jobs."
+            )
+          )
+        end
+
+        recover_timeout(session_pid, prompt, cancellation)
         1
     end
   catch
@@ -499,4 +519,51 @@ defmodule Yoke.CLI.Fix do
       IO.puts(Formatter.format_error("Agent turn crashed: #{inspect(reason)}"))
       1
   end
+
+  defp recover_timeout(session_pid, prompt, cancellation) do
+    with %{status: :idle, session_id: id, cwd: cwd} <-
+           Yoke.Brain.Session.get_info(session_pid),
+         {:ok, snapshot} <-
+           Yoke.Brain.Session.checkpoint(session_pid, "Interrupted yoke fix triage"),
+         {:ok, saved} <- Yoke.Brain.SessionStore.load_session(id, cwd),
+         true <- saved["messages"] == snapshot.messages,
+         true <- prompt_saved?(saved["messages"], prompt) do
+      IO.puts(
+        Formatter.format_info(
+          "Recovery persisted in session #{id}.\n" <>
+            "Continue from this workspace: yoke -c #{shell_quote(id)} " <>
+            ~s(--prompt "Continue the interrupted yoke fix triage above; preserve its original plan-only or apply instructions.") <>
+            "\nThis starts a new turn from saved context; it does not resurrect the cancelled task."
+        )
+      )
+    else
+      failure ->
+        IO.puts(
+          Formatter.format_error(
+            "Could not persist verified recovery for this timeout: #{inspect(failure)} " <>
+              "(cancellation: #{inspect(cancellation)}). No continuation command is available."
+          )
+        )
+    end
+  rescue
+    error ->
+      IO.puts(Formatter.format_error("Could not persist recovery: #{Exception.message(error)}"))
+  catch
+    :exit, reason ->
+      IO.puts(Formatter.format_error("Could not persist recovery: #{inspect(reason)}"))
+  end
+
+  defp prompt_saved?(messages, prompt) when is_list(messages) do
+    Enum.any?(messages, fn
+      %{"role" => "user", "content" => content} when is_binary(content) ->
+        String.contains?(content, prompt)
+
+      _ ->
+        false
+    end)
+  end
+
+  defp prompt_saved?(_, _), do: false
+
+  defp shell_quote(value), do: "'" <> String.replace(value, "'", "'\\''") <> "'"
 end

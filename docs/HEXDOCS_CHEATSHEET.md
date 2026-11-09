@@ -23,7 +23,7 @@ yoke "Analyze project architecture in @mix.exs"
 yoke -m deepseek-coder "Fix syntax error in @lib/worker.ex"
 yoke --model deepseek-reasoner "Diagnose deadlock in @lib/session.ex"
 
-# Run background release update to latest commit
+# Update the release in the foreground and report the actual result
 yoke --update
 
 # Display CLI help
@@ -38,7 +38,7 @@ yoke --help
 | `--resume <id>` | `-r <id>` | Alias for `--conversation` |
 | `--prompt <str>` | `-p <str>` | Input prompt string for one-shot mode |
 | `--model <name>` | `-m <name>` | Model alias (`chat`, `coder`, `reasoner`) |
-| `--update` | `-u` | Background in-place self-update |
+| `--update` | `-u` | Foreground in-place self-update with actual success/failure |
 | `--node <name>` | — | Start local Erlang distributed node |
 | `--connect <node>`| — | Connect to remote Erlang Hands worker node |
 | `--plugin <path>` | — | Load external Elixir script plugin (`.ex` / `.exs`) |
@@ -99,9 +99,10 @@ yoke --help
 | `/model <alias>` | Switch active model (`chat`, `coder`, `reasoner`) | `/model reasoner` |
 | `/mode <target>` | Set Hands target (`local`, `docker <id>`, `remote <node>`) | `/mode docker container_1` |
 | `/resume [id]` | Resume session or open session picker modal | `/resume` |
-| `/compact` | Compress conversation history to save tokens | `/compact` |
-| `/undo` | Roll back state to previous temporal checkpoint | `/undo` |
-| `/checkpoint [lbl]` | Create temporal snapshot with label | `/checkpoint "Pre-refactor"` |
+| `/compact` | Compress context and show before/after token estimates and percentage change | `/compact` |
+| `/undo` | Restore and identify the previous conversation checkpoint, not working-tree files | `/undo` |
+| `/checkpoint` | List checkpoint IDs, labels, and turns | `/checkpoint` |
+| `/checkpoint <label>` | Save a labeled conversation snapshot | `/checkpoint Pre-refactor` |
 | `/permissions [mode]`| Set tool safety mode (`auto` or `ask`) | `/permissions auto` |
 | `/god [on\|off]` | Toggle God Mode auto-answering | `/god on` |
 | `/cost` \| `/tokens` | Display token consumption and cost statistics | `/cost` |

@@ -7,6 +7,8 @@ defmodule Yoke.CLI.Doctor do
 
   alias Yoke.CLI.Formatter
 
+  @native_apps [:bumblebee, :nx, :exla, :image]
+
   defstruct [:status, :checks, :summary]
 
   @doc "Runs all diagnostic checks and prints or returns a report."
@@ -16,7 +18,8 @@ defmodule Yoke.CLI.Doctor do
       check_workspace(workspace),
       check_provider(workspace, opts),
       check_git(workspace),
-      check_tools()
+      check_tools(),
+      check_optional_features()
     ]
 
     all_ok? = Enum.all?(checks, fn %{status: status} -> status == :ok end)
@@ -26,6 +29,31 @@ defmodule Yoke.CLI.Doctor do
       status: status,
       checks: checks,
       summary: format_report(checks, status)
+    }
+  end
+
+  @doc "Reports build-time optional features without loading applications, NIFs, or models."
+  def check_optional_features do
+    availability =
+      Enum.map(@native_apps, fn app ->
+        {app, :code.where_is_file(String.to_charlist("#{app}.app")) != :non_existing}
+      end)
+
+    selected = if native_features_selected(), do: "enabled", else: "disabled"
+
+    %{
+      category: "Optional Native Features",
+      status:
+        if(native_features_selected() and not Enum.all?(availability, &elem(&1, 1)),
+          do: :warning,
+          else: :ok
+        ),
+      details:
+        "Compiled embeddings/image selection: #{selected}. " <>
+          Enum.map_join(availability, ", ", fn {app, present?} ->
+            "#{app}: #{if present?, do: "present", else: "absent"}"
+          end) <>
+          ". Availability checks metadata only; NIFs and models are not loaded or probed."
     }
   end
 
@@ -99,6 +127,9 @@ defmodule Yoke.CLI.Doctor do
     else
       check_provider()
     end
+  rescue
+    error in ArgumentError ->
+      %{category: "AI Provider Credentials", status: :error, details: Exception.message(error)}
   end
 
   defp check_provider do
@@ -222,4 +253,6 @@ defmodule Yoke.CLI.Doctor do
 
     header <> items <> footer
   end
+
+  defp native_features_selected, do: Application.get_env(:yoke, :embeddings_enabled, false)
 end

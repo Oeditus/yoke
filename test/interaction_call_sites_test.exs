@@ -49,11 +49,15 @@ defmodule Yoke.InteractionCallSitesTest do
              "Brain.Session still pauses the spinner itself; Yoke.Interaction.TTY owns that"
     end
 
-    test "Yoke.CLI.Repl routes review confirmations through the seam" do
-      source = File.read!("lib/yoke/cli/repl.ex")
+    test "Yoke.PRReview.CLI routes review confirmations through the seam" do
+      source = File.read!("lib/yoke/pr_review/cli.ex")
 
       assert source =~ "Yoke.Interaction.ask(:review_fix",
-             "review_yes?/2 must be a thin adapter over Yoke.Interaction"
+             "review_yes?/3 must be a thin adapter over Yoke.Interaction"
+
+      repl = File.read!("lib/yoke/cli/repl.ex")
+      assert repl =~ "Yoke.PRReview.CLI.handle_review_fixes("
+      assert repl =~ "Yoke.PRReview.CLI.maybe_record_review_patterns("
     end
 
     test "every kind the plan enumerates is raised somewhere in the session actor" do

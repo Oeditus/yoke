@@ -71,7 +71,7 @@ defmodule Yoke.CLI.Formatter do
       "Use /permissions [auto|ask] to set tool execution safety mode",
       "Use /subagent <prompt> to spawn a background subagent worker for sub-tasks",
       "Use /workflow [list|run|status|resume|abort|init] to run customizable multi-step workflows (branch, describe, split & parallelize, test/docs, lint, commit)",
-      "Use /checkpoint [label] to create a temporal state snapshot",
+      "Use /checkpoint to list saved snapshots or /checkpoint <label> to save conversation/provider state",
       "Use /undo to roll back state to previous checkpoint",
       "Use /session to display active session metadata & statistics",
       "Use /nodes to view distributed Erlang node cluster status",
@@ -130,7 +130,7 @@ defmodule Yoke.CLI.Formatter do
       #{cyan()}/audit [code|ux]#{reset()}     Audit the whole project: strong parts, weaknesses, codebase & UX improvements
       #{cyan()}/bash [stats|export|clear]#{reset()} View bash command calls, counts, frequencies & export Ragex tool analogs
       #{cyan()}/cb#{reset()} or #{cyan()}/clipboard#{reset()}       Copy latest #{name} response to system clipboard (Markdown)
-      #{cyan()}/checkpoint [label]#{reset()}     Create a temporal state snapshot
+      #{cyan()}/checkpoint [label]#{reset()}     List snapshots; with a label, save conversation/provider state
       #{cyan()}/clear#{reset()}                  Clear terminal output
       #{cyan()}/commit <message>#{reset()}       Auto-commit staged workspace changes to git
       #{cyan()}/commit-structured [files]#{reset()} or #{cyan()}/cpr#{reset()} Commit staged changes with 5 PR sections (no PR)
@@ -187,7 +187,7 @@ defmodule Yoke.CLI.Formatter do
        • Decoupled Brain (GenServer) and Hands (Executor) on BEAM/OTP.
        • REPL invocation: `yoke`, `yoke "prompt"`, `yoke -c <session_id>`.
        • `@file`, `@url`, `@error` inline context expansion.
-       • Temporal snapshots & instant rollback with `/checkpoint` and `/undo`.
+       • List temporal snapshots with `/checkpoint`, save with `/checkpoint <label>`, restore conversation/provider state (not files) with `/undo`.
 
     #{cyan()}2. Teaching Yoke Language Practices (`.yoke/practices`)#{reset()}
        • Project-local (`.yoke/practices/<lang>.lmml`) & global (`~/.yoke/practices/<lang>.lmml`).

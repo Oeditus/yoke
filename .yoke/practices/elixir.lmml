@@ -1,0 +1,33 @@
+# Good Practices for Elixir
+
+Repository-specific practices for Yoke. Keep these aligned with the session, interaction, review, JSON, and build APIs in this checkout.
+
+- Keep OTP actors responsive: delegate long provider/tool work to supervised tasks, handle completion messages, and preserve cancellation and single-active-turn guards in `Yoke.Brain.Session`.
+- Keep session persistence and checkpoint compatibility intact through `Yoke.Brain.SessionStore` and `Yoke.Brain.SessionLmml`; propagate errors instead of announcing an unpersisted recovery session.
+- Keep provider configuration session-scoped through `Yoke.Provider`; preserve explicit model/endpoint/credential selection for auxiliary requests and child sessions, and never print secrets.
+- Preserve `Yoke.Interaction` permission decisions, explicit denials, sandbox boundaries, and headless behavior. Read-only reviews must use revision-pinned `Yoke.PRReview.Tools`; applying fixes requires approval and checkout identity revalidation.
+- Test with ExUnit, explicit provider/interaction stubs, temporary workspaces, and local fake executables. Regression tests must not make provider/network calls or rely on real credentials; restore modified application environment and stop spawned workers.
+- Match short known-size lists in assertions, for example `assert [first, second] = items`, rather than asserting `length(items) == 2`. Use tagged results and explicit error handling at API boundaries.
+- Use `Yoke.Json` and built-in `JSON`/OTP `:json` for JSON encoding and decoding; do not introduce a direct `:jason` dependency.
+- Keep ordinary `MIX_ENV=test` native-free for the optional embeddings/image stack. Preserve dev/prod native defaults, the escript exclusion, and the isolated `YOKE_EMBEDDINGS=true` opt-in build; do not force NIF/model initialization in ordinary tests.
+- Run focused tests and `mix test --exclude ragex --exclude skip_in_gha`; use `mix test --no-start` only with its explicit `:app` exclusions understood. Check `mix format --check-formatted`, `mix credo --strict`, and `mix dialyzer` with an available PLT; `mix quality.ci` additionally runs the potentially network-dependent `mix deps.audit`.
+- Keep documentation, code comments, review findings, and commit messages professional and free of emojis. Never put credentials, machine-specific paths, session data, or logs in shared practices.
+
+@@@manifest.json
+{
+  "language": "elixir",
+  "sources": [
+    ".yokerules",
+    "mix.exs",
+    "lib/yoke/brain/session.ex",
+    "lib/yoke/brain/session_store.ex",
+    "lib/yoke/brain/session_lmml.ex",
+    "lib/yoke/provider.ex",
+    "lib/yoke/interaction.ex",
+    "lib/yoke/pr_review/tools.ex",
+    "lib/yoke/json.ex",
+    "test/test_helper.exs",
+    ".github/workflows/ci.yml"
+  ]
+}
+@@@

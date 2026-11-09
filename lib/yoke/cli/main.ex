@@ -75,15 +75,69 @@ defmodule Yoke.CLI.Main do
         other -> other
       end
 
-    # A subcommand is the first non-flag argument, when it names a known
-    # entry in the dispatch table. `--help` / `--doctor` still win.
-    case split_subcommand(args) do
-      {subcommand, rest} ->
-        dispatch_subcommand(subcommand, rest)
+    {provider_opts, _, invalid} = OptionParser.parse(args, switches: [provider: :string])
 
-      nil ->
-        run_legacy(args)
+    validation =
+      if Enum.any?(invalid, fn {flag, _} -> flag == "--provider" end),
+        do: {:error, "--provider requires a profile name."},
+        else: validate_provider(provider_opts)
+
+    case validation do
+      :ok ->
+        case split_subcommand(args) do
+          {subcommand, rest} -> dispatch_subcommand(subcommand, rest)
+          nil -> run_legacy(args)
+        end
+
+      {:error, message} ->
+        IO.puts(Yoke.CLI.Formatter.format_error(message))
+        halt(2)
     end
+  end
+
+  @doc false
+  def validate_provider(opts \\ []) do
+    config = Yoke.Config.load_config(opts[:cwd] || File.cwd!())
+    name = opts[:provider] || System.get_env("YOKE_PROVIDER") || config["provider"]
+
+    if name not in [nil, :null, ""] do
+      Yoke.Provider.profile!(name)
+    end
+
+    :ok
+  rescue
+    error in ArgumentError -> {:error, Exception.message(error)}
+  end
+
+  defp update_step(executable, args, repo_dir, env) do
+    IO.puts(Yoke.CLI.Formatter.format_info("Running #{executable} #{Enum.join(args, " ")}"))
+
+    {_, status} =
+      System.cmd(executable, args,
+        cd: repo_dir,
+        env: env,
+        stderr_to_stdout: true,
+        into: IO.stream(:stdio, :line)
+      )
+
+    if status != 0 do
+      IO.puts(
+        Yoke.CLI.Formatter.format_error(
+          "Update failed: #{executable} exited with status #{status}. See output above."
+        )
+      )
+    end
+
+    status
+  rescue
+    error in [ErlangError, File.Error] ->
+      IO.puts(
+        Yoke.CLI.Formatter.format_error(
+          "Update failed: could not run #{executable}: #{Exception.message(error)}"
+        )
+      )
+
+      127
   end
 
   defp shutdown_ragex do
@@ -188,8 +242,6 @@ defmodule Yoke.CLI.Main do
       Application.put_env(:yoke, :project_languages, langs)
     end
 
-    if opts[:provider], do: Yoke.Provider.profile!(opts[:provider])
-
     cond do
       opts[:help] ->
         print_usage()
@@ -200,8 +252,7 @@ defmodule Yoke.CLI.Main do
         halt(0)
 
       opts[:update] || "update" in extra_args || "self-update" in extra_args ->
-        handle_self_update()
-        halt(0)
+        halt(handle_self_update())
 
       opts[:node] ->
         NodeManager.start_node(opts[:node])
@@ -235,26 +286,30 @@ defmodule Yoke.CLI.Main do
       System.get_env("YOKE_REPO_DIR") ||
         Application.get_env(:yoke, :repo_dir) || File.cwd!()
 
-    if File.dir?(Path.join(repo_dir, ".git")) do
+    if File.exists?(Path.join(repo_dir, ".git")) do
       IO.puts(
         Yoke.CLI.Formatter.format_info(
           "Pulling latest git changes and refreshing production release…"
         )
       )
 
-      script = """
-      (sleep 0.5 && cd "#{repo_dir}" && git pull --rebase && MIX_ENV=prod mix release --overwrite >/dev/null 2>&1) &
-      """
+      with 0 <- update_step("git", ["pull", "--rebase"], repo_dir, []),
+           0 <-
+             update_step("mix", ["release", "--overwrite"], repo_dir, [{"MIX_ENV", "prod"}]) do
+        IO.puts(
+          Yoke.CLI.Formatter.format_success("Update completed; production release refreshed.")
+        )
 
-      System.cmd("bash", ["-c", script], cd: repo_dir)
-
+        0
+      end
+    else
       IO.puts(
-        Yoke.CLI.Formatter.format_success(
-          "Update initiated! Yoke release will be refreshed in the background."
+        Yoke.CLI.Formatter.format_error(
+          "Cannot self-update: no git checkout at #{repo_dir}. Set YOKE_REPO_DIR to the source checkout."
         )
       )
-    else
-      IO.puts(Yoke.CLI.Formatter.format_info("Standalone release active."))
+
+      1
     end
   end
 

@@ -150,7 +150,9 @@ defmodule Yoke.MCPDllbShutdownTest do
     {project, proc, instance_file} = register_instance(root, "exception")
     assert :ok = activate(project)
 
-    assert_raise Protocol.UndefinedError, fn -> Main.main(nil) end
+    # Provider preflight now rejects non-list arguments in OptionParser before
+    # command dispatch. Cleanup must still run when argument parsing raises.
+    assert_raise FunctionClauseError, fn -> Main.main(nil) end
 
     assert Port.info(proc) == nil
     refute File.exists?(instance_file)

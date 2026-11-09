@@ -10,7 +10,29 @@ defmodule Yoke.PRReview.Findings do
   @marker ~r/<findings>|^[ \t]*```json(?:[ \t]+findings)?[ \t]*(?:\r?\n|\z)/m
   @closing_fence ~r/\A[ \t]*```[ \t]*(?:\r?\n|\z)/
   @skip_fence ~r/^[ \t]*```[ \t]*(?:\r?\n|\z)/m
+  @payload_hint ~r/<\/?findings\b|^[ \t]*```json\b/m
+  @missing_payload "No valid structured findings payload found."
   @severities ~w(high medium low info)
+
+  @doc """
+  Parses a completed review response. Nonempty prose without a findings payload
+  means no issues; blank responses and malformed payloads remain errors.
+
+  Callers must reject incomplete provider responses and API errors before using
+  this function. `parse/1` remains strict for structured-payload validation.
+  """
+  @spec parse_review(term()) :: {:ok, [map()]} | {:error, String.t()}
+  def parse_review(text) do
+    case parse(text) do
+      {:error, @missing_payload} = error ->
+        if String.trim(text) != "" and not Regex.match?(@payload_hint, text),
+          do: {:ok, []},
+          else: error
+
+      result ->
+        result
+    end
+  end
 
   @doc """
   Returns normalized atom-keyed findings, or a diagnostic for invalid input.
@@ -111,7 +133,7 @@ defmodule Yoke.PRReview.Findings do
   defp select_payload([], [_, _ | _]),
     do: {:error, "Multiple generic findings payloads are ambiguous."}
 
-  defp select_payload([], []), do: {:error, "No valid structured findings payload found."}
+  defp select_payload([], []), do: {:error, @missing_payload}
 
   defp normalize(payload) when is_list(payload) do
     payload

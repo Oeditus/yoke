@@ -174,7 +174,7 @@ defmodule Yoke.CI.Review do
   defp maybe_put(list, key, value), do: Keyword.put(list, key, value)
 
   defp parse_findings(%{content: content}) do
-    case PRReview.Findings.parse(content) do
+    case PRReview.Findings.parse_review(content) do
       {:ok, findings} -> {:ok, findings}
       {:error, reason} -> {:error, "Review output was not valid structured findings: #{reason}"}
     end

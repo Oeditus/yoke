@@ -146,11 +146,12 @@ defmodule Yoke.PRReview do
   end
 
   @doc """
-  Parses only schema-validated structured findings. Invalid output returns no
-  findings; use `Yoke.PRReview.Findings.parse/1` when a diagnostic is required.
+  Parses a completed review, treating an absent findings payload as no issues.
+  Invalid output returns no findings; use `Yoke.PRReview.Findings.parse_review/1`
+  when a diagnostic is required.
   """
   def parse_findings(review_md) when is_binary(review_md) do
-    case Yoke.PRReview.Findings.parse(review_md) do
+    case Yoke.PRReview.Findings.parse_review(review_md) do
       {:ok, findings} -> findings
       {:error, _reason} -> []
     end

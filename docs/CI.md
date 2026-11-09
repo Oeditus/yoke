@@ -717,6 +717,11 @@ remain non-fatal unless `DLLB_REQUIRED=1` is set.
 A posted review with no actionable findings remains a GitHub `COMMENT`,
 not a formal approval. After posting it successfully, Yoke dismisses its
 older `CHANGES_REQUESTED` reviews from the same GitHub reviewer identity.
+This includes a completed, non-empty model response with no structured
+findings payload: Yoke treats that response as zero issues and proceeds
+through the same clean-review posting and dismissal path. Blank responses,
+malformed payloads, truncated or filtered output, and API failures remain
+errors and do not clear previous change requests.
 New reviews carry a hidden Yoke identifier; the previous generated
 heading/verdict/summary format is recognized for existing reviews.
 

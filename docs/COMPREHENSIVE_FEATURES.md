@@ -55,7 +55,7 @@ In traditional single-threaded agent runtimes (Node.js/Python), an uncaught tool
 
 ### Key BEAM Features in Yoke
 - **Live Hot-Code Tool Reloading**: Compile and hot-swap custom Elixir tools live (`/plugins reload`) without restarting the session actor or losing context memory.
-- **Spatiotemporal State Checkpoints**: Automatic or manual snapshots (`/checkpoint`) record state before tool iterations, enabling instant rollbacks (`/undo`).
+- **Conversation State Checkpoints**: Automatic snapshots and `/checkpoint <label>` preserve conversation/provider state. `/checkpoint` lists IDs, labels, and turns; `/undo` identifies the restored snapshot. These commands do not roll back working-tree files.
 - **Parallel BEAM Process Monitoring**: Real-time rendering of active serving BEAM processes and background task workers directly on the status bar ruler.
 
 ---

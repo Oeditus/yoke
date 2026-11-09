@@ -1,0 +1,21 @@
+# Yoke repository rules
+
+## Architecture and state
+- Keep `Yoke.Brain.Session` responsive: run provider/tool turns in supervised tasks, not blocking GenServer callbacks. Preserve the single-active-turn guard, cancellation, caller replies, and task cleanup.
+- Preserve session history, checkpoint compatibility, and resumable persistence in `Yoke.Brain.SessionStore` and `Yoke.Brain.SessionLmml`. Report failed writes honestly; do not claim state was saved when persistence failed.
+- Resolve providers through `Yoke.Provider` and pass session-scoped options to auxiliary calls and child sessions. Never log credentials or silently fall back to an unrelated provider.
+
+## Permissions and reviews
+- Route blocking decisions through `Yoke.Interaction` and presentation through the existing CLI output seams. Preserve explicit denials, sandbox bounds, and headless non-blocking behavior.
+- Keep review turns read-only and pinned to the reviewed Git objects through `Yoke.PRReview.Context` and `Yoke.PRReview.Tools`. Guidance is not permission to mutate files, execute arbitrary commands, or post reviews. Revalidate checkout/commit identity and obtain the required approval before applying fixes.
+
+## Tests and dependencies
+- Use deterministic ExUnit tests with explicit provider/interaction stubs or local fake executables. Do not call real providers, spend credits, depend on credentials, or perform network operations in regression tests. Use temporary workspaces and restore any changed application environment.
+- Ordinary `MIX_ENV=test` omits the optional embeddings/image native stack. Keep dev/prod defaults and the escript exclusion intact; `YOKE_EMBEDDINGS=true` is an explicit native-test opt-in with separate build output. Do not install or rebuild native dependencies merely to run ordinary tests.
+- Use `Yoke.Json`, backed by built-in `JSON` and OTP `:json`, for project JSON handling; do not add a direct `:jason` dependency.
+
+## Quality and writing
+- Run focused tests, then `mix test --exclude ragex --exclude skip_in_gha` for the CI-style suite. `mix test --no-start` excludes tests tagged `:app`; it is not equivalent to full application coverage. Coverage uses `mix coveralls.github --exclude ragex --exclude skip_in_gha` in CI.
+- Check `mix format --check-formatted`, `mix credo --strict`, and `mix dialyzer` with an available PLT. `mix quality.ci` also runs `mix deps.audit`; vulnerability auditing may require network access and is separate from offline regression tests. Use the installed toolchain, and report unavailable checks rather than claiming success.
+- Prefer pattern matching for short known-size lists in tests, such as `assert [first, second] = result`, rather than `length/1` assertions.
+- Use professional, text-only technical writing: no emojis in code comments, documentation, review findings, or commit messages. Keep machine-specific paths, credentials, sessions, and logs out of tracked guidance; share only `.yoke/practices/elixir.lmml` and the existing CI policy under `.yoke/`.

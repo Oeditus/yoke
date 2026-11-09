@@ -303,6 +303,7 @@ defmodule Yoke.Brain.SessionLmml do
       "model" => Map.get(session_state, :model, "deepseek-flash"),
       "permission_mode" => to_string(Map.get(session_state, :permission_mode, :ask_confirm)),
       "step_count" => Map.get(session_state, :step_count, 0),
+      "turn_count" => Map.get(session_state, :turn_count),
       "total_prompt_tokens" => Map.get(session_state, :total_prompt_tokens, 0),
       "total_completion_tokens" => Map.get(session_state, :total_completion_tokens, 0),
       "updated_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
@@ -315,6 +316,7 @@ defmodule Yoke.Brain.SessionLmml do
       %{
         "id" => s[:id] || s["id"],
         "label" => s[:label] || s["label"],
+        "turn" => s[:turn] || s["turn"],
         "timestamp" => s[:timestamp] || s["timestamp"],
         "model" => s[:model] || s["model"],
         "provider_options" => s[:provider_options] || s["provider_options"] || %{},
@@ -358,6 +360,7 @@ defmodule Yoke.Brain.SessionLmml do
       "model" => Map.get(data, "model", "deepseek-flash"),
       "permission_mode" => Map.get(data, "permission_mode", "ask_confirm"),
       "step_count" => Map.get(data, "step_count", 0),
+      "turn_count" => Map.get(data, "turn_count"),
       "total_prompt_tokens" => Map.get(data, "total_prompt_tokens", 0),
       "total_completion_tokens" => Map.get(data, "total_completion_tokens", 0),
       "updated_at" => Map.get(data, "updated_at"),

@@ -55,7 +55,7 @@ defmodule Yoke.CLI.Help do
     Example: /bash export
     """,
     "checkpoint" =>
-      "/checkpoint [label]\nSave a session state snapshot. Example: /checkpoint before-refactor",
+      "/checkpoint\nList saved checkpoint IDs, labels, and turns.\n/checkpoint <label>\nSave conversation/provider state (not working-tree files). Example: /checkpoint before-refactor",
     "clear" => "/clear\nClear terminal output without resetting conversation state.",
     "clipboard" => """
     /clipboard (or /cb)
@@ -69,7 +69,8 @@ defmodule Yoke.CLI.Help do
     A declared alias for a structured commit with five PR sections, without a PR.
     Inspect the configured definition with /alias show commit-structured before running.
     """,
-    "compact" => "/compact\nCompress the active conversation context into a summary.",
+    "compact" =>
+      "/compact\nCompress context and report estimated current tokens before/after with signed percentage change (not cumulative billed usage).",
     "config" => """
     /config
     /config explorer (or /explorer)
@@ -263,7 +264,8 @@ defmodule Yoke.CLI.Help do
     Capture a raw pipeline thought. Example: /thought Token refresh | Renew expired tokens
     """,
     "tokens" => "/tokens\nShow per-turn token usage and the session cumulative total.",
-    "undo" => "/undo\nRestore the previous session checkpoint.",
+    "undo" =>
+      "/undo\nRestore conversation/provider state from the newest checkpoint and show its ID, label, and turn. Working-tree files are unchanged. Use /checkpoint to list snapshots or /checkpoint <label> to save one.",
     "update" => "/update\nRun the Yoke self-update procedure.",
     "what-next" => "/what-next\nRecommend a backlog item or thought to work on next."
   }

@@ -30,7 +30,6 @@ defmodule Yoke.Brain.Session do
   - To read several files at once, use the `read_files` tool (pass a `paths` list) instead of issuing multiple `read_file` calls -- it reads them all concurrently in a single tool call.
   - When breaking down complex or multi-step work, use `spawn_subagent` (with `async: true`) to spawn independent sub-agent worker processes that execute concurrently in parallel. NEVER use `sleep` or polling loops (`sleep 60 && ...`) -- spawned tasks and subagents run as asynchronous OTP worker processes and notify this session via native Erlang messages when complete.
   - Parallel process execution is fully backed by the Erlang/Elixir BEAM actor model for maximum speed and concurrent throughput. Always leverage maximum parallelism!
-  - Always report how many BEAM processes are currently serving when summarizing system status or turn execution.
 
   Tool Selection Guidelines:
   - MANDATORY: CALL TOOLS INSTEAD OF PLAIN BASH WHENEVER POSSIBLE:
@@ -67,7 +66,7 @@ defmodule Yoke.Brain.Session do
       {:error,
        "The provider returned an incomplete review (#{response[:finish_reason]}). Increase max_tokens or reduce the review range and retry."}
     else
-      with {:ok, findings} <- Yoke.PRReview.Findings.parse(response.content) do
+      with {:ok, findings} <- Yoke.PRReview.Findings.parse_review(response.content) do
         Yoke.PRReview.Context.validate_findings(findings, context)
       end
     end
@@ -181,6 +180,11 @@ defmodule Yoke.Brain.Session do
   @doc "Creates a temporal state snapshot (checkpoint)."
   def checkpoint(pid, label \\ nil) do
     GenServer.call(pid, {:checkpoint, label}, :infinity)
+  end
+
+  @doc "Lists checkpoint metadata (ID, label, turn, timestamp) without messages or provider state."
+  def list_checkpoints(pid) do
+    GenServer.call(pid, :list_checkpoints, :infinity)
   end
 
   @doc "Rolls back session state to previous checkpoint."
@@ -313,6 +317,7 @@ defmodule Yoke.Brain.Session do
       tools: tools,
       tool_failure_counts: %{},
       snapshots: [],
+      turn_count: 0,
       step_count: 0,
       max_tool_depth:
         opts[:max_tool_depth] || Map.get(Config.load_config(cwd), "max_tool_depth", 1000),
@@ -397,6 +402,8 @@ defmodule Yoke.Brain.Session do
           %{
             state
             | messages: saved_data["messages"] || initial_messages,
+              snapshots: restore_snapshots(saved_data["snapshots"] || []),
+              turn_count: saved_turn(saved_data["turn_count"], saved_data["messages"] || []),
               images: saved_data["images"] || saved_data[:images] || %{}
           }
 
@@ -497,6 +504,7 @@ defmodule Yoke.Brain.Session do
     state = %{
       state
       | messages: state.messages ++ [user_msg],
+        turn_count: state.turn_count + 1,
         images: new_images,
         status: :thinking
     }
@@ -505,7 +513,7 @@ defmodule Yoke.Brain.Session do
     # once this turn's tool calls look non-trivial.
     state = %{state | plan_approved_for_turn: false}
 
-    state = auto_checkpoint(state, "Pre-turn ##{state.step_count + 1}")
+    state = auto_checkpoint(state, "Pre-turn ##{state.turn_count}")
 
     start_agent_turn(state, from)
   end
@@ -677,6 +685,7 @@ defmodule Yoke.Brain.Session do
         total_prompt_tokens: 0,
         total_completion_tokens: 0,
         estimated_cost_usd: 0.0,
+        turn_count: 0,
         step_count: 0,
         plan_approved_for_turn: false,
         suppress_tools: false,
@@ -695,14 +704,33 @@ defmodule Yoke.Brain.Session do
       id: "cp_#{System.unique_integer([:positive])}",
       provider_options: Yoke.Provider.public_options(call_options(state)),
       label: label,
+      turn: state.turn_count,
       timestamp: DateTime.utc_now(),
       messages: state.messages,
       model: state.model
     }
 
     new_state = %{state | snapshots: [snapshot | state.snapshots]}
-    SessionStore.save_session(new_state, state.cwd)
-    {:reply, {:ok, snapshot}, new_state}
+
+    case SessionStore.save_session(new_state, state.cwd) do
+      {:ok, _path} ->
+        {:reply, {:ok, snapshot}, new_state}
+
+      {:error, reason} ->
+        {:reply, {:error, "Could not save checkpoint: #{inspect(reason)}"}, state}
+    end
+  end
+
+  @impl true
+  def handle_call(:list_checkpoints, _from, state) do
+    metadata =
+      Enum.map(state.snapshots, fn snapshot ->
+        snapshot
+        |> Map.take([:id, :label, :timestamp])
+        |> Map.put(:turn, snapshot_turn(snapshot))
+      end)
+
+    {:reply, metadata, state}
   end
 
   @impl true
@@ -712,7 +740,7 @@ defmodule Yoke.Brain.Session do
         Logger.info("[Brain.Session] Rolling back state to snapshot: #{latest.label}")
 
         provider_opts =
-          if is_map(latest[:provider_options]) do
+          if is_map(latest[:provider_options]) and map_size(latest.provider_options) > 0 do
             Yoke.Provider.restore(latest.provider_options, state.cwd)
           else
             Keyword.put(call_options(state), :model, latest.model)
@@ -721,6 +749,7 @@ defmodule Yoke.Brain.Session do
         new_state = %{
           state
           | messages: latest.messages,
+            turn_count: snapshot_turn(latest),
             model: provider_opts[:model],
             endpoint: provider_opts[:endpoint],
             api_key: provider_opts[:api_key],
@@ -728,11 +757,23 @@ defmodule Yoke.Brain.Session do
             snapshots: rest
         }
 
-        SessionStore.save_session(new_state, state.cwd)
-        {:reply, {:ok, "Rolled back to checkpoint: '#{latest.label}'"}, new_state}
+        message =
+          "Restored conversation/provider state from checkpoint '#{latest.label}' " <>
+            "(ID: #{latest.id}, turn: #{snapshot_turn(latest)}). Working-tree files are unchanged."
+
+        case SessionStore.save_session(new_state, state.cwd) do
+          {:ok, _path} ->
+            {:reply, {:ok, message}, new_state}
+
+          {:error, reason} ->
+            {:reply, {:error, "Could not persist undo: #{inspect(reason)}"}, state}
+        end
 
       [] ->
-        {:reply, {:error, "No checkpoints available to undo."}, state}
+        {:reply,
+         {:error,
+          "No checkpoints available to undo. Use /checkpoint <label> to save one; /checkpoint lists saved checkpoints."},
+         state}
     end
   end
 
@@ -890,6 +931,7 @@ defmodule Yoke.Brain.Session do
       plan_gate_threshold: state.plan_gate_threshold,
       serving_processes: proc_status.total_serving_processes,
       active_task_workers: proc_status.active_task_workers,
+      active_sessions: proc_status.active_sessions,
       serving_report: Yoke.report_serving_processes(),
       pid: self()
     }
@@ -1129,6 +1171,7 @@ defmodule Yoke.Brain.Session do
           merged = %{
             state
             | messages: state.messages ++ Enum.drop(new_turn_state.messages, count),
+              turn_count: new_turn_state.turn_count,
               total_prompt_tokens: new_turn_state.total_prompt_tokens,
               total_completion_tokens: new_turn_state.total_completion_tokens,
               estimated_cost_usd: new_turn_state.estimated_cost_usd,
@@ -1297,7 +1340,8 @@ defmodule Yoke.Brain.Session do
 
               %{
                 merged
-                | messages:
+                | turn_count: state.turn_count + 1,
+                  messages:
                     merged.messages ++
                       [
                         %{"role" => "user", "content" => identity},
@@ -2085,17 +2129,11 @@ defmodule Yoke.Brain.Session do
 
   def message_content_text(_), do: ""
 
-  # Computes the estimated session cost in USD from the cumulative prompt
-  # and completion token counts, using the per-million-token prices from
-  # system-global config (~/.yoke/config.json) or a workspace override
-  # (.yoke/config.json). Falls back to DeepSeek's published V3 rates
-  # (prompt $0.14/1M, completion $0.28/1M) when unset, so existing
-  # installations without the new keys keep their previous estimates.
+  # Approximate the current request payload, not cumulative billed usage or
+  # the last provider response. Recompute after edits, restores and compaction.
   defp current_context_tokens(state) do
-    case List.last(state.turn_history) do
-      nil -> 0
-      turn -> turn.total_tokens
-    end
+    payload = Yoke.Json.encode!(%{"messages" => state.messages, "tools" => state.tools})
+    div(String.length(payload) + 3, 4)
   end
 
   defp estimate_cost(state, prompt_tokens, completion_tokens) do
@@ -2661,6 +2699,7 @@ defmodule Yoke.Brain.Session do
       id: "auto_#{System.unique_integer([:positive])}",
       provider_options: Yoke.Provider.public_options(call_options(state)),
       label: label,
+      turn: state.turn_count,
       timestamp: DateTime.utc_now(),
       messages: state.messages,
       model: state.model
@@ -2684,4 +2723,42 @@ defmodule Yoke.Brain.Session do
   end
 
   defp has_pending_notice?(_), do: false
+
+  defp conversation_turn(messages) do
+    Enum.count(messages, &(Map.get(&1, "role") == "user"))
+  end
+
+  defp saved_turn(turn, _messages) when is_integer(turn) and turn >= 0, do: turn
+  defp saved_turn(_turn, messages), do: conversation_turn(messages)
+
+  defp snapshot_turn(snapshot) do
+    saved_turn(snapshot[:turn], snapshot[:messages] || [])
+  end
+
+  # Older LMML/JSON checkpoints have string keys and no turn metadata.
+  # Whitelist keys rather than creating atoms from persisted input.
+  defp restore_snapshots(snapshots) when is_list(snapshots) do
+    Enum.flat_map(snapshots, fn snapshot ->
+      if is_map(snapshot) do
+        normalized =
+          Map.new(
+            [:id, :label, :timestamp, :messages, :model, :provider_options, :turn],
+            fn key ->
+              {key, snapshot[key] || snapshot[Atom.to_string(key)]}
+            end
+          )
+
+        if is_list(normalized.messages) and is_binary(normalized.id) and
+             is_binary(normalized.label) and is_binary(normalized.model) do
+          [Map.put(normalized, :turn, snapshot_turn(normalized))]
+        else
+          []
+        end
+      else
+        []
+      end
+    end)
+  end
+
+  defp restore_snapshots(_), do: []
 end
