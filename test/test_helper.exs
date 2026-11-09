@@ -1,6 +1,32 @@
 test_history_path =
   Path.join(System.tmp_dir!(), "yoke_test_history_#{System.unique_integer([:positive])}")
 
+# Ambient provider credentials and endpoint configuration in developer shells
+# (e.g. ~/.zshrc or ~/.bashrc) must not leak into the test suite.
+for var <- ~w(
+  DEEPSEEK_API_KEY
+  DEEPSEEK_R1_API_KEY
+  DEEPSEEK_ENDPOINT
+  DEEPSEEK_MODEL
+  OPENAI_API_KEY
+  OPENAI_BASE_URL
+  OPENAI_MODEL
+  OPENROUTER_API_KEY
+  OPENROUTER_BASE_URL
+  OPENCODE_API_KEY
+  OPENCODE_ZEN_API_KEY
+  OPENCODE_BASE_URL
+  OPENCODE_SESSION_ID
+  OLLAMA_HOST
+  YOKE_PROVIDER
+  YOKE_ENDPOINT
+  YOKE_MODEL
+  YOKE_API_KEY
+  LLM_API_KEY
+) do
+  System.delete_env(var)
+end
+
 Application.put_env(:yoke, :history_file, test_history_path)
 Application.put_env(:yoke, :auto_start_ragex, false)
 Application.put_env(:yoke, :system_halt_enabled, false)
