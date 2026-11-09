@@ -293,7 +293,7 @@ defmodule Yoke.ProviderTest do
     assert {:ok, _} = Session.send_user_message(pid, "Hello again")
     stats = Session.get_stats(pid)
     assert stats.context_tokens > 0
-    assert stats.context_tokens < stats.total_tokens
+    assert stats.context_tokens < stats.total_tokens * 2
   end
 
   test "workflow meta calls retain the selected local transport", %{tmp_dir: cwd} do

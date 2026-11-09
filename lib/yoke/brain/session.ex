@@ -2183,8 +2183,15 @@ defmodule Yoke.Brain.Session do
         end
       end)
 
-    # Step 2: Execute permitted tools concurrently off the main loop via TaskEngine
-    executed_batch = Orchestrator.execute_batch(permitted_calls, state_after_permissions)
+    # Step 2: Execute permitted tools concurrently off the main loop via TaskEngine.
+    # Long-lived server/watcher/REPL commands are awaited without a deadline
+    # instead of being reported as a timeout: they are doing exactly what was
+    # asked of them, and the model needs the real (eventual) result rather
+    # than a fabricated failure.
+    executed_batch =
+      Orchestrator.execute_batch(permitted_calls, state_after_permissions,
+        allow_long_running: true
+      )
 
     # Step 3: Collate results in original order, update transcripts, failure handles, & issue tracking
     {tool_messages, system_notices, final_state} =

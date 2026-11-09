@@ -38,6 +38,47 @@ defmodule Yoke.TaskEngine.OrchestratorTest do
     end
   end
 
+  describe "long_running_command?/1" do
+    test "recognises server, watcher, and REPL commands" do
+      assert Orchestrator.long_running_command?("./mvnw quarkus:dev")
+      assert Orchestrator.long_running_command?("mvn quarkus:dev")
+      assert Orchestrator.long_running_command?("./mvnw spring-boot:run")
+      assert Orchestrator.long_running_command?("npm run dev")
+      assert Orchestrator.long_running_command?("docker compose up -d")
+      assert Orchestrator.long_running_command?("mix phx.server")
+      assert Orchestrator.long_running_command?("tail -f logs/app.log")
+    end
+
+    test "does not treat one-shot build and test commands as long running" do
+      refute Orchestrator.long_running_command?("./mvnw clean install")
+      refute Orchestrator.long_running_command?("./mvnw test")
+      refute Orchestrator.long_running_command?("mix test")
+      refute Orchestrator.long_running_command?("cargo build")
+      refute Orchestrator.long_running_command?("ls -la")
+    end
+  end
+
+  describe "long_running_tool?/1" do
+    test "classifies shell-executing tool calls by their command" do
+      assert Orchestrator.long_running_tool?(%{
+               name: "bash",
+               arguments: %{"command" => "./mvnw quarkus:dev"}
+             })
+
+      refute Orchestrator.long_running_tool?(%{
+               name: "bash",
+               arguments: %{"command" => "./mvnw clean install"}
+             })
+    end
+
+    test "ignores non-shell tools even when their arguments mention a server" do
+      refute Orchestrator.long_running_tool?(%{
+               name: "write_file",
+               arguments: %{"path" => "dev.sh", "content" => "./mvnw quarkus:dev"}
+             })
+    end
+  end
+
   describe "execute_batch/3" do
     test "ask_question tool calls are never cut off by the batch execution timeout" do
       session_state = %{hands: %Yoke.Hands.Executor{mode: :local}}
@@ -67,6 +108,53 @@ defmodule Yoke.TaskEngine.OrchestratorTest do
       # the batch timeout as before.
       assert {:error, bash_msg} = bash_res
       assert bash_msg =~ "timed out"
+    end
+
+    test "a long-running server command is not reported as a timeout when allowed" do
+      session_state = %{hands: %Yoke.Hands.Executor{mode: :local}}
+
+      tool_calls = [
+        %{
+          id: "dev",
+          name: "bash",
+          arguments: %{"command" => "echo 'Quarkus dev mode started' # ./mvnw quarkus:dev"}
+        }
+      ]
+
+      # `allow_long_running: true` is what the session passes for real turns;
+      # the command itself is a fast stand-in for a server that never returns.
+      results =
+        Orchestrator.execute_batch(tool_calls, session_state,
+          timeout: 1,
+          allow_long_running: true
+        )
+
+      assert [{_tc, res}] = results
+      assert {:ok, out} = res
+      assert out =~ "Quarkus dev mode started"
+    end
+
+    test "a timed-out long-running command explains how to recover" do
+      session_state = %{hands: %Yoke.Hands.Executor{mode: :local}}
+
+      tool_calls = [
+        %{
+          id: "dev",
+          name: "bash",
+          arguments: %{"command" => "sleep 5 # ./mvnw quarkus:dev"}
+        }
+      ]
+
+      # Without `allow_long_running`, the hard timeout still applies -- but the
+      # error must point the model at the background-job escape hatch instead
+      # of leaving it to retry the same blocking command.
+      results = Orchestrator.execute_batch(tool_calls, session_state, timeout: 1)
+
+      assert [{_tc, res}] = results
+      assert {:error, msg} = res
+      assert msg =~ "timed out"
+      assert msg =~ "async: true"
+      assert msg =~ "long-lived process"
     end
   end
 

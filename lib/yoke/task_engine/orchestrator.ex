@@ -40,6 +40,16 @@ defmodule Yoke.TaskEngine.Orchestrator do
     {interactive, timed} =
       Enum.split_with(tasks, fn {_task, _idx, tc} -> interactive_tool?(tc.name) end)
 
+    # Tools that legitimately outlive the batch's wall-clock budget (server
+    # processes, watch modes, REPLs) are awaited with `:infinity` as well,
+    # but only when the caller explicitly asked for it. Every other tool
+    # keeps the hard timeout so a hung `bash` or file operation is still
+    # reported instead of stalling the turn forever.
+    {long_running, timed} =
+      Enum.split_with(timed, fn {_task, _idx, tc} ->
+        opts[:allow_long_running] && long_running_tool?(tc)
+      end)
+
     timed_structs = Enum.map(timed, fn {task, _idx, _tc} -> task end)
 
     yielded_map =
@@ -56,10 +66,25 @@ defmodule Yoke.TaskEngine.Orchestrator do
 
             nil ->
               Task.shutdown(task, :brutal_kill)
-              {:error, "Tool execution timed out after #{timeout}ms"}
+
+              {:error,
+               "Tool execution timed out after #{timeout}ms. " <>
+                 timeout_guidance(tc)}
 
             {:exit, reason} ->
               {:error, "Tool process crashed: #{inspect(reason)}"}
+          end
+
+        {idx, tc, res}
+      end)
+
+    long_running_results =
+      Enum.map(long_running, fn {task, idx, tc} ->
+        res =
+          case Task.yield(task, :infinity) || Task.shutdown(task, :brutal_kill) do
+            {:ok, {_idx, _tc, exec_result}} -> exec_result
+            {:exit, reason} -> {:error, "Tool process crashed: #{inspect(reason)}"}
+            nil -> {:error, "Tool execution failed unexpectedly"}
           end
 
         {idx, tc, res}
@@ -77,7 +102,7 @@ defmodule Yoke.TaskEngine.Orchestrator do
         {idx, tc, res}
       end)
 
-    (timed_results ++ interactive_results)
+    (timed_results ++ long_running_results ++ interactive_results)
     |> Enum.sort_by(fn {idx, _tc, _res} -> idx end)
     |> Enum.map(fn {_idx, tc, res} -> {tc, res} end)
   end
@@ -94,6 +119,70 @@ defmodule Yoke.TaskEngine.Orchestrator do
   # regardless, so this is harmless in that case.
   def interactive_tool?("spawn_subagent"), do: true
   def interactive_tool?(_), do: false
+
+  # Shell-executing tools, whether registered by `Yoke.Plugin.DefaultTools`
+  # ("bash") or exposed under an alias by another plugin or MCP server.
+  @shell_exec_tool_names ~w(bash cmd run_command shell exec)
+
+  # Commands that start a long-lived server, watcher, or REPL and therefore
+  # never return on their own. Blocking on them until the batch timeout
+  # produces a fabricated "timed out" error for a command that is actually
+  # working exactly as intended; the correct answer is to run them in the
+  # background (`async: true`) instead.
+  @long_running_command_patterns [
+    ~r/\bquarkus:dev\b/,
+    ~r/\bspring-boot:run\b/,
+    ~r/\bmicronaut:run\b/,
+    ~r/\bgradlew?\s+run\b/,
+    ~r/\bmvnw?\s+["']?run\b/,
+    ~r/\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve)\b/,
+    ~r/\b(?:mix\s+phx\.server|mix\s+run\s+--no-halt)\b/,
+    ~r/\b(?:docker\s+compose|docker-compose)\s+up\b/,
+    ~r/\b(?:rails\s+(?:server|s)|cargo\s+run\b\s+--\s*serve)/,
+    ~r/\b(?:iex|irb|python3?\s+-i|node\s*$)/,
+    ~r/\b(?:tail|journalctl)\s+-f\b/,
+    ~r/\bwatch\s+/
+  ]
+
+  @doc """
+  Returns true when a tool call is expected to run indefinitely (a server,
+  watcher, or REPL) rather than terminate on its own.
+
+  Only meaningful together with the `:allow_long_running` batch option: the
+  caller decides whether such a call should be awaited without a deadline
+  instead of being reported as a timeout.
+  """
+  def long_running_tool?(%{name: name, arguments: args}) when name in @shell_exec_tool_names do
+    case args do
+      %{"command" => cmd} when is_binary(cmd) -> long_running_command?(cmd)
+      _ -> false
+    end
+  end
+
+  def long_running_tool?(_), do: false
+
+  @doc "Returns true when a shell command starts a long-lived server, watcher, or REPL."
+  def long_running_command?(cmd) when is_binary(cmd) do
+    Enum.any?(@long_running_command_patterns, &Regex.match?(&1, cmd))
+  end
+
+  def long_running_command?(_), do: false
+
+  # Actionable follow-up for a timed-out tool call, so the model can correct
+  # course instead of retrying the same blocking command.
+  defp timeout_guidance(%{name: name, arguments: args}) when name in @shell_exec_tool_names do
+    cmd = if is_map(args), do: Map.get(args, "command"), else: nil
+
+    if is_binary(cmd) and long_running_command?(cmd) do
+      "This command starts a long-lived process (server, watcher, or REPL). " <>
+        "Re-run it with `async: true` and poll with `job_status`, or use a " <>
+        "one-shot build/test command instead."
+    else
+      "Re-run it with `async: true` if it legitimately needs more time."
+    end
+  end
+
+  defp timeout_guidance(_), do: "Re-run it with `async: true` if it legitimately needs more time."
 
   defp run_single_tool(tc, session_state) do
     summary = format_short_summary(tc.name, tc.arguments)

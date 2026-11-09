@@ -69,6 +69,18 @@ defmodule Yoke.Practices do
       "Follow standard Go project structure (`cmd/`, `pkg/`, `internal/`).",
       "Handle error return values explicitly immediately after call sites.",
       "Keep interfaces small and focused (prefer single-method interfaces where applicable)."
+    ],
+    "java" => [
+      "Follow the standard Maven/Gradle layout (`src/main/java`, `src/main/resources`, `src/test/java`).",
+      "Keep one public top-level type per file and match the file name to the type name.",
+      "Prefer small, focused methods with early returns over deeply nested conditionals.",
+      "Document public classes and methods with Javadoc (`@param`, `@return`, `@throws`), keeping it accurate when behaviour changes.",
+      "Use `Optional` for lookups that may legitimately return nothing, and throw a specific exception at the boundary when absence is an error.",
+      "Do not swallow exceptions: catch only what can be handled and preserve the original cause when rethrowing.",
+      "Keep persistence concerns (entities, transactions) out of REST resources; map between entities and DTOs at the service boundary.",
+      "Annotate transactional service methods explicitly (`@Transactional`) rather than relying on implicit request-scoped transactions.",
+      "Write JUnit tests with AssertJ assertions, covering boundary conditions and failure paths as well as the happy path.",
+      "When editing an existing method, change only that method's body and leave its annotations, signature, and return type untouched."
     ]
   }
 

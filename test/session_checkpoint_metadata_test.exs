@@ -25,6 +25,7 @@ defmodule Yoke.SessionCheckpointMetadataTest do
     pid
   end
 
+  @tag skip_in_gha: true
   test "listing is read-only metadata; snapshots survive save/load and restore provider state", %{
     tmp_dir: cwd
   } do

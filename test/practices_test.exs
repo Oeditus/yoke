@@ -32,6 +32,21 @@ defmodule Yoke.PracticesTest do
     assert Practices.detect_languages(tmp_dir) == ["rust"]
   end
 
+  test "detects java language from pom.xml", %{tmp_dir: tmp_dir} do
+    File.write!(Path.join(tmp_dir, "pom.xml"), "<project/>")
+    assert Practices.detect_languages(tmp_dir) == ["java"]
+  end
+
+  test "java has Java-specific default practices rather than the generic fallback" do
+    items = Practices.default_practices_for("java")
+
+    assert is_list(items)
+    assert Enum.count(items) >= 5
+    assert Enum.any?(items, &String.contains?(&1, "Javadoc"))
+    assert Enum.any?(items, &String.contains?(&1, "JUnit"))
+    refute Enum.any?(items, &String.contains?(&1, "for java"))
+  end
+
   test "saves and loads practices in .lmml format", %{tmp_dir: tmp_dir, global_dir: global_dir} do
     items = [
       "Use pattern matching in function signatures.",
