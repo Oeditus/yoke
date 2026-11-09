@@ -2047,14 +2047,14 @@ defmodule Yoke.CLI.ConfigExplorer do
     enter_alternate_screen()
     set_raw_mode()
     state = new_state(cwd, opts)
-    reader = Keyword.get(opts, :read_key, &read_key/0)
+    reader = Keyword.get(opts, :read_key, &read_key/1)
     session_ref = make_ref()
 
     try do
       render_full_screen(state)
       state = start_loading(state)
       Process.put(session_ref, state)
-      tui_loop(state, {session_ref, reader})
+      tui_loop(state, {session_ref, reader}, force_render: false)
     after
       cancel_loading(Process.delete(session_ref))
       TerminalOwner.clear()
@@ -2063,35 +2063,53 @@ defmodule Yoke.CLI.ConfigExplorer do
     end
   end
 
-  defp tui_loop(state, {session_ref, reader} = input) do
-    state = await_event(state, input)
-    Process.put(session_ref, state)
-    render_full_screen(state)
-    TerminalOwner.set(&erase_for_log/1, &redraw_for_log/1, state)
+  defp tui_loop(state, {session_ref, reader} = input, opts \\ [force_render: true]) do
+    {state, changed?} = drain_events(state)
+    force_render? = Keyword.get(opts, :force_render, false) or changed?
+
+    if force_render? do
+      Process.put(session_ref, state)
+      render_full_screen(state)
+      TerminalOwner.set(&erase_for_log/1, &redraw_for_log/1, state)
+    end
+
+    timeout = if any_loading?(state), do: 30, else: 200
 
     key =
       try do
-        reader.()
+        cond do
+          is_function(reader, 1) -> reader.(timeout)
+          is_function(reader, 0) -> reader.()
+          true -> :eof
+        end
       rescue
         _ -> :eof
       catch
         _, _ -> :eof
       end
 
-    handle_key(state, key, input)
+    case key do
+      :timeout ->
+        tui_loop(state, input, force_render: false)
+
+      _ ->
+        handle_key(state, key, input)
+    end
   end
 
-  defp await_event(state, input) do
+  defp drain_events(state, changed? \\ false) do
     receive do
       {:explorer_load, _, _, _} = message ->
         updated = apply_load_result(state, message)
-        render_full_screen(updated)
-        TerminalOwner.set(&erase_for_log/1, &redraw_for_log/1, updated)
-        await_event(updated, input)
+        drain_events(updated, true)
     after
       0 ->
-        state
+        {state, changed?}
     end
+  end
+
+  defp any_loading?(state) do
+    Enum.any?(state.loading, fn {_tab, status} -> status in [:pending, :loading] end)
   end
 
   defp handle_key(state, key, input) do
@@ -2282,9 +2300,10 @@ defmodule Yoke.CLI.ConfigExplorer do
     _ -> :ok
   end
 
-  defp read_key do
-    case get_raw_input_chunk() do
+  defp read_key(timeout_ms) do
+    case get_raw_input_chunk(timeout_ms) do
       :eof -> :eof
+      nil -> :timeout
       other -> match_key(other)
     end
   end
@@ -2332,14 +2351,17 @@ defmodule Yoke.CLI.ConfigExplorer do
     end
   end
 
-  defp get_raw_input_chunk do
-    case read_char() do
+  defp get_raw_input_chunk(timeout_ms) do
+    case read_char_with_timeout(timeout_ms) do
       "\e" ->
         seq = read_available_escape_bytes("", 6)
         "\e" <> seq
 
       :eof ->
         :eof
+
+      nil ->
+        nil
 
       char when is_binary(char) ->
         char
@@ -2367,13 +2389,4 @@ defmodule Yoke.CLI.ConfigExplorer do
   end
 
   defp read_available_escape_bytes(acc, _count), do: acc
-
-  defp read_char do
-    case IO.getn(:user, "", 1) do
-      :eof -> :eof
-      {:error, _reason} -> :eof
-      char when is_binary(char) -> char
-      char when is_list(char) -> IO.iodata_to_binary(char)
-    end
-  end
 end

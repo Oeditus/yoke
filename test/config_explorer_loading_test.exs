@@ -197,6 +197,57 @@ defmodule Yoke.CLI.ConfigExplorerLoadingTest do
     end
   end
 
+  test "TTY automatically updates and renders loaded category on idle timeout without user keystrokes" do
+    test = self()
+
+    loader = fn
+      :settings, _, _ ->
+        send(test, {:settings_worker, self()})
+
+        receive do
+          :proceed -> %{config: %{"auto_update_feature" => true}}
+        end
+
+      tab, _, _ ->
+        send(test, {:worker, tab, self()})
+        Process.sleep(:infinity)
+    end
+
+    reader = fn _timeout ->
+      send(test, {:reader_polled, self()})
+
+      receive do
+        {:key, key} -> key
+      end
+    end
+
+    task =
+      Task.async(fn ->
+        ExUnit.CaptureIO.capture_io(:user, fn ->
+          assert :ok = ConfigExplorer.run_tty(".", loader: loader, read_key: reader)
+        end)
+      end)
+
+    assert_receive {:settings_worker, worker_pid}
+    assert_receive {:reader_polled, reader_pid}
+
+    # Worker finishes loading settings
+    worker_monitor = Process.monitor(worker_pid)
+    send(worker_pid, :proceed)
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker_pid, _}
+
+    # Reader returns :timeout (simulating idle timeout, no key pressed by user)
+    send(reader_pid, {:key, :timeout})
+
+    # Reader is polled again; now send :eof to cleanly exit
+    assert_receive {:reader_polled, next_reader_pid}
+    send(next_reader_pid, {:key, :eof})
+
+    output = Task.await(task, 1_000)
+    assert output =~ "Loading Settings"
+    assert output =~ "auto_update_feature"
+  end
+
   defp receive_worker do
     receive do
       {:worker, tab, pid} -> {tab, pid}
