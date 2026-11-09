@@ -269,6 +269,29 @@ context does not imply it fits a shared 24 GB GPU: local profiles assume the
 server's 16,384-token context. If tuning the server, align the profile's
 `max_context_tokens` setting in `Yoke.Provider` too.
 
+##### Authenticated local OpenAI-compatible endpoints (oMLX, vLLM, llama-server)
+Local OpenAI-compatible endpoints requiring an API key or bearer token (such as oMLX, vLLM, or LocalAI configured with `--api-key`) are first-class configurations.
+
+Credentials and custom local endpoints can be configured using provider-neutral environment variables captured at session startup:
+
+```bash
+# Provider-neutral variables for authenticated local servers
+export OPENAI_API_KEY="your-local-bearer-token"      # or YOKE_API_KEY
+export OPENAI_BASE_URL="http://127.0.0.1:8000/v1"   # or YOKE_ENDPOINT
+export OPENAI_MODEL="Qwen3.6-35B-A3B-4bit"          # or YOKE_MODEL
+
+# Launch Yoke targeting the authenticated local server directly
+yoke
+```
+
+Or switch endpoints dynamically within the REPL:
+```text
+/endpoint http://127.0.0.1:8000/v1/chat/completions
+/model Qwen3.6-35B-A3B-4bit
+```
+
+When connecting to authenticated loopback endpoints, Yoke includes the bearer token in the `Authorization` header while retaining loopback transport isolation. If the server rejects the credentials (HTTP 401 or 403), Yoke halts immediately with an actionable error rather than wasting time on retries. Use `/env` in the REPL to inspect the active session's effective credential status without revealing secret keys.
+
 Reproduce real client tool-call/result round trips with overlapping 32-item
 CUDA embedding batches:
 

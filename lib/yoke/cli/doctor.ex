@@ -140,16 +140,42 @@ defmodule Yoke.CLI.Doctor do
   end
 
   defp check_provider do
+    yoke_key = System.get_env("YOKE_API_KEY")
+    openai_key = System.get_env("OPENAI_API_KEY")
+    llm_key = System.get_env("LLM_API_KEY")
     deepseek_key = System.get_env("DEEPSEEK_API_KEY")
     openrouter_key = System.get_env("OPENROUTER_API_KEY")
     opencode_key = System.get_env("OPENCODE_API_KEY") || System.get_env("OPENCODE_ZEN_API_KEY")
 
     provider_endpoint =
-      System.get_env("DEEPSEEK_ENDPOINT") ||
+      System.get_env("YOKE_ENDPOINT") ||
+        System.get_env("OPENAI_BASE_URL") ||
+        System.get_env("DEEPSEEK_ENDPOINT") ||
         System.get_env("OPENCODE_BASE_URL") ||
         "https://api.deepseek.com"
 
     cond do
+      is_binary(yoke_key) and byte_size(yoke_key) > 0 ->
+        %{
+          category: "AI Provider Credentials",
+          status: :ok,
+          details: "YOKE_API_KEY detected (#{provider_endpoint})"
+        }
+
+      is_binary(openai_key) and byte_size(openai_key) > 0 ->
+        %{
+          category: "AI Provider Credentials",
+          status: :ok,
+          details: "OPENAI_API_KEY detected (#{provider_endpoint})"
+        }
+
+      is_binary(llm_key) and byte_size(llm_key) > 0 ->
+        %{
+          category: "AI Provider Credentials",
+          status: :ok,
+          details: "LLM_API_KEY detected (#{provider_endpoint})"
+        }
+
       is_binary(deepseek_key) and byte_size(deepseek_key) > 0 ->
         %{
           category: "AI Provider Credentials",

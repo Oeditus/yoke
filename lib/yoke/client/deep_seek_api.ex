@@ -391,8 +391,18 @@ defmodule Yoke.Client.DeepSeekAPI do
       when status in [429, 500, 502, 503, 504] and attempts_left > 1 ->
         retry(endpoint, req_opts, attempts_left, backoff_ms, "Transient HTTP #{status} error")
 
+      {:ok, %Req.Response{status: 401, body: err_body}} ->
+        {:error,
+         "Authentication failed (HTTP 401): API key is invalid or required by #{endpoint}. " <>
+           "Provide a valid key via OPENAI_API_KEY, YOKE_API_KEY, or provider configuration: #{inspect(err_body)}"}
+
+      {:ok, %Req.Response{status: 403, body: err_body}} ->
+        {:error,
+         "Access forbidden (HTTP 403): Request rejected by #{endpoint}. " <>
+           "Verify your API key and permissions: #{inspect(err_body)}"}
+
       {:ok, %Req.Response{status: status, body: err_body}} ->
-        {:error, "DeepSeek API returned HTTP status #{status}: #{inspect(err_body)}"}
+        {:error, "API returned HTTP status #{status}: #{inspect(err_body)}"}
 
       # A provider that accepts the connection and then never responds is the
       # failure mode `receive_timeout` exists to catch. Treat it as transient

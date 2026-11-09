@@ -74,16 +74,20 @@ defmodule Yoke.Provider do
         |> Keyword.update!(:endpoint, &DeepSeekAPI.normalize_endpoint/1)
         |> Keyword.put(:provider_resolved, true)
 
-      if name && String.starts_with?(name, "local") do
-        unless loopback?(resolved[:endpoint]) do
-          raise ArgumentError,
-                "Local profiles require a loopback endpoint; no remote fallback is allowed."
+      final_resolved =
+        if name && String.starts_with?(name, "local") do
+          unless loopback?(resolved[:endpoint]) do
+            raise ArgumentError,
+                  "Local profiles require a loopback endpoint; no remote fallback is allowed."
+          end
+
+          Keyword.put(resolved, :api_key, "not-needed")
+        else
+          resolved
         end
 
-        Keyword.put(resolved, :api_key, "not-needed")
-      else
-        resolved
-      end
+      validate_license_restrictions!(final_resolved[:endpoint], final_resolved[:model])
+      final_resolved
     end
   end
 
@@ -147,21 +151,38 @@ defmodule Yoke.Provider do
 
   defp legacy(opts, cfg) do
     endpoint =
-      opts[:endpoint] || System.get_env("DEEPSEEK_ENDPOINT") ||
+      opts[:endpoint] || System.get_env("YOKE_ENDPOINT") ||
+        System.get_env("OPENAI_BASE_URL") || System.get_env("DEEPSEEK_ENDPOINT") ||
         System.get_env("OPENROUTER_BASE_URL") || System.get_env("OPENCODE_BASE_URL") ||
         System.get_env("OLLAMA_HOST") || cfg["endpoint"]
 
+    discovered_key =
+      opts[:api_key] ||
+        System.get_env("YOKE_API_KEY") ||
+        System.get_env("OPENAI_API_KEY") ||
+        System.get_env("LLM_API_KEY") ||
+        System.get_env("DEEPSEEK_API_KEY") ||
+        System.get_env("OPENROUTER_API_KEY") ||
+        System.get_env("OPENCODE_API_KEY") ||
+        System.get_env("OPENCODE_ZEN_API_KEY") ||
+        cfg["api_key"]
+
     key =
-      if DeepSeekAPI.local_endpoint?(DeepSeekAPI.normalize_endpoint(endpoint)) do
-        "not-needed"
-      else
-        System.get_env("DEEPSEEK_API_KEY") || System.get_env("OPENROUTER_API_KEY") ||
-          System.get_env("OPENCODE_API_KEY") || System.get_env("OPENCODE_ZEN_API_KEY") ||
-          System.get_env("LLM_API_KEY") || cfg["api_key"]
+      cond do
+        is_binary(discovered_key) and discovered_key != "" and discovered_key != "not-needed" ->
+          discovered_key
+
+        DeepSeekAPI.local_endpoint?(DeepSeekAPI.normalize_endpoint(endpoint)) ->
+          "not-needed"
+
+        true ->
+          discovered_key
       end
 
     [
-      model: opts[:model] || System.get_env("DEEPSEEK_MODEL") || cfg["model"],
+      model:
+        opts[:model] || System.get_env("YOKE_MODEL") || System.get_env("OPENAI_MODEL") ||
+          System.get_env("DEEPSEEK_MODEL") || cfg["model"],
       endpoint: endpoint,
       api_key: key,
       temperature: cfg["temperature"],
@@ -169,5 +190,28 @@ defmodule Yoke.Provider do
       price_per_million_prompt_tokens: cfg["price_per_million_prompt_tokens"],
       price_per_million_completion_tokens: cfg["price_per_million_completion_tokens"]
     ]
+  end
+
+  defp validate_license_restrictions!(endpoint, model) do
+    if is_binary(endpoint) and endpoint != "" do
+      uri = URI.parse(endpoint)
+      host = String.downcase(uri.host || "")
+
+      if host in ["api.openai.com", "openai.com"] or String.ends_with?(host, ".openai.com") do
+        raise ArgumentError,
+              "Calls to remote OpenAI (api.openai.com) are prohibited by Yoke's License Additional Restriction. " <>
+                "Yoke is an agentic coding harness for DeepSeek and open models."
+      end
+    end
+
+    down_model = String.downcase(to_string(model || ""))
+
+    if String.starts_with?(down_model, "gpt-") or
+         String.starts_with?(down_model, "claude-") or
+         String.starts_with?(down_model, "gemini-") do
+      raise ArgumentError,
+            "Use of proprietary models (#{model}) is prohibited by Yoke's License Additional Restriction. " <>
+              "Yoke is an agentic coding harness for DeepSeek and open models."
+    end
   end
 end

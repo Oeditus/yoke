@@ -599,13 +599,21 @@ defmodule Yoke.Brain.Session do
 
   @impl true
   def handle_call({:set_endpoint, endpoint}, _from, state) do
-    opts =
-      Yoke.Provider.resolve(
-        provider: false,
-        endpoint: endpoint,
-        model: state.model,
-        cwd: state.cwd
-      )
+    resolve_opts = [
+      provider: false,
+      endpoint: endpoint,
+      model: state.model,
+      cwd: state.cwd
+    ]
+
+    resolve_opts =
+      if state.api_key in [nil, "", "not-needed"] do
+        resolve_opts
+      else
+        Keyword.put(resolve_opts, :api_key, state.api_key)
+      end
+
+    opts = Yoke.Provider.resolve(resolve_opts)
 
     new_state = %{
       state
@@ -1473,12 +1481,31 @@ defmodule Yoke.Brain.Session do
     end
   end
 
+  defp non_retriable_api_error?(reason) when is_binary(reason) do
+    String.contains?(reason, "HTTP 401") or
+      String.contains?(reason, "HTTP status 401") or
+      String.contains?(reason, "Authentication failed") or
+      String.contains?(reason, "HTTP 403") or
+      String.contains?(reason, "HTTP status 403") or
+      String.contains?(reason, "Access forbidden") or
+      String.contains?(reason, "HTTP 404") or
+      String.contains?(reason, "HTTP status 404") or
+      String.contains?(reason, "Selected provider has no API credentials configured")
+  end
+
+  defp non_retriable_api_error?(_), do: false
+
   defp handle_api_error(state, depth, retries, reason) do
-    if Yoke.Provider.location(state.endpoint) == "LOCAL" do
-      {{:error, "Local provider request failed (no remote fallback): #{reason}"},
-       %{state | status: :idle}}
-    else
-      handle_remote_api_error(state, depth, retries, reason)
+    cond do
+      non_retriable_api_error?(reason) ->
+        {{:error, reason}, %{state | status: :idle}}
+
+      Yoke.Provider.location(state.endpoint) == "LOCAL" ->
+        {{:error, "Local provider request failed (no remote fallback): #{reason}"},
+         %{state | status: :idle}}
+
+      true ->
+        handle_remote_api_error(state, depth, retries, reason)
     end
   end
 
@@ -1488,31 +1515,35 @@ defmodule Yoke.Brain.Session do
   end
 
   defp handle_remote_api_error(state, depth, retries, reason) do
-    max_retries = 3
-
-    if retries < max_retries do
-      backoff_ms = (retries + 1) * 500
-
-      Logger.warning(
-        "[Brain.Session] DeepSeek API or tool error: #{reason}. Harness retrying turn in #{backoff_ms}ms (attempt #{retries + 1}/#{max_retries})..."
-      )
-
-      Process.sleep(backoff_ms)
-
-      repaired_messages =
-        if retries == 0 do
-          sanitize_messages(state.messages)
-        else
-          convert_all_tool_roles_to_user_messages(state.messages)
-        end
-
-      repaired_state = %{state | messages: repaired_messages}
-      run_agent_loop(repaired_state, depth, retries + 1)
+    if non_retriable_api_error?(reason) do
+      {{:error, reason}, %{state | status: :idle}}
     else
-      if top_level_session?(state.session_id) do
-        prompt_user_on_error(state, depth, reason)
+      max_retries = 3
+
+      if retries < max_retries do
+        backoff_ms = (retries + 1) * 500
+
+        Logger.warning(
+          "[Brain.Session] DeepSeek API or tool error: #{reason}. Harness retrying turn in #{backoff_ms}ms (attempt #{retries + 1}/#{max_retries})..."
+        )
+
+        Process.sleep(backoff_ms)
+
+        repaired_messages =
+          if retries == 0 do
+            sanitize_messages(state.messages)
+          else
+            convert_all_tool_roles_to_user_messages(state.messages)
+          end
+
+        repaired_state = %{state | messages: repaired_messages}
+        run_agent_loop(repaired_state, depth, retries + 1)
       else
-        {{:error, "Error communicating with DeepSeek API: #{reason}"}, %{state | status: :idle}}
+        if top_level_session?(state.session_id) do
+          prompt_user_on_error(state, depth, reason)
+        else
+          {{:error, "Error communicating with DeepSeek API: #{reason}"}, %{state | status: :idle}}
+        end
       end
     end
   end

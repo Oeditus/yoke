@@ -13,7 +13,7 @@ defmodule Yoke.ProviderTest do
 
   setup do
     keys =
-      ~w(YOKE_PROVIDER DEEPSEEK_MODEL DEEPSEEK_ENDPOINT DEEPSEEK_API_KEY OPENROUTER_BASE_URL OPENROUTER_API_KEY OLLAMA_HOST)
+      ~w(YOKE_PROVIDER DEEPSEEK_MODEL DEEPSEEK_ENDPOINT DEEPSEEK_API_KEY OPENROUTER_BASE_URL OPENROUTER_API_KEY OLLAMA_HOST OPENAI_API_KEY YOKE_API_KEY LLM_API_KEY OPENAI_BASE_URL YOKE_ENDPOINT OPENAI_MODEL YOKE_MODEL)
 
     previous = Map.new(keys, &{&1, System.get_env(&1)})
     Enum.each(keys, &System.delete_env/1)
@@ -93,6 +93,26 @@ defmodule Yoke.ProviderTest do
     System.put_env("YOKE_PROVIDER", "local")
     assert Provider.resolve()[:provider] == "local"
     assert Provider.resolve(provider: "deepseek")[:provider] == "deepseek"
+  end
+
+  test "remote OpenAI endpoint is rejected per License Additional Restriction" do
+    assert_raise ArgumentError, ~r/License Additional Restriction/, fn ->
+      Provider.resolve(endpoint: "https://api.openai.com/v1/chat/completions")
+    end
+  end
+
+  test "proprietary models are rejected per License Additional Restriction" do
+    assert_raise ArgumentError, ~r/License Additional Restriction/, fn ->
+      Provider.resolve(model: "gpt-4o")
+    end
+
+    assert_raise ArgumentError, ~r/License Additional Restriction/, fn ->
+      Provider.resolve(model: "claude-3-5-sonnet")
+    end
+
+    assert_raise ArgumentError, ~r/License Additional Restriction/, fn ->
+      Provider.resolve(model: "gemini-2.0-flash")
+    end
   end
 
   test "legacy endpoint and model overrides are preserved", %{tmp_dir: cwd} do
@@ -337,6 +357,110 @@ defmodule Yoke.ProviderTest do
              Yoke.CLI.Main.split_subcommand(["--provider", "local", "review", "--base", "main"])
   end
 
+  test "legacy local endpoint with OPENAI_API_KEY preserves credentials and sends bearer token",
+       %{tmp_dir: cwd} do
+    System.put_env("OPENAI_API_KEY", "omlx-test-bearer-token")
+    opts = Provider.resolve(endpoint: "http://127.0.0.1:8000/v1/chat/completions", cwd: cwd)
+
+    assert opts[:api_key] == "omlx-test-bearer-token"
+    assert opts[:endpoint] == "http://127.0.0.1:8000/v1/chat/completions"
+
+    headers = DeepSeekAPI.build_headers(DeepSeekAPI.build_config(opts))
+    assert {"Authorization", "Bearer omlx-test-bearer-token"} in headers
+  end
+
+  test "legacy local endpoint with YOKE_API_KEY preserves credentials", %{tmp_dir: cwd} do
+    System.put_env("YOKE_API_KEY", "yoke-local-key")
+    opts = Provider.resolve(endpoint: "http://localhost:8000", cwd: cwd)
+
+    assert opts[:api_key] == "yoke-local-key"
+    assert opts[:endpoint] == "http://localhost:8000/v1/chat/completions"
+
+    headers = DeepSeekAPI.build_headers(DeepSeekAPI.build_config(opts))
+    assert {"Authorization", "Bearer yoke-local-key"} in headers
+  end
+
+  test "switching endpoint in session preserves existing active API key", %{tmp_dir: cwd} do
+    pid =
+      session_with_opts(
+        session_id: "persist-key-#{System.unique_integer([:positive])}",
+        cwd: cwd,
+        api_key: "my-preserved-token",
+        endpoint: "https://api.deepseek.com/chat/completions",
+        mock: true
+      )
+
+    assert Session.provider_options(pid)[:api_key] == "my-preserved-token"
+
+    {:ok, current} =
+      Session.set_endpoint(pid, "http://127.0.0.1:8000/v1/chat/completions")
+
+    assert current == "http://127.0.0.1:8000/v1/chat/completions"
+    opts = Session.provider_options(pid)
+    assert opts[:api_key] == "my-preserved-token"
+    assert opts[:endpoint] == "http://127.0.0.1:8000/v1/chat/completions"
+  end
+
+  test "HTTP 401 on local endpoint fails immediately without retrying", %{tmp_dir: cwd} do
+    {endpoint, listener, server} =
+      http_server_status(401, %{"error" => %{"message" => "API key required"}})
+
+    on_exit(fn ->
+      :gen_tcp.close(listener)
+      Process.exit(server, :normal)
+    end)
+
+    assert {:error, err} =
+             DeepSeekAPI.chat_completion(
+               [%{"role" => "user", "content" => "test"}],
+               [],
+               endpoint: endpoint,
+               api_key: "bad-token",
+               mock: false,
+               cwd: cwd
+             )
+
+    assert err =~ "Authentication failed (HTTP 401)"
+    assert_receive {:http_request, request}, 1_000
+    assert request =~ ~r/authorization:\s*bearer bad-token/i
+    refute_receive {:http_request, _retry}, 600
+  end
+
+  test "session turn with HTTP 401 fails immediately without retrying", %{tmp_dir: cwd} do
+    {endpoint, listener, server} =
+      http_server_status(401, %{"error" => %{"message" => "API key required"}})
+
+    on_exit(fn ->
+      :gen_tcp.close(listener)
+      Process.exit(server, :normal)
+    end)
+
+    pid =
+      session_with_opts(
+        session_id: "turn-401-#{System.unique_integer([:positive])}",
+        cwd: cwd,
+        endpoint: endpoint,
+        api_key: "omlx-token",
+        mock: false
+      )
+
+    assert {:error, err} = Session.send_user_message(pid, "hello")
+    assert err =~ "Authentication failed (HTTP 401)"
+    assert_receive {:http_request, request}, 1_000
+    assert request =~ ~r/authorization:\s*bearer omlx-token/i
+    refute_receive {:http_request, _retry}, 600
+  end
+
+  defp session_with_opts(opts) do
+    {:ok, pid} = SessionSupervisor.start_session(opts)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: SessionSupervisor.stop_session(pid)
+    end)
+
+    pid
+  end
+
   defp session(cwd, provider) do
     id = "provider-test-#{System.unique_integer([:positive])}"
 
@@ -374,6 +498,42 @@ defmodule Yoke.ProviderTest do
       end)
 
     {"http://127.0.0.1:#{port}/v1", listener, pid}
+  end
+
+  defp http_server_status(status_code, body_term) do
+    {:ok, listener} =
+      :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true, ip: {127, 0, 0, 1}])
+
+    {:ok, {_, port}} = :inet.sockname(listener)
+    owner = self()
+
+    pid =
+      spawn(fn ->
+        loop_server(listener, owner, status_code, body_term)
+      end)
+
+    {"http://127.0.0.1:#{port}/v1", listener, pid}
+  end
+
+  defp loop_server(listener, owner, status_code, body_term) do
+    case :gen_tcp.accept(listener, 1_000) do
+      {:ok, socket} ->
+        request = read_request(socket, "")
+        send(owner, {:http_request, request})
+        body = Yoke.Json.encode!(body_term)
+
+        :gen_tcp.send(
+          socket,
+          "HTTP/1.1 #{status_code}\r\nContent-Type: application/json\r\nContent-Length: #{byte_size(body)}\r\nConnection: close\r\n\r\n" <>
+            body
+        )
+
+        :gen_tcp.close(socket)
+        loop_server(listener, owner, status_code, body_term)
+
+      {:error, _} ->
+        :ok
+    end
   end
 
   defp read_request(socket, buffer) do

@@ -2385,26 +2385,43 @@ defmodule Yoke.CLI.Repl do
   end
 
   def handle_input("/env", session_pid, _session_id) do
-    provider = Yoke.Provider.describe(Session.provider_options(session_pid))
-    env_model = System.get_env("DEEPSEEK_MODEL") || "deepseek-flash (default)"
+    session_opts = Session.provider_options(session_pid)
+    provider = Yoke.Provider.describe(session_opts)
 
-    has_key? =
-      not is_nil(System.get_env("DEEPSEEK_API_KEY")) and
-        System.get_env("DEEPSEEK_API_KEY") != ""
+    active_model =
+      session_opts[:model] || System.get_env("DEEPSEEK_MODEL") || "deepseek-flash (default)"
 
+    active_endpoint = session_opts[:endpoint] || "default"
+    key = session_opts[:api_key]
+
+    credential_status =
+      cond do
+        is_binary(key) and key != "" and key != "not-needed" ->
+          "Configured (active session)"
+
+        key == "not-needed" ->
+          "Not needed (local loopback)"
+
+        true ->
+          "None (offline / mock)"
+      end
+
+    has_key? = credential_status != "None (offline / mock)"
     yoke_env = System.get_env("YOKE_ENV") || "prod"
     cwd = File.cwd!()
 
     md = """
     ### Environment & Runtime Configuration
     - **Active Generation Provider**: `#{provider}`
+    - **Active Endpoint**: `#{active_endpoint}`
+    - **Active Model**: `#{active_model}`
+    - **Session Credential**: `#{credential_status}`
     - **Operating System**: `#{:os.type() |> inspect()}`
     - **Elixir Version**: `#{System.version()}`
     - **OTP Release**: `#{System.otp_release()}`
     - **Current Workspace CWD**: `#{cwd}`
     - **Node Name**: `#{node()}`
     - **Environment**: `#{yoke_env}`
-    - **DEEPSEEK_MODEL**: `#{env_model}`
     - **API Key Set?**: `#{has_key?}`
     """
 
