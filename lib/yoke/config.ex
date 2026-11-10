@@ -61,6 +61,13 @@ defmodule Yoke.Config do
     # and automatically injects an interruption directive before wasting turns and tokens.
     "loop_detection_enabled" => true,
     "max_cycle_period" => 4,
+    # A tool-free assistant message that only announces the next action
+    # ("Let me implement the method now") leaves the requested work undone.
+    # When enabled, the harness answers with a short continuation notice and
+    # lets the model act instead of returning the unfinished turn to the user.
+    # Bounded to two consecutive notices per turn. Disable by adding
+    # "narrate_continuation_enabled": false to .yoke/config.json.
+    "narrate_continuation_enabled" => true,
     # God mode switcher: when enabled, all questions and confirmations are
     # automatically answered without user interaction. Default: false.
     "god_mode" => false,

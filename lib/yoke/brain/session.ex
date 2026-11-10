@@ -21,6 +21,11 @@ defmodule Yoke.Brain.Session do
   alias Yoke.TaskEngine.TaskSupervisor
   alias Yoke.Workflow.Plan, as: WorkflowPlan
 
+  # Consecutive continuation notices allowed for one turn when the model
+  # narrates its next action without calling a tool. See
+  # `maybe_continue_narrated_intent/2`.
+  @max_intent_continuations 2
+
   @default_system_prompt_body """
   You have access to tools for file operations, bash execution, skills, MCP servers (including Ragex code intelligence), Elixir evaluation, and interactive user questions (ask_question tool).
 
@@ -345,6 +350,15 @@ defmodule Yoke.Brain.Session do
           Map.get(Config.load_config(cwd), "max_cycle_period", 4)
         ),
       suppress_tools: false,
+      # Consecutive "you narrated instead of acting" notices for the current
+      # turn. Reset when a user turn starts and when the turn completes.
+      intent_continuations: 0,
+      narrate_continuation_enabled:
+        Keyword.get(
+          opts,
+          :narrate_continuation_enabled,
+          Map.get(Config.load_config(cwd), "narrate_continuation_enabled", true)
+        ),
       # Optional per-request completion-token cap, read from config
       # ("max_tokens") and forwarded to the DeepSeek API on each call.
       # `nil` means "not set" and the field is omitted from requests.
@@ -511,7 +525,7 @@ defmodule Yoke.Brain.Session do
 
     # A fresh user turn starts with no approved plan; the plan gate may arm
     # once this turn's tool calls look non-trivial.
-    state = %{state | plan_approved_for_turn: false}
+    state = %{state | plan_approved_for_turn: false, intent_continuations: 0}
 
     state = auto_checkpoint(state, "Pre-turn ##{state.turn_count}")
 
@@ -697,6 +711,7 @@ defmodule Yoke.Brain.Session do
         step_count: 0,
         plan_approved_for_turn: false,
         suppress_tools: false,
+        intent_continuations: 0,
         turn_history: []
     }
 
@@ -1962,23 +1977,81 @@ defmodule Yoke.Brain.Session do
 
     case validate_review_response(state, response) do
       :ok ->
-        final_msg = %{"role" => "assistant", "content" => response.content}
-
-        final_state = %{
-          state
-          | messages: state.messages ++ [final_msg],
-            status: :idle,
-            suppress_tools: false
-        }
-
-        unless Map.has_key?(state, :review_context),
-          do: SessionStore.save_session(final_state, state.cwd)
-
-        {{:ok, response}, final_state}
+        maybe_continue_narrated_intent(state, response)
 
       {:error, reason} ->
         {{:error, reason}, %{state | status: :idle, suppress_tools: false}}
     end
+  end
+
+  # A tool-free assistant message normally ends the turn. It does not when the
+  # model only announced what it was about to do ("Let me implement the
+  # addArticle() method now") -- nothing was executed and the user would get
+  # an unfinished turn back. Small local models do this repeatedly, so the
+  # harness answers with a short continuation notice and lets the model act.
+  #
+  # Bounded by `@max_intent_continuations` consecutive nudges per turn, and
+  # disabled for review turns (tool-free finalization is intentional there)
+  # and for any turn where tools are suppressed.
+  defp maybe_continue_narrated_intent(state, response) do
+    if narrated_intent_continuation?(state, response) do
+      count = Map.get(state, :intent_continuations, 0) + 1
+      response_text = response.content || ""
+
+      Logger.warning(
+        "[Brain.Session] Model narrated its next action without calling a tool " <>
+          "(continuation #{count}/#{@max_intent_continuations}). Asking it to continue."
+      )
+
+      notice = %{
+        "role" => "user",
+        "content" =>
+          "SYSTEM NOTICE: You described what you were about to do but did not call any tool, " <>
+            "so nothing was executed. Do not restate the plan. Call the appropriate tool now " <>
+            "to perform the work, and keep calling tools until the task is complete. Only " <>
+            "reply with text when the work is actually finished and you are reporting the result."
+      }
+
+      continued_state = %{
+        state
+        | messages:
+            state.messages ++
+              [
+                %{"role" => "assistant", "content" => response_text},
+                notice
+              ],
+          intent_continuations: count
+      }
+
+      run_agent_loop(continued_state, state.max_tool_depth)
+    else
+      finish_text_response_turn(state, response)
+    end
+  end
+
+  defp narrated_intent_continuation?(state, response) do
+    Map.get(state, :narrate_continuation_enabled, true) and
+      not Map.has_key?(state, :review_context) and
+      not Map.get(state, :suppress_tools, false) and
+      Map.get(state, :intent_continuations, 0) < @max_intent_continuations and
+      AgentLoop.narrates_intent?(response.content)
+  end
+
+  defp finish_text_response_turn(state, response) do
+    final_msg = %{"role" => "assistant", "content" => response.content}
+
+    final_state = %{
+      state
+      | messages: state.messages ++ [final_msg],
+        status: :idle,
+        suppress_tools: false,
+        intent_continuations: 0
+    }
+
+    unless Map.has_key?(state, :review_context),
+      do: SessionStore.save_session(final_state, state.cwd)
+
+    {{:ok, response}, final_state}
   end
 
   # Extra, cycle-specific guidance appended to the loop-break notice. A

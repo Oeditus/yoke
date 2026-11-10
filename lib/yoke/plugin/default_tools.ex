@@ -456,6 +456,15 @@ defmodule Yoke.Plugin.DefaultTools do
           {:ok, content}
         end
 
+      {:error, :enoent} ->
+        hint =
+          case suggest_file_path(path) do
+            nil -> ""
+            suggested -> " Did you mean '#{suggested}'?"
+          end
+
+        {:error, "Failed to read file '#{path}': :enoent.#{hint}"}
+
       {:error, reason} ->
         {:error, "Failed to read file '#{path}': #{inspect(reason)}"}
     end
@@ -502,10 +511,12 @@ defmodule Yoke.Plugin.DefaultTools do
   end
 
   def write_file(%{"path" => path, "content" => content}) do
-    with :ok <- path |> Path.dirname() |> File.mkdir_p(),
+    with :ok <- validate_java_write(path, content),
+         :ok <- path |> Path.dirname() |> File.mkdir_p(),
          :ok <- File.write(path, content) do
       {:ok, "Successfully wrote #{byte_size(content)} bytes to #{path}"}
     else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
       {:error, reason} -> {:error, "Failed to write file '#{path}': #{inspect(reason)}"}
     end
   end
@@ -523,6 +534,15 @@ defmodule Yoke.Plugin.DefaultTools do
         else
           {:error, "Target text not found in #{path}"}
         end
+
+      {:error, :enoent} ->
+        hint =
+          case suggest_file_path(path) do
+            nil -> ""
+            suggested -> " Did you mean '#{suggested}'?"
+          end
+
+        {:error, "Failed to read file '#{path}': :enoent.#{hint}"}
 
       {:error, reason} ->
         {:error, "Failed to read file '#{path}': #{inspect(reason)}"}
@@ -1111,5 +1131,59 @@ defmodule Yoke.Plugin.DefaultTools do
       {:ok, out} -> {:ok, out}
       {:error, err} -> {:error, err}
     end
+  end
+
+  def suggest_file_path(path) do
+    basename = Path.basename(path)
+
+    if basename != "" and basename != "." do
+      cwd = File.cwd!()
+
+      cwd
+      |> Path.join("**/#{basename}")
+      |> Path.wildcard()
+      |> Enum.reject(fn p ->
+        String.contains?(p, [
+          "/_build/",
+          "/deps/",
+          "/target/",
+          "/.git/",
+          "/.ragex/",
+          "/.yoke/",
+          "/node_modules/"
+        ])
+      end)
+      |> case do
+        [match | _] -> Path.relative_to(match, cwd)
+        [] -> nil
+      end
+    else
+      nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp validate_java_write(path, content) do
+    if Path.extname(path) == ".java" and Code.ensure_loaded?(Ragex.Editor.Validators.Java) do
+      # credo:disable-for-next-line
+      case apply(Ragex.Editor.Validators.Java, :validate, [content, [path: path]]) do
+        {:ok, :valid} ->
+          :ok
+
+        {:error, errors} when is_list(errors) ->
+          case Enum.find(errors, &(Map.get(&1, :severity) == :error)) do
+            nil -> :ok
+            err -> {:error, "Java validation error for '#{path}': #{err.message}"}
+          end
+
+        _ ->
+          :ok
+      end
+    else
+      :ok
+    end
+  rescue
+    _ -> :ok
   end
 end

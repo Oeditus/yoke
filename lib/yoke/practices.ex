@@ -72,7 +72,10 @@ defmodule Yoke.Practices do
     ],
     "java" => [
       "Follow the standard Maven/Gradle layout (`src/main/java`, `src/main/resources`, `src/test/java`).",
-      "Keep one public top-level type per file and match the file name to the type name.",
+      "Keep one public top-level type per file and match the file name to the type name exactly.",
+      "Java package declarations MUST strictly match the directory structure relative to the source root (`src/main/java` or `src/test/java`).",
+      "Always inspect existing package declarations before creating new classes; never use placeholder packages like `com.example`.",
+      "Before editing an existing Java class, confirm its exact file path via symbol search or find rather than guessing package paths.",
       "Prefer small, focused methods with early returns over deeply nested conditionals.",
       "Document public classes and methods with Javadoc (`@param`, `@return`, `@throws`), keeping it accurate when behaviour changes.",
       "Use `Optional` for lookups that may legitimately return nothing, and throw a specific exception at the boundary when absence is an error.",
@@ -695,11 +698,164 @@ defmodule Yoke.Practices do
       block_text =
         Enum.map_join(practices_blocks, "\n\n", fn p ->
           lang_title = String.capitalize(p.language)
-          items_text = Enum.map_join(p.items, "\n", fn item -> "- #{item}" end)
+          items = p.items
+
+          items =
+            if p.language == "java" do
+              layout = detect_java_layout(cwd)
+
+              extra =
+                if layout.base_package do
+                  [
+                    "Project root package: `#{layout.base_package}`. All new classes must be placed in `#{layout.base_package}` (never use placeholder packages like `com.example`).",
+                    "Java package declarations MUST strictly mirror directory layout (e.g. `package #{layout.base_package}.service;` must be in `src/main/java/#{String.replace(layout.base_package, ".", "/")}/service/ClassName.java`).",
+                    "Before editing an existing Java class, verify its exact path using symbol definition or file search rather than guessing package folder paths."
+                  ]
+                else
+                  [
+                    "Inspect existing package declarations before creating new classes; do NOT use placeholder packages like `com.example`.",
+                    "Java package declarations MUST strictly mirror directory layout relative to source roots.",
+                    "Before editing an existing Java class, verify its exact path using symbol definition or file search rather than guessing package folder paths."
+                  ]
+                end
+
+              Enum.uniq(extra ++ items)
+            else
+              items
+            end
+
+          items_text = Enum.map_join(items, "\n", fn item -> "- #{item}" end)
           "### Good Practices for #{lang_title}\n#{items_text}"
         end)
 
       "=== Language Good Practices ===\n\n#{block_text}\n\n===============================\n"
+    end
+  end
+
+  @doc """
+  Detects Java project layout and base package for a directory.
+  """
+  def detect_java_layout(cwd \\ ".") do
+    pom_path = Path.join(cwd, "pom.xml")
+    gradle_path = Path.join(cwd, "build.gradle")
+    gradle_kts_path = Path.join(cwd, "build.gradle.kts")
+
+    base_package =
+      cond do
+        File.exists?(pom_path) ->
+          extract_package_from_pom(pom_path) || scan_base_package_from_sources(cwd)
+
+        File.exists?(gradle_path) ->
+          extract_package_from_gradle(gradle_path) || scan_base_package_from_sources(cwd)
+
+        File.exists?(gradle_kts_path) ->
+          extract_package_from_gradle(gradle_kts_path) || scan_base_package_from_sources(cwd)
+
+        true ->
+          scan_base_package_from_sources(cwd)
+      end
+
+    source_roots =
+      ["src/main/java", "src/test/java", "src"]
+      |> Enum.filter(&File.dir?(Path.join(cwd, &1)))
+
+    %{
+      base_package: base_package,
+      source_roots: source_roots
+    }
+  end
+
+  defp extract_package_from_pom(pom_path) do
+    case File.read(pom_path) do
+      {:ok, xml} ->
+        # Find top-level <groupId>...</groupId> before <dependencies>
+        clean_xml = String.replace(xml, ~r/<dependencies>[\s\S]*?<\/dependencies>/, "")
+
+        case Regex.run(~r/<groupId>\s*([A-Za-z0-9_$.]+)\s*<\/groupId>/, clean_xml) do
+          [_, group_id] when group_id not in ["org.apache.maven", "org.springframework.boot"] ->
+            group_id
+
+          _ ->
+            nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp extract_package_from_gradle(gradle_path) do
+    case File.read(gradle_path) do
+      {:ok, content} ->
+        case Regex.run(~r/group\s*=\s*['"]([A-Za-z0-9_$.]+)['"]/, content) do
+          [_, group] -> group
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp scan_base_package_from_sources(cwd) do
+    java_files =
+      [
+        Path.wildcard(Path.join(cwd, "src/main/java/**/*.java")),
+        Path.wildcard(Path.join(cwd, "src/**/*.java"))
+      ]
+      |> List.flatten()
+      |> Enum.take(10)
+
+    packages =
+      java_files
+      |> Enum.flat_map(fn file ->
+        case File.read(file) do
+          {:ok, content} ->
+            case Regex.run(~r/^\s*package\s+([A-Za-z0-9_$.]+)\s*;/m, content) do
+              [_, pkg] -> [pkg]
+              _ -> []
+            end
+
+          _ ->
+            []
+        end
+      end)
+      |> Enum.uniq()
+
+    case packages do
+      [] ->
+        nil
+
+      [single] ->
+        package_prefix(single)
+
+      multiple ->
+        common_package_prefix(multiple)
+    end
+  end
+
+  defp package_prefix(pkg) do
+    parts = String.split(pkg, ".")
+
+    if length(parts) > 2 do
+      Enum.take(parts, 2) |> Enum.join(".")
+    else
+      pkg
+    end
+  end
+
+  defp common_package_prefix(packages) do
+    packages
+    |> Enum.map(&String.split(&1, "."))
+    |> Enum.reduce(fn p1, p2 ->
+      p1
+      |> Enum.zip(p2)
+      |> Enum.take_while(fn {a, b} -> a == b end)
+      |> Enum.map(&elem(&1, 0))
+    end)
+    |> case do
+      [] -> nil
+      parts -> Enum.join(parts, ".")
     end
   end
 

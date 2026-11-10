@@ -13,6 +13,9 @@ defmodule Yoke.LinterTest do
       assert "propwise" in names
       assert "credo" in names
       assert "dialyzer" in names
+      assert "javac" in names
+      assert "mvn" in names
+      assert "checkstyle" in names
       assert "all" in names
     end
   end

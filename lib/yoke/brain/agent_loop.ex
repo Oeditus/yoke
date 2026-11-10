@@ -51,6 +51,37 @@ defmodule Yoke.Brain.AgentLoop do
   # the `job_status` half of the cycle is pure waiting.
   @non_cycling_tools ~w(job_status job_info)
 
+  # A model that narrates its intent and then stops ("Now I have all the
+  # information I need. Let me implement the addArticle() method...") ends the
+  # turn with no tool calls and no work done. Small local models do this
+  # often, so the harness treats such a response as an unfinished turn and
+  # asks the model to continue instead of returning it to the user.
+  #
+  # The patterns are deliberately narrow: a first-person planning phrase that
+  # is followed by a colon or by an action verb. Explanations that merely
+  # contain "I'll" ("I'll explain how the loop works") or a colon after a
+  # non-planning lead-in must not match, otherwise a legitimate answer would
+  # be re-prompted.
+  @intent_patterns [
+    ~r/\b(?:let me|i(?:'ll| will| am going to| am about to|'m going to))\s+(?:now\s+)?(?:just\s+)?(?:go\s+ahead\s+and\s+)?(?:implement|add|create|write|apply|make|perform|update|modify|edit|fix|refactor|change|insert|remove|delete|replace|run|execute|call|use|read|open|inspect|check|search|find|look|grep|list|start|begin|proceed|continue|handle|build|generate|produce|draft|prepare|set\s+up|wire|rename|move|extract|introduce|define|declare|document|test|verify|validate|compile|install|configure|commit|stage|push|patch|rewrite|restructure|migrate|port|convert)\b/i,
+    ~r/\b(?:now|next|then|first|finally|so)[^.!?\n]{0,80}\b(?:i(?:'ll| will| need to| should| must| have to| am going to)|let me|we(?:'ll| will| need to| should))\b/i,
+    ~r/\b(?:here(?:'s| is) (?:my|the) plan|my plan is|the plan is|plan of action|steps? (?:are|is) as follows|next steps? (?:are|is))\b\s*:/i,
+    ~r/^\s*(?:step\s*\d+|\d+[.)])\s*[^\n]{0,120}:\s*$/im,
+    ~r/\b(?:i(?:'ll| will| need to| should| must| have to)|let me|we(?:'ll| will))\b[^.!?\n]{0,120}:\s*$/im
+  ]
+
+  # Phrases that mark a complete answer even when they appear next to a
+  # planning phrase, e.g. "Let me know if you want me to implement it."
+  @completion_patterns [
+    ~r/\blet me know\b/i,
+    ~r/\b(?:summary|in summary|to summarize|overall|conclusion|in conclusion)\b/i,
+    ~r/\b(?:done|complete|completed|finished|implemented|applied|added|created|updated|fixed)\b\s*(?:[.!]|successfully)/i,
+    ~r/\b(?:all|the) (?:tests?|checks?|changes?) (?:pass|passed|are in place|were applied)/i,
+    ~r/\b(?:what would you like|would you like me to|shall i|should i|do you want me to|any questions|anything else)\b/i
+  ]
+
+  @max_intent_chars 4_000
+
   @doc """
   Detects whether the sequence of tool calls in the current turn exhibits a repeating cycle.
 
@@ -110,6 +141,32 @@ defmodule Yoke.Brain.AgentLoop do
       :ok -> false
     end
   end
+
+  @doc """
+  Detects a response that announces the next action instead of performing it.
+
+  A turn that ends with a tool-free assistant message is only complete if the
+  message is an answer. Models -- small local ones in particular -- instead
+  emit a plan ("Let me implement the `addArticle()` method now") and stop,
+  leaving the requested work undone. `narrates_intent?/1` recognizes that
+  shape so the caller can ask the model to continue rather than handing an
+  unfinished turn back to the user.
+
+  Returns `true` when the content contains a first-person planning phrase and
+  no completion marker, and is short enough to be an announcement rather than
+  a report. Pure reasoning preambles, empty content, and long explanations
+  return `false`.
+  """
+  @spec narrates_intent?(term()) :: boolean()
+  def narrates_intent?(content) when is_binary(content) do
+    text = String.trim(content)
+
+    text != "" and String.length(text) <= @max_intent_chars and
+      not Enum.any?(@completion_patterns, &Regex.match?(&1, text)) and
+      Enum.any?(@intent_patterns, &Regex.match?(&1, text))
+  end
+
+  def narrates_intent?(_), do: false
 
   @doc "Extracts the sequence of assistant tool call signatures within the current turn."
   def extract_turn_tool_steps(messages) when is_list(messages) do

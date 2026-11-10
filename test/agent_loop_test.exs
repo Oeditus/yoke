@@ -501,6 +501,47 @@ defmodule Yoke.Brain.AgentLoopTest do
            )
   end
 
+  describe "narrated intent" do
+    test "recognizes an announced action that was never performed" do
+      for content <- [
+            "Now I have all the information I need. Let me implement the addArticle() method.",
+            "Let me implement the `addArticle()` method in the `ArticleService` class now.",
+            "I'll now add the missing validation to the DTO.",
+            "I will create the new migration next.",
+            "Now I need to check the existing tests.",
+            "Next, I'll update the repository interface.",
+            "Here is my plan:\n1. Create the entity\n2. Wire the service",
+            "I'll proceed as follows:\n- add the method\n- run the tests"
+          ] do
+        assert AgentLoop.narrates_intent?(content), "missed narration: #{inspect(content)}"
+      end
+    end
+
+    test "does not re-prompt a completed answer" do
+      for content <- [
+            "Let me know if you want me to implement it.",
+            "I've implemented the method and all tests pass.",
+            "In summary, the service now creates sources and tags before saving.",
+            "The change is complete; the addArticle() method persists the article.",
+            "Would you like me to also add a unit test?",
+            "I'll explain how the agent loop detects repeated tool cycles."
+          ] do
+        refute AgentLoop.narrates_intent?(content),
+               "false positive on a finished answer: #{inspect(content)}"
+      end
+    end
+
+    test "ignores empty, non-binary, and very long content" do
+      refute AgentLoop.narrates_intent?("")
+      refute AgentLoop.narrates_intent?("   ")
+      refute AgentLoop.narrates_intent?(nil)
+      refute AgentLoop.narrates_intent?(%{"content" => "Let me implement it."})
+
+      long = String.duplicate("Context line about the module. ", 200) <> "Let me implement it."
+      refute AgentLoop.narrates_intent?(long)
+    end
+  end
+
   describe "AgentLoop circuit breaker for non-standard tool failures" do
     test "disables non-standard tool after 3 consecutive failures" do
       state = %{

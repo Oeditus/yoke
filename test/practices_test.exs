@@ -233,4 +233,33 @@ defmodule Yoke.PracticesTest do
     refute String.contains?(preamble, "Python")
     refute String.contains?(preamble, "PEP 8")
   end
+
+  test "detect_java_layout extracts groupId from pom.xml and source roots", %{tmp_dir: tmp_dir} do
+    pom = """
+    <project>
+      <groupId>de.idigath</groupId>
+      <artifactId>article-service</artifactId>
+      <dependencies>
+        <dependency>
+          <groupId>io.quarkus</groupId>
+          <artifactId>quarkus-core</artifactId>
+        </dependency>
+      </dependencies>
+    </project>
+    """
+
+    File.write!(Path.join(tmp_dir, "pom.xml"), pom)
+    src_main_java = Path.join(tmp_dir, "src/main/java/de/idigath")
+    File.mkdir_p!(src_main_java)
+    File.write!(Path.join(src_main_java, "App.java"), "package de.idigath; public class App {}")
+
+    layout = Practices.detect_java_layout(tmp_dir)
+    assert layout.base_package == "de.idigath"
+    assert "src/main/java" in layout.source_roots
+
+    preamble = Practices.build_preamble(tmp_dir, languages: ["java"])
+    assert preamble =~ "Project root package: `de.idigath`"
+    assert preamble =~ "All new classes must be placed in `de.idigath`"
+    assert preamble =~ "never use placeholder packages like `com.example`"
+  end
 end

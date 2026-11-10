@@ -55,6 +55,73 @@ defmodule Yoke.Brain.AgentLoopSessionTest do
              Session.send_user_message(pid, "Perform the task")
   end
 
+  test "a narrated plan without tool calls continues the turn instead of ending it",
+       %{tmp_dir: dir} do
+    pid =
+      session(dir, [
+        Fixture.choice("Now I have all the information I need. Let me implement the method."),
+        Fixture.choice("Implemented the method.")
+      ])
+
+    assert {:ok, %{content: "Implemented the method."}} =
+             Session.send_user_message(pid, "Implement addArticle/1")
+
+    assert_receive {:review_request, first}
+    assert_receive {:review_request, second}
+
+    [_, first_turn] = first["messages"]
+    assert first_turn["role"] == "user"
+
+    # The second request must carry the narrated text and the continuation notice.
+    assert Enum.any?(second["messages"], fn msg ->
+             msg["role"] == "assistant" and
+               String.contains?(msg["content"] || "", "Let me implement the method")
+           end)
+
+    assert Enum.any?(second["messages"], fn msg ->
+             msg["role"] == "user" and
+               String.starts_with?(msg["content"] || "", "SYSTEM NOTICE: You described")
+           end)
+
+    assert {:ok, messages} = Session.get_messages(pid)
+    assert List.last(messages)["content"] == "Implemented the method."
+  end
+
+  test "narrated plans stop being re-prompted after the bounded number of notices",
+       %{tmp_dir: dir} do
+    narrated = Fixture.choice("Let me implement the method now.")
+    pid = session(dir, [narrated, narrated, narrated, narrated])
+
+    assert {:ok, %{content: "Let me implement the method now."}} =
+             Session.send_user_message(pid, "Implement addArticle/1")
+
+    assert {:ok, messages} = Session.get_messages(pid)
+
+    notices =
+      Enum.filter(messages, fn msg ->
+        msg["role"] == "user" and
+          String.starts_with?(msg["content"] || "", "SYSTEM NOTICE: You described")
+      end)
+
+    assert [_, _] = notices
+  end
+
+  test "a completed answer ends the turn without a continuation notice", %{tmp_dir: dir} do
+    pid = session(dir, [Fixture.choice("The method is implemented and tests pass.")])
+
+    assert {:ok, %{content: "The method is implemented and tests pass."}} =
+             Session.send_user_message(pid, "Implement addArticle/1")
+
+    assert_receive {:review_request, _request}
+    refute_receive {:review_request, _request}, 200
+
+    assert {:ok, messages} = Session.get_messages(pid)
+
+    refute Enum.any?(messages, fn msg ->
+             String.starts_with?(msg["content"] || "", "SYSTEM NOTICE: You described")
+           end)
+  end
+
   defp call(value), do: Fixture.tool_choice("loop_test_tool", %{"value" => value})
 
   defp session(dir, responses) do
@@ -73,6 +140,7 @@ defmodule Yoke.Brain.AgentLoopSessionTest do
        model: "loop-test",
        endpoint: endpoint,
        permission_mode: :auto_approve,
+       plan_gate_enabled: false,
        max_tool_depth: 8}
     )
   end

@@ -35,6 +35,24 @@ defmodule Yoke.Linter do
         docs: "https://hexdocs.pm/dialyxir"
       },
       %{
+        name: "javac",
+        aliases: ["java", "compile"],
+        description: "Java compiler & type checker (via ./mvnw test-compile, gradle, or javac)",
+        docs: "https://openjdk.org"
+      },
+      %{
+        name: "mvn",
+        aliases: ["maven"],
+        description: "Maven execution wrapper (via ./mvnw or mvn)",
+        docs: "https://maven.apache.org"
+      },
+      %{
+        name: "checkstyle",
+        aliases: [],
+        description: "Java style and smell checks (via checkstyle:check)",
+        docs: "https://checkstyle.sourceforge.io"
+      },
+      %{
         name: "all",
         aliases: [],
         description: "Run all supported linter tools in sequence",
@@ -104,6 +122,9 @@ defmodule Yoke.Linter do
       "propwise" -> "propwise"
       "credo" -> "credo"
       "dialyzer" -> "dialyzer"
+      t when t in ["javac", "java", "compile"] -> "javac"
+      t when t in ["mvn", "maven"] -> "mvn"
+      "checkstyle" -> "checkstyle"
       "all" -> :all
       "help" -> :unknown
       "list" -> :unknown
@@ -112,7 +133,14 @@ defmodule Yoke.Linter do
   end
 
   defp run_all(rest, cwd) do
-    tools = ["oeditus_credo", "propwise", "credo"]
+    tools =
+      if not File.exists?(Path.join(cwd, "mix.exs")) and
+           (File.exists?(Path.join(cwd, "pom.xml")) or
+              File.exists?(Path.join(cwd, "build.gradle"))) do
+        ["javac"]
+      else
+        ["oeditus_credo", "propwise", "credo"]
+      end
 
     results =
       Enum.map(tools, fn t ->
@@ -123,6 +151,18 @@ defmodule Yoke.Linter do
       end)
 
     {:ok, Enum.join(results, "\n" <> String.duplicate("-", 60) <> "\n\n")}
+  end
+
+  defp run_single_tool("javac", _rest, cwd) do
+    exec_java_compile(cwd)
+  end
+
+  defp run_single_tool("mvn", rest, cwd) do
+    exec_mvn(rest, cwd)
+  end
+
+  defp run_single_tool("checkstyle", rest, cwd) do
+    exec_mvn(["checkstyle:check" | rest], cwd)
   end
 
   defp run_single_tool(tool, rest, cwd) do
@@ -226,6 +266,75 @@ defmodule Yoke.Linter do
     end
   rescue
     e -> {:error, "Failed to execute mix #{tool}: #{Exception.message(e)}"}
+  end
+
+  defp exec_java_compile(cwd) do
+    mvnw = Path.join(cwd, "mvnw")
+    gradlew = Path.join(cwd, "gradlew")
+
+    cond do
+      File.exists?(mvnw) ->
+        case System.cmd(Path.expand(mvnw), ["test-compile", "-q"],
+               cd: cwd,
+               stderr_to_stdout: true
+             ) do
+          {"", 0} -> {:ok, "Java compilation succeeded (0 errors)."}
+          {out, 0} -> {:ok, "Java compilation succeeded:\n" <> out}
+          {err, _} -> {:error, "Java compilation failed:\n" <> err}
+        end
+
+      File.exists?(Path.join(cwd, "pom.xml")) and System.find_executable("mvn") ->
+        case System.cmd("mvn", ["test-compile", "-q"], cd: cwd, stderr_to_stdout: true) do
+          {"", 0} -> {:ok, "Java compilation succeeded (0 errors)."}
+          {out, 0} -> {:ok, "Java compilation succeeded:\n" <> out}
+          {err, _} -> {:error, "Java compilation failed:\n" <> err}
+        end
+
+      File.exists?(gradlew) ->
+        case System.cmd(Path.expand(gradlew), ["compileJava", "compileTestJava", "-q"],
+               cd: cwd,
+               stderr_to_stdout: true
+             ) do
+          {"", 0} -> {:ok, "Java compilation succeeded (0 errors)."}
+          {out, 0} -> {:ok, "Java compilation succeeded:\n" <> out}
+          {err, _} -> {:error, "Java compilation failed:\n" <> err}
+        end
+
+      File.exists?(Path.join(cwd, "build.gradle")) and System.find_executable("gradle") ->
+        case System.cmd("gradle", ["compileJava", "compileTestJava", "-q"],
+               cd: cwd,
+               stderr_to_stdout: true
+             ) do
+          {"", 0} -> {:ok, "Java compilation succeeded (0 errors)."}
+          {out, 0} -> {:ok, "Java compilation succeeded:\n" <> out}
+          {err, _} -> {:error, "Java compilation failed:\n" <> err}
+        end
+
+      true ->
+        {:error, "No Java build tool (mvnw, mvn, gradlew, gradle) found in #{cwd}."}
+    end
+  rescue
+    e -> {:error, "Failed to run Java compilation: #{Exception.message(e)}"}
+  end
+
+  defp exec_mvn(args, cwd) do
+    mvnw = Path.join(cwd, "mvnw")
+
+    {cmd, final_args} =
+      if File.exists?(mvnw) do
+        {Path.expand(mvnw), args}
+      else
+        {"mvn", args}
+      end
+
+    try do
+      case System.cmd(cmd, final_args, cd: cwd, stderr_to_stdout: true) do
+        {output, 0} -> {:ok, output}
+        {output, _code} -> {:error, output}
+      end
+    rescue
+      e -> {:error, "Failed to execute #{cmd}: #{Exception.message(e)}"}
+    end
   end
 
   def help_text do
