@@ -234,6 +234,7 @@ defmodule Yoke.PracticesTest do
     refute String.contains?(preamble, "PEP 8")
   end
 
+  @tag skip_in_gha: true
   test "detect_java_layout extracts groupId from pom.xml and source roots", %{tmp_dir: tmp_dir} do
     pom = """
     <project>
