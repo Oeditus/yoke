@@ -27,6 +27,10 @@ config :ragex, :ai, providers: []
 # escript builds exclude the native dependency tree, so configuring :exla emits
 # "Please ensure :exla exists or remove the configuration" on every boot.
 if Application.get_env(:yoke, :embeddings_enabled, false) do
+  if Code.ensure_loaded?(Yoke.CudaDetector) and Yoke.CudaDetector.cuda_available?() do
+    config :ragex, :exla_client, :cuda
+  end
+
   gpu_mem_fraction =
     case System.get_env("EXLA_GPU_MEMORY_FRACTION") do
       nil ->

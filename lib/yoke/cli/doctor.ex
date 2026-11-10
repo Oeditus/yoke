@@ -48,6 +48,14 @@ defmodule Yoke.CLI.Doctor do
   def optional_features_report(native_features_selected?, availability) do
     selected = if native_features_selected?, do: "enabled", else: "disabled"
 
+    cuda_suffix =
+      if Code.ensure_loaded?(Yoke.CudaDetector) and Yoke.CudaDetector.cuda_available?() do
+        target = System.get_env("XLA_TARGET") || "auto"
+        " CUDA target: #{target}."
+      else
+        ""
+      end
+
     %{
       category: "Optional Native Features",
       status:
@@ -60,7 +68,8 @@ defmodule Yoke.CLI.Doctor do
           Enum.map_join(availability, ", ", fn {app, present?} ->
             "#{app}: #{if present?, do: "present", else: "absent"}"
           end) <>
-          ". Availability checks metadata only; NIFs and models are not loaded or probed."
+          ". Availability checks metadata only; NIFs and models are not loaded or probed." <>
+          cuda_suffix
     }
   end
 

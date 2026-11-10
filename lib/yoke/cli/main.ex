@@ -421,6 +421,10 @@ defmodule Yoke.CLI.Main do
 
   @doc false
   def configure_exla do
+    if Code.ensure_loaded?(Yoke.CudaDetector) and Yoke.CudaDetector.cuda_available?() do
+      Application.put_env(:ragex, :exla_client, :cuda)
+    end
+
     gpu_mem_fraction =
       case System.get_env("EXLA_GPU_MEMORY_FRACTION") do
         nil ->

@@ -1,3 +1,7 @@
+Code.compiler_options(ignore_module_conflict: true)
+Code.require_file("lib/yoke/cuda_detector.ex", __DIR__)
+Yoke.CudaDetector.auto_configure()
+
 defmodule Yoke.MixProject do
   use Mix.Project
 

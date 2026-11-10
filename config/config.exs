@@ -43,6 +43,10 @@ embeddings_enabled? =
 config :yoke, :embeddings_enabled, embeddings_enabled?
 
 if embeddings_enabled? do
+  if Code.ensure_loaded?(Yoke.CudaDetector) and Yoke.CudaDetector.cuda_available?() do
+    config :ragex, :exla_client, :cuda
+  end
+
   gpu_mem_fraction =
     case System.get_env("EXLA_GPU_MEMORY_FRACTION") do
       nil ->
