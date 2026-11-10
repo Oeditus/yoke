@@ -44,6 +44,14 @@ defmodule Yoke.PracticesTest do
     assert Enum.count(items) >= 5
     assert Enum.any?(items, &String.contains?(&1, "Javadoc"))
     assert Enum.any?(items, &String.contains?(&1, "JUnit"))
+
+    assert Enum.any?(
+             items,
+             &String.contains?(&1, "verify compilation before reporting completion")
+           )
+
+    assert Enum.any?(items, &String.contains?(&1, "call-site sweep"))
+    assert Enum.any?(items, &String.contains?(&1, "clean imports and zero warnings"))
     refute Enum.any?(items, &String.contains?(&1, "for java"))
   end
 
@@ -262,5 +270,7 @@ defmodule Yoke.PracticesTest do
     assert preamble =~ "Project root package: `de.idigath`"
     assert preamble =~ "All new classes must be placed in `de.idigath`"
     assert preamble =~ "never use placeholder packages like `com.example`"
+    assert preamble =~ "Always verify compilation of both main and test sources"
+    assert preamble =~ "update all callers (controllers and test classes)"
   end
 end

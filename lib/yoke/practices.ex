@@ -76,6 +76,9 @@ defmodule Yoke.Practices do
       "Java package declarations MUST strictly match the directory structure relative to the source root (`src/main/java` or `src/test/java`).",
       "Always inspect existing package declarations before creating new classes; never use placeholder packages like `com.example`.",
       "Before editing an existing Java class, confirm its exact file path via symbol search or find rather than guessing package paths.",
+      "When modifying a DTO, entity, or service method signature, perform a full call-site sweep across the workspace (via symbol references or grep): update all callers across controllers, services, and tests in the same change set rather than in separate iterations.",
+      "Always verify compilation before reporting completion: run `run_linter javac` (or `./mvnw test-compile -q` / `./gradlew testClasses -q`). Never mark a task complete if there are compilation errors in main or test sources.",
+      "Maintain clean imports and zero warnings: remove all unused imports, avoid wildcard imports (`import foo.*`), and resolve any compiler or linter warnings before finishing.",
       "Prefer small, focused methods with early returns over deeply nested conditionals.",
       "Document public classes and methods with Javadoc (`@param`, `@return`, `@throws`), keeping it accurate when behaviour changes.",
       "Use `Optional` for lookups that may legitimately return nothing, and throw a specific exception at the boundary when absence is an error.",
@@ -709,13 +712,17 @@ defmodule Yoke.Practices do
                   [
                     "Project root package: `#{layout.base_package}`. All new classes must be placed in `#{layout.base_package}` (never use placeholder packages like `com.example`).",
                     "Java package declarations MUST strictly mirror directory layout (e.g. `package #{layout.base_package}.service;` must be in `src/main/java/#{String.replace(layout.base_package, ".", "/")}/service/ClassName.java`).",
-                    "Before editing an existing Java class, verify its exact path using symbol definition or file search rather than guessing package folder paths."
+                    "Before editing an existing Java class, verify its exact path using symbol definition or file search rather than guessing package folder paths.",
+                    "Always verify compilation of both main and test sources via `run_linter javac` (or `./mvnw test-compile -q` / `./gradlew testClasses -q`) before reporting completion.",
+                    "When editing DTOs, models, or service methods, update all callers (controllers and test classes) across the workspace in the same change set."
                   ]
                 else
                   [
                     "Inspect existing package declarations before creating new classes; do NOT use placeholder packages like `com.example`.",
                     "Java package declarations MUST strictly mirror directory layout relative to source roots.",
-                    "Before editing an existing Java class, verify its exact path using symbol definition or file search rather than guessing package folder paths."
+                    "Before editing an existing Java class, verify its exact path using symbol definition or file search rather than guessing package folder paths.",
+                    "Always verify compilation of both main and test sources via `run_linter javac` (or `./mvnw test-compile -q` / `./gradlew testClasses -q`) before reporting completion.",
+                    "When editing DTOs, models, or service methods, update all callers (controllers and test classes) across the workspace in the same change set."
                   ]
                 end
 

@@ -371,14 +371,14 @@ defmodule Yoke.Plugin.DefaultTools do
       %{
         name: "run_linter",
         description:
-          "Run native Elixir linters and tools (oeditus_credo, propwise, credo, dialyzer) against whole project, diff, or CR targets.",
+          "Run linters and static analysis tools against whole project, diff, or CR targets. Supports Elixir (credo, oeditus_credo, dialyzer, propwise) and Java (javac to compile main and test sources via ./mvnw or ./gradlew, mvn, checkstyle).",
         parameters: %{
           type: "object",
           properties: %{
             args: %{
               type: "string",
               description:
-                "Linter command arguments (e.g. 'propwise cr main', 'oeditus_credo diff', 'propwise', 'all cr main')."
+                "Linter command arguments (e.g. 'javac', 'credo', 'checkstyle', 'propwise cr main', 'oeditus_credo diff', 'all cr main')."
             }
           },
           required: ["args"]
