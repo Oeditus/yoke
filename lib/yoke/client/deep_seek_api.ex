@@ -301,7 +301,9 @@ defmodule Yoke.Client.DeepSeekAPI do
   all treated as "no credential".
   """
   @spec credential?(term()) :: boolean()
-  def credential?(key), do: is_binary(key) and key != "" and key != "not-needed"
+  def credential?("not-needed"), do: false
+  def credential?(<<_::utf8, _::binary>>), do: true
+  def credential?(_), do: false
 
   @doc """
   Describes the credential state of a resolved provider configuration without
@@ -317,12 +319,10 @@ defmodule Yoke.Client.DeepSeekAPI do
   """
   @spec credential_state(keyword()) :: {:configured, String.t()} | :missing
   def credential_state(opts) when is_list(opts) do
-    key = opts[:api_key]
-
-    cond do
-      credential?(key) -> {:configured, credential_source(opts)}
-      key == "not-needed" -> {:configured, "not required for loopback endpoint"}
-      true -> :missing
+    case opts[:api_key] do
+      "not-needed" -> {:configured, "not required for loopback endpoint"}
+      <<_::utf8, _::binary>> -> {:configured, credential_source(opts)}
+      _ -> :missing
     end
   end
 
