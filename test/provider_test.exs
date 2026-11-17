@@ -451,6 +451,114 @@ defmodule Yoke.ProviderTest do
     refute_receive {:http_request, _retry}, 600
   end
 
+  # A 400 is deterministic: the same request is rejected the same way. Retrying
+  # it only delays the message the user needs to act on, and the message has to
+  # name the likely cause (model name, max_tokens, request options) instead of
+  # surfacing a bare status code.
+  test "HTTP 400 on local endpoint fails immediately with an actionable message", %{tmp_dir: cwd} do
+    {endpoint, listener, server} =
+      http_server_status(400, %{"error" => %{"message" => "model not found"}})
+
+    on_exit(fn ->
+      :gen_tcp.close(listener)
+      Process.exit(server, :normal)
+    end)
+
+    assert {:error, err} =
+             DeepSeekAPI.chat_completion(
+               [%{"role" => "user", "content" => "test"}],
+               [],
+               endpoint: endpoint,
+               api_key: "omlx-token",
+               mock: false,
+               cwd: cwd
+             )
+
+    assert err =~ "Request rejected (HTTP 400)"
+    assert err =~ "retrying will not help"
+    assert err =~ "model not found"
+    assert_receive {:http_request, _request}, 1_000
+    refute_receive {:http_request, _retry}, 600
+  end
+
+  test "session turn with HTTP 400 fails immediately without retrying", %{tmp_dir: cwd} do
+    {endpoint, listener, server} =
+      http_server_status(400, %{"error" => %{"message" => "model not found"}})
+
+    on_exit(fn ->
+      :gen_tcp.close(listener)
+      Process.exit(server, :normal)
+    end)
+
+    pid =
+      session_with_opts(
+        session_id: "turn-400-#{System.unique_integer([:positive])}",
+        cwd: cwd,
+        endpoint: endpoint,
+        api_key: "omlx-token",
+        mock: false
+      )
+
+    assert {:error, err} = Session.send_user_message(pid, "hello")
+    assert err =~ "Request rejected (HTTP 400)"
+    assert_receive {:http_request, _request}, 1_000
+    refute_receive {:http_request, _retry}, 600
+  end
+
+  test "a 401 from a loopback server points at the missing bearer token", %{tmp_dir: cwd} do
+    {endpoint, listener, server} =
+      http_server_status(401, %{"error" => %{"message" => "API key required"}})
+
+    on_exit(fn ->
+      :gen_tcp.close(listener)
+      Process.exit(server, :normal)
+    end)
+
+    assert {:error, err} =
+             DeepSeekAPI.chat_completion(
+               [%{"role" => "user", "content" => "test"}],
+               [],
+               endpoint: endpoint,
+               api_key: "not-needed",
+               mock: false,
+               cwd: cwd
+             )
+
+    assert err =~ "This loopback server requires a bearer token"
+    assert err =~ "OPENAI_API_KEY"
+    refute err =~ "not-needed"
+  end
+
+  describe "credential_state/1" do
+    test "reports the variable a resolved credential came from", %{tmp_dir: cwd} do
+      System.put_env("OPENAI_API_KEY", "omlx-test-bearer-token")
+      opts = Provider.resolve(endpoint: "http://127.0.0.1:8000/v1", cwd: cwd)
+
+      assert DeepSeekAPI.credential_state(opts) == {:configured, "OPENAI_API_KEY"}
+    end
+
+    test "reports a loopback endpoint without a credential as configured", %{tmp_dir: cwd} do
+      opts = Provider.resolve(endpoint: "http://127.0.0.1:8000/v1", cwd: cwd)
+
+      assert {:configured, source} = DeepSeekAPI.credential_state(opts)
+      assert source =~ "loopback"
+    end
+
+    test "reports a remote endpoint without a credential as missing", %{tmp_dir: cwd} do
+      opts = Provider.resolve(endpoint: "https://example.invalid/v1", cwd: cwd)
+
+      assert DeepSeekAPI.credential_state(opts) == :missing
+    end
+
+    test "never includes the secret in the reported state", %{tmp_dir: cwd} do
+      System.put_env("YOKE_API_KEY", "super-secret-token")
+      opts = Provider.resolve(endpoint: "http://127.0.0.1:8000/v1", cwd: cwd)
+
+      assert {:configured, source} = DeepSeekAPI.credential_state(opts)
+      refute source =~ "super-secret-token"
+    end
+  end
+
   defp session_with_opts(opts) do
     {:ok, pid} = SessionSupervisor.start_session(opts)
 

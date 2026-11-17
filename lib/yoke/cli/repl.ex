@@ -1499,6 +1499,25 @@ defmodule Yoke.CLI.Repl do
     {:ok, model} = Session.get_model(session_pid)
     Yoke.CLI.Main.configure_ragex_ai(model, current)
     IO.puts(Formatter.format_success("Switched endpoint to '#{current}'"))
+
+    # Credentials are resolved when the endpoint changes, so tell the user
+    # right away when the new endpoint has none. Discovering it on the next
+    # turn costs a round trip and produces a 401 instead of a hint.
+    session_opts = Session.provider_options(session_pid)
+
+    case DeepSeekAPI.credential_state(session_opts) do
+      {:configured, source} ->
+        IO.puts(Formatter.format_info("Session credential: configured (#{source})."))
+
+      :missing ->
+        IO.puts(
+          Formatter.format_warning(
+            "Session credential: missing for this endpoint. Export OPENAI_API_KEY " <>
+              "(or YOKE_API_KEY) and run /endpoint again, or start a new session."
+          )
+        )
+    end
+
     :continue
   end
 
@@ -2392,21 +2411,13 @@ defmodule Yoke.CLI.Repl do
       session_opts[:model] || System.get_env("DEEPSEEK_MODEL") || "deepseek-flash (default)"
 
     active_endpoint = session_opts[:endpoint] || "default"
-    key = session_opts[:api_key]
 
     credential_status =
-      cond do
-        is_binary(key) and key != "" and key != "not-needed" ->
-          "Configured (active session)"
-
-        key == "not-needed" ->
-          "Not needed (local loopback)"
-
-        true ->
-          "None (offline / mock)"
+      case DeepSeekAPI.credential_state(session_opts) do
+        {:configured, source} -> "Configured (#{source})"
+        :missing -> "Missing (no credential for this endpoint)"
       end
 
-    has_key? = credential_status != "None (offline / mock)"
     yoke_env = System.get_env("YOKE_ENV") || "prod"
     cwd = File.cwd!()
 
@@ -2422,7 +2433,6 @@ defmodule Yoke.CLI.Repl do
     - **Current Workspace CWD**: `#{cwd}`
     - **Node Name**: `#{node()}`
     - **Environment**: `#{yoke_env}`
-    - **API Key Set?**: `#{has_key?}`
     """
 
     IO.puts("\n" <> Formatter.format_markdown(md) <> "\n")

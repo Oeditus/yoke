@@ -96,7 +96,8 @@ defmodule Yoke.CLI.Help do
     /endpoint <url|default|deepseek|openrouter|opencode|ollama|lmstudio|vllm>
     Change the generation endpoint. Example: /endpoint ollama
     """,
-    "env" => "/env\nShow runtime, workspace, provider, and API-key presence (not its value).",
+    "env" =>
+      "/env\nShow runtime, workspace, provider, and the effective session credential state and its source (never the value).",
     "exit" => "/exit (or /quit)\nExit Yoke after background-job and MCP cleanup.",
     "explorer" => "/explorer (or /config explorer)\nOpen the interactive configuration explorer.",
     "export" => """
