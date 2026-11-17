@@ -25,7 +25,7 @@ defmodule Yoke.AIGuardTest do
     test "flags real DeepSeek API key leakage" do
       verdict =
         AIGuard.guard_llm(
-          "export DEEPSEEK_API_KEY=\"sk-abcdef0123456789abcdef0123456789\"",
+          "export DEEPSEEK_API_KEY=\"sk-REDACTED-REDACTED-REDACTED\"",
           :input, mode: :observe)
 
       assert verdict.action == :flagged
