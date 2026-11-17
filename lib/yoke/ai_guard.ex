@@ -53,7 +53,8 @@ defmodule Yoke.AIGuard do
     {~r/(?:sk-|ghp_|gho_|glpat-|xox[baprs]-)[A-Za-z0-9_\-]{20,}/,
      "Potential API Token / Private Secret"},
     {~r/-----BEGIN (?:RSA|OPENSSH|EC|PRIVATE KEY)-----/, "Private Key Material"},
-    {~r/DEEPSEEK_API_KEY\s*=\s*['"]?[A-Za-z0-9_\-]+['"]?/, "DeepSeek API Key leakage"}
+    {~r/['"]?DEEPSEEK_API_KEY['"]?\s*[:=]\s*['"]?sk-[A-Za-z0-9_\-]{20,}['"]?/i,
+     "DeepSeek API Key leakage"}
   ]
 
   @destructive_cmd_patterns [
