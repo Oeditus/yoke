@@ -5,21 +5,31 @@ defmodule Yoke.AutoUpdateTest do
 
   @temp_dir Path.expand("test/tmp/auto_update_test_#{System.unique_integer([:positive])}")
 
+  @env_vars ~w(
+    YOKE_NO_AUTO_UPDATE
+    YOKE_DISABLE_AUTO_UPDATE
+    YOKE_UPDATE_CHECK_INTERVAL
+    YOKE_FORCE_RELEASE_INSTALL
+    CI
+    GITHUB_ACTIONS
+    CONTINUOUS_INTEGRATION
+  )
+
   setup do
     File.mkdir_p!(@temp_dir)
     state_file = Path.join(@temp_dir, "update_check.json")
 
     # Clear any env overrides
-    System.delete_env("YOKE_NO_AUTO_UPDATE")
-    System.delete_env("YOKE_DISABLE_AUTO_UPDATE")
-    System.delete_env("YOKE_UPDATE_CHECK_INTERVAL")
-    System.delete_env("YOKE_FORCE_RELEASE_INSTALL")
+    prior = Map.new(@env_vars, fn var -> {var, System.get_env(var)} end)
+    Enum.each(@env_vars, &System.delete_env/1)
 
     on_exit(fn ->
       File.rm_rf!(@temp_dir)
-      System.delete_env("YOKE_NO_AUTO_UPDATE")
-      System.delete_env("YOKE_DISABLE_AUTO_UPDATE")
-      System.delete_env("YOKE_UPDATE_CHECK_INTERVAL")
+
+      Enum.each(prior, fn
+        {var, nil} -> System.delete_env(var)
+        {var, value} -> System.put_env(var, value)
+      end)
     end)
 
     {:ok, state_file: state_file, temp_dir: @temp_dir}
@@ -117,6 +127,44 @@ defmodule Yoke.AutoUpdateTest do
       System.put_env("YOKE_DISABLE_AUTO_UPDATE", "true")
 
       refute AutoUpdate.should_check?(
+               published_release: true,
+               interactive: true,
+               state_file: state_file
+             )
+    end
+
+    test "returns false when running in CI environment", %{state_file: state_file} do
+      System.put_env("CI", "true")
+
+      refute AutoUpdate.should_check?(
+               published_release: true,
+               interactive: true,
+               state_file: state_file
+             )
+
+      System.delete_env("CI")
+      System.put_env("GITHUB_ACTIONS", "true")
+
+      refute AutoUpdate.should_check?(
+               published_release: true,
+               interactive: true,
+               state_file: state_file
+             )
+
+      System.delete_env("GITHUB_ACTIONS")
+      System.put_env("CONTINUOUS_INTEGRATION", "1")
+
+      refute AutoUpdate.should_check?(
+               published_release: true,
+               interactive: true,
+               state_file: state_file
+             )
+
+      System.delete_env("CONTINUOUS_INTEGRATION")
+
+      # Also respects explicit ci option
+      refute AutoUpdate.should_check?(
+               ci: true,
                published_release: true,
                interactive: true,
                state_file: state_file

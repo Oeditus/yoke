@@ -156,7 +156,7 @@ defmodule Yoke.AutoUpdate do
       System.get_env("YOKE_DISABLE_AUTO_UPDATE") in ["1", "true"] ->
         false
 
-      ci_environment?() ->
+      ci_environment?(opts) ->
         false
 
       not interactive?(opts) ->
@@ -609,10 +609,16 @@ defmodule Yoke.AutoUpdate do
     end
   end
 
-  defp ci_environment? do
-    System.get_env("CI") in ["true", "1"] or
-      System.get_env("GITHUB_ACTIONS") in ["true", "1"] or
-      System.get_env("CONTINUOUS_INTEGRATION") in ["true", "1"]
+  defp ci_environment?(opts) do
+    case Keyword.fetch(opts, :ci) do
+      {:ok, val} when is_boolean(val) ->
+        val
+
+      :error ->
+        System.get_env("CI") in ["true", "1"] or
+          System.get_env("GITHUB_ACTIONS") in ["true", "1"] or
+          System.get_env("CONTINUOUS_INTEGRATION") in ["true", "1"]
+    end
   end
 
   defp interactive?(opts) do
