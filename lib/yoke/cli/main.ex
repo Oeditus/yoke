@@ -29,7 +29,8 @@ defmodule Yoke.CLI.Main do
     "run" => %{module: Yoke.CLI.CI, fun: :run_workflow, status: :implemented},
     "audit" => %{module: Yoke.CLI.CI, fun: :audit, status: :implemented},
     "fix" => %{module: Yoke.CLI.Fix, fun: :fix, status: :implemented},
-    "rag" => %{module: Yoke.CLI.CI, fun: :rag, status: :implemented}
+    "rag" => %{module: Yoke.CLI.CI, fun: :rag, status: :implemented},
+    "update" => %{module: Yoke.AutoUpdate, fun: :cli_update, status: :implemented}
   }
 
   @doc "Returns the subcommand dispatch table."
@@ -480,6 +481,7 @@ defmodule Yoke.CLI.Main do
       yoke review|lint|describe|run   CI code review, linting, description, workflows
       yoke audit                     Emit the AI Guard audit trail as a CI artifact
       yoke rag                       Query the Ragex knowledge graph
+      yoke update                    Check GitHub Releases for updates and install
 
     OPTIONS:
       -c, --conversation STRING  Resume specific conversation ID
@@ -490,6 +492,7 @@ defmodule Yoke.CLI.Main do
           --node STRING          Start local Erlang distributed node name
           --connect STRING       Connect to remote Hands node
           --plugin FILE          Load external Elixir plugin file (.ex or .exs)
+      -u, --update               Check GitHub Releases for updates and install
       -h, --help                 Display this help message
     """)
   end

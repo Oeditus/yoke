@@ -81,7 +81,11 @@ defmodule Yoke.Config do
     # When nil or empty, languages are automatically detected from workspace files.
     "languages" => nil,
     # Reusable session command aliases (name => command | commands | definition)
-    "aliases" => %{}
+    "aliases" => %{},
+    # Auto-update: periodically checks GitHub Releases for new Yoke releases on startup.
+    "auto_update" => true,
+    # Interval in seconds between update checks (default: 86400 = 24 hours).
+    "update_check_interval" => 86_400
   }
 
   @doc "Returns the configured project languages list or nil if auto-detection should be used."

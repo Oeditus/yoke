@@ -165,6 +165,7 @@ defmodule Yoke.CLI.Formatter do
       #{cyan()}/subagent <prompt>#{reset()}      Spawn a background subagent worker for sub-tasks
       #{cyan()}/sweep <tokens>#{reset()}         Run multi-corpus prior-art search across workflow, reference, lessons, and vault
       #{cyan()}/undo#{reset()}                   Roll back state to previous checkpoint
+      #{cyan()}/update#{reset()}                 Check GitHub for updates and self-update Yoke
       #{cyan()}/workflow [cmd]#{reset()}         Run customizable multi-step workflows (list|run|status|resume|abort|init)
 
     #{bold()}#{cyan()}HOTKEYS:#{reset()}

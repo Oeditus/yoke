@@ -24,6 +24,8 @@ defmodule Yoke.CLI.Repl do
     MCPServerManager.await_ragex()
     IO.puts(Formatter.banner())
 
+    Yoke.AutoUpdate.maybe_check_and_prompt(opts)
+
     Yoke.Practices.ensure_practices_for_workspace(".", opts)
 
     session_id =
@@ -1798,7 +1800,7 @@ defmodule Yoke.CLI.Repl do
   end
 
   def handle_input("/update", _session_pid, _session_id) do
-    Yoke.CLI.Main.handle_self_update()
+    Yoke.AutoUpdate.manual_update()
     :continue
   end
 
