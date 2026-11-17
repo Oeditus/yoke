@@ -1496,16 +1496,20 @@ defmodule Yoke.Brain.Session do
     end
   end
 
+  # Errors that a retry cannot fix: the provider rejected the request itself
+  # (bad credentials, forbidden, missing route, malformed payload) or the
+  # session has no credentials to send. Retrying these only delays the message
+  # the user needs to act on, so they are surfaced immediately.
+  @non_retriable_markers [
+    "Authentication failed",
+    "Access forbidden",
+    "Request rejected (HTTP 4",
+    "Selected provider has no API credentials configured"
+  ]
+
   defp non_retriable_api_error?(reason) when is_binary(reason) do
-    String.contains?(reason, "HTTP 401") or
-      String.contains?(reason, "HTTP status 401") or
-      String.contains?(reason, "Authentication failed") or
-      String.contains?(reason, "HTTP 403") or
-      String.contains?(reason, "HTTP status 403") or
-      String.contains?(reason, "Access forbidden") or
-      String.contains?(reason, "HTTP 404") or
-      String.contains?(reason, "HTTP status 404") or
-      String.contains?(reason, "Selected provider has no API credentials configured")
+    Enum.any?(@non_retriable_markers, &String.contains?(reason, &1)) or
+      Regex.match?(~r/HTTP (?:status )?40[134]\b/, reason)
   end
 
   defp non_retriable_api_error?(_), do: false

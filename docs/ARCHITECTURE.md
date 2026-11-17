@@ -61,7 +61,7 @@ flowchart TD
 - **`ServerManager`**: First-class supervisor for the `Ragex` code intelligence engine and external Model Context Protocol (MCP) servers over stdio JSON-RPC. Automatically builds dynamic Elixir tool modules for live hot-code tool access.
 
 ### 4. Client Layer (`lib/yoke/client/`)
-- **`DeepSeekAPI`**: Handles REST communications with `deepseek-chat` (V3) and `deepseek-reasoner` (R1) API endpoints with automatic exponential backoff retry for transient network and rate-limit HTTP errors.
+- **`DeepSeekAPI`**: Handles REST communications with `deepseek-chat` (V3) and `deepseek-reasoner` (R1) API endpoints with automatic exponential backoff retry for transient network and rate-limit HTTP errors. Deterministic failures (HTTP 401, 403, and other 4xx responses) are not retried; they surface immediately with a message naming the cause, because repeating the same rejected request cannot succeed.
 
 ### 5. CLI & TUI Layer (`lib/yoke/cli/`)
 - **`LineEditor`**: Fixed bottom command bar TUI with horizontal ruler, grapheme-aware Unicode cursor navigation, and persistent history.

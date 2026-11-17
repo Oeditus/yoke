@@ -272,7 +272,7 @@ server's 16,384-token context. If tuning the server, align the profile's
 ##### Authenticated local OpenAI-compatible endpoints (oMLX, vLLM, llama-server)
 Local OpenAI-compatible endpoints requiring an API key or bearer token (such as oMLX, vLLM, or LocalAI configured with `--api-key`) are first-class configurations.
 
-Credentials and custom local endpoints can be configured using provider-neutral environment variables captured at session startup:
+Credentials and custom local endpoints can be configured using provider-neutral environment variables:
 
 ```bash
 # Provider-neutral variables for authenticated local servers
@@ -284,13 +284,23 @@ export OPENAI_MODEL="Qwen3.6-35B-A3B-4bit"          # or YOKE_MODEL
 yoke
 ```
 
+Credentials are resolved when a session starts and whenever the endpoint changes, so exporting the variable after Yoke is already running does not reach an open session. Start a new session, or re-run `/endpoint` after exporting it, to pick the credential up.
+
 Or switch endpoints dynamically within the REPL:
 ```text
 /endpoint http://127.0.0.1:8000/v1/chat/completions
 /model Qwen3.6-35B-A3B-4bit
 ```
 
-When connecting to authenticated loopback endpoints, Yoke includes the bearer token in the `Authorization` header while retaining loopback transport isolation. If the server rejects the credentials (HTTP 401 or 403), Yoke halts immediately with an actionable error rather than wasting time on retries. Use `/env` in the REPL to inspect the active session's effective credential status without revealing secret keys.
+`/endpoint` reports the resulting session credential state immediately, so a missing token is visible before the next turn fails. `/env` shows the effective credential state and the variable or setting it came from, without revealing the secret.
+
+When connecting to authenticated loopback endpoints, Yoke includes the bearer token in the `Authorization` header while retaining loopback transport isolation. Deterministic failures stop immediately instead of being retried:
+
+- **HTTP 401** reports that the loopback server requires a bearer token and names the variables to set.
+- **HTTP 403** reports that the request was rejected and points at key permissions.
+- **Other 4xx** responses report that the request itself was refused, and suggest checking the model name, `max_tokens`, and request options.
+
+Only rate limiting (`429`) and server-side unavailability (`500`, `502`, `503`, `504`) are retried.
 
 Reproduce real client tool-call/result round trips with overlapping 32-item
 CUDA embedding batches:

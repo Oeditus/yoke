@@ -294,6 +294,49 @@ defmodule Yoke.Client.DeepSeekAPI do
     }
   end
 
+  @doc """
+  Returns true when `key` is a real credential rather than the absence of one.
+
+  `nil`, `""`, and the `"not-needed"` sentinel that loopback endpoints use are
+  all treated as "no credential".
+  """
+  @spec credential?(term()) :: boolean()
+  def credential?(key), do: is_binary(key) and key != "" and key != "not-needed"
+
+  @doc """
+  Describes the credential state of a resolved provider configuration without
+  revealing the secret.
+
+  Returns `{:configured, source}` when a credential is present, otherwise
+  `:missing`. `source` names the variable or setting the credential came from
+  so `/env` and error messages can tell the user what to change; it never
+  contains the secret itself.
+
+  The resolution order mirrors `Yoke.Provider.resolve/1` so the reported source
+  is the one actually in effect for the session.
+  """
+  @spec credential_state(keyword()) :: {:configured, String.t()} | :missing
+  def credential_state(opts) when is_list(opts) do
+    key = opts[:api_key]
+
+    cond do
+      credential?(key) -> {:configured, credential_source(opts)}
+      key == "not-needed" -> {:configured, "not required for loopback endpoint"}
+      true -> :missing
+    end
+  end
+
+  @credential_env_vars ~w(YOKE_API_KEY OPENAI_API_KEY LLM_API_KEY DEEPSEEK_API_KEY
+                           OPENROUTER_API_KEY OPENCODE_API_KEY OPENCODE_ZEN_API_KEY)
+
+  defp credential_source(opts) do
+    cond do
+      opts[:provider] -> "provider profile #{opts[:provider]}"
+      env_source = Enum.find(@credential_env_vars, &credential?(System.get_env(&1))) -> env_source
+      true -> "config api_key"
+    end
+  end
+
   @doc "Builds HTTP headers for API requests based on configuration."
   def build_headers(%ClientConfig{} = config, content_type? \\ true) do
     type_header =
@@ -302,7 +345,7 @@ defmodule Yoke.Client.DeepSeekAPI do
         else: {"Accept", "application/json"}
 
     headers =
-      if is_binary(config.api_key) and config.api_key != "" and config.api_key != "not-needed" do
+      if credential?(config.api_key) do
         [{"Authorization", "Bearer #{config.api_key}"}, type_header]
       else
         [type_header]
@@ -381,25 +424,35 @@ defmodule Yoke.Client.DeepSeekAPI do
     post_with_retry(config.endpoint, req_opts)
   end
 
+  # HTTP statuses worth another attempt: rate limiting and server-side
+  # unavailability. Everything else in the 4xx range is deterministic -- the
+  # same request will be rejected the same way -- so retrying only delays the
+  # error the user needs to act on.
+  @transient_statuses [429, 500, 502, 503, 504]
+
   defp post_with_retry(endpoint, req_opts, attempts_left \\ 3, backoff_ms \\ 500) do
     case Req.post(endpoint, req_opts) do
       {:ok, %Req.Response{status: 200, body: %{"choices" => [choice | _]} = resp_body}} ->
         usage = Map.get(resp_body, "usage", %{})
         parse_choice(choice, usage)
 
-      {:ok, %Req.Response{status: status, body: _err_body}}
-      when status in [429, 500, 502, 503, 504] and attempts_left > 1 ->
+      {:ok, %Req.Response{status: status}}
+      when status in @transient_statuses and attempts_left > 1 ->
         retry(endpoint, req_opts, attempts_left, backoff_ms, "Transient HTTP #{status} error")
 
       {:ok, %Req.Response{status: 401, body: err_body}} ->
-        {:error,
-         "Authentication failed (HTTP 401): API key is invalid or required by #{endpoint}. " <>
-           "Provide a valid key via OPENAI_API_KEY, YOKE_API_KEY, or provider configuration: #{inspect(err_body)}"}
+        {:error, authentication_error(endpoint, err_body)}
 
       {:ok, %Req.Response{status: 403, body: err_body}} ->
         {:error,
          "Access forbidden (HTTP 403): Request rejected by #{endpoint}. " <>
            "Verify your API key and permissions: #{inspect(err_body)}"}
+
+      {:ok, %Req.Response{status: status, body: err_body}} when status in 400..499 ->
+        {:error,
+         "Request rejected (HTTP #{status}): #{endpoint} refused the request. " <>
+           "This is a client-side error, so retrying will not help; check the model name, " <>
+           "max_tokens, and request options: #{inspect(err_body)}"}
 
       {:ok, %Req.Response{status: status, body: err_body}} ->
         {:error, "API returned HTTP status #{status}: #{inspect(err_body)}"}
@@ -450,6 +503,23 @@ defmodule Yoke.Client.DeepSeekAPI do
 
     Process.sleep(backoff_ms)
     post_with_retry(endpoint, req_opts, attempts_left - 1, backoff_ms * 2)
+  end
+
+  # A 401 is deterministic: the same credentials will be rejected the same way,
+  # so the message has to say what to change. Loopback servers that demand a
+  # bearer token get a different hint than a remote provider, because their
+  # usual failure is "none was configured", not "the key is wrong".
+  defp authentication_error(endpoint, err_body) do
+    hint =
+      if local_endpoint?(endpoint) do
+        "This loopback server requires a bearer token. Export OPENAI_API_KEY (or YOKE_API_KEY) " <>
+          "before starting Yoke, or start a new session after exporting it."
+      else
+        "Provide a valid key via OPENAI_API_KEY, YOKE_API_KEY, or provider configuration."
+      end
+
+    "Authentication failed (HTTP 401): API key is invalid or required by #{endpoint}. " <>
+      hint <> " Server response: #{inspect(err_body)}"
   end
 
   @doc "Recursively sanitizes binary strings within data structures to ensure valid UTF-8 encoding."
