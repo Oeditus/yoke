@@ -56,7 +56,7 @@ defmodule Yoke.Hands.Executor do
 
   @doc "Executes a tool call under the configured sandbox target."
   def execute(%__MODULE__{mode: :local} = _executor, tool_name, args) do
-    verdict = Yoke.AIGuard.guard_tool(tool_name, args)
+    verdict = Yoke.AIGuard.guard_tool(tool_name, args, cwd: File.cwd!())
 
     if verdict.action == :blocked do
       {:error, "[AI Guard Enforce] Tool execution blocked: #{verdict.reason}"}
@@ -136,27 +136,32 @@ defmodule Yoke.Hands.Executor do
   @doc """
   Returns true when `tool_name` could modify the checkout and must therefore
   be refused by a read-only (`:ci`) Hands target unless writes are allowed.
+
+  Every shell-executing tool is classified as write-capable, regardless of the
+  command string. A review does not need a shell: `Yoke.PRReview.Tools`
+  supplies `read_file`, `read_files`, `list_dir`, `grep_search`, `glob_search`,
+  `git_diff` and `git_root`, all pinned to the reviewed Git objects. Trying to
+  decide whether an arbitrary shell command writes is not decidable by
+  substring matching -- `python3 -c "open('f','w')"`, `perl -pi -e`, and
+  `git checkout -- .` all slip past a marker list -- so the safe answer for a
+  read-only target is to refuse the shell entirely.
   """
   @spec write_tool?(String.t(), map()) :: boolean()
   def write_tool?(tool_name, args \\ %{})
 
-  def write_tool?(tool_name, args) when is_binary(tool_name) do
+  def write_tool?(tool_name, _args) when is_binary(tool_name) do
     down = String.downcase(tool_name)
-
-    cond do
-      down in @write_tool_names -> true
-      down in @shell_exec_tool_names -> shell_write?(args)
-      true -> false
-    end
+    down in @write_tool_names or down in @shell_exec_tool_names
   end
 
   def write_tool?(_, _), do: false
 
-  # Delegates to the plan gate's classifier, which already knows every
-  # write-ish bash marker (`rm`, `sed -i`, `git commit`, `tee`, redirection
-  # tokens, ...) and deliberately ignores `->` / `=>` false positives.
-  defp shell_write?(args) when is_map(args), do: Yoke.PlanGate.write_ish_bash?(args)
-  defp shell_write?(_), do: false
+  # Retained for the interactive plan gate, which still needs a best-effort
+  # "does this look destructive" signal to decide whether to prompt. It is
+  # deliberately NOT used to authorise a `:ci` run -- see `write_tool?/2`.
+  @doc false
+  def shell_write?(args) when is_map(args), do: Yoke.PlanGate.write_ish_bash?(args)
+  def shell_write?(_), do: false
 
   @doc """
   Decides whether a write-capable call is permitted in `:ci` mode.
@@ -185,7 +190,8 @@ defmodule Yoke.Hands.Executor do
   defp ci_writes_allowed?(_), do: Yoke.Interaction.Policy.allow_writes?(".")
 
   defp run_ci_tool(executor, tool_name, args) do
-    verdict = Yoke.AIGuard.guard_tool(tool_name, args, mode: :enforce)
+    verdict =
+      Yoke.AIGuard.guard_tool(tool_name, args, mode: :enforce, cwd: executor.cwd || File.cwd!())
 
     if verdict.action == :blocked do
       {:error, "[AI Guard Enforce] Tool execution blocked: #{verdict.reason}"}

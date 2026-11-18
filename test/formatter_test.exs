@@ -66,13 +66,22 @@ defmodule Yoke.FormatterTest do
     menu = Formatter.help_menu()
     assert String.contains?(menu, "/help")
     assert String.contains?(menu, "/alias")
-    assert String.contains?(menu, "/finish")
-    assert String.contains?(menu, "/commit-structured")
+    assert String.contains?(menu, "/commit")
     assert String.contains?(menu, "/guide")
     assert String.contains?(menu, "/mcp")
     assert String.contains?(menu, "/review")
     assert String.contains?(menu, "/skills")
     assert String.contains?(menu, "/compact")
+    # Documented in the getting-started guide but previously missing from the
+    # menu, so a user who ran /help could not discover it.
+    assert String.contains?(menu, "/practices")
+    assert String.contains?(menu, "/export")
+    # `/finish`, `/pr`, `/cpr` and `/commit-structured` were advertised here but
+    # had no `handle_input/3` clause, so they always fell through to the
+    # "Unknown command" branch. `test/yoke/cli/help_coverage_test.exs` now keeps
+    # the menu and the REPL in agreement.
+    refute String.contains?(menu, "/finish")
+    refute String.contains?(menu, "/commit-structured")
     assert String.contains?(menu, "Robby Ott")
     refute String.contains?(menu, "no AI/tooling")
     refute String.contains?(menu, "Interrupt the AI")

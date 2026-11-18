@@ -1085,15 +1085,41 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
-  def handle_input("/sandbox " <> mode, session_pid, _session_id) do
-    enabled =
-      case String.trim(mode) do
-        "on" -> true
-        "true" -> true
-        "enable" -> true
-        _ -> false
-      end
+  @export_formats ~w(markdown md json lmml lmmlz)
 
+  def handle_input("/sandbox " <> mode, session_pid, _session_id) do
+    case String.trim(mode) do
+      m when m in ["on", "true", "enable"] ->
+        set_sandbox(session_pid, true)
+
+      m when m in ["off", "false", "disable"] ->
+        set_sandbox(session_pid, false)
+
+      other ->
+        IO.puts(
+          Formatter.format_error(
+            "Unknown /sandbox argument '#{other}'. Usage: /sandbox [on | off]"
+          )
+        )
+
+        :continue
+    end
+  end
+
+  def handle_input("/sandbox", session_pid, _session_id) do
+    enabled = Session.get_info(session_pid).sandbox_workspace
+
+    IO.puts(
+      Formatter.format_info(
+        "Workspace sandbox bounds are currently #{if enabled, do: "ENABLED", else: "DISABLED"}. " <>
+          "Usage: /sandbox [on | off]"
+      )
+    )
+
+    :continue
+  end
+
+  defp set_sandbox(session_pid, enabled) do
     {:ok, val} = Session.set_sandbox_mode(session_pid, enabled)
 
     status_str =
@@ -1103,22 +1129,46 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
-  def handle_input("/sandbox", session_pid, session_id) do
-    handle_input("/sandbox on", session_pid, session_id)
+  def handle_input("/export " <> format, session_pid, _session_id) do
+    case String.trim(format) do
+      "json" ->
+        do_export(session_pid, :json)
+
+      "lmml" ->
+        do_export(session_pid, :lmml)
+
+      "lmmlz" ->
+        do_export(session_pid, :lmmlz)
+
+      f when f in ["markdown", "md"] ->
+        do_export(session_pid, :markdown)
+
+      other ->
+        IO.puts(
+          Formatter.format_error(
+            "Unknown export format '#{other}'. Use one of: #{Enum.join(@export_formats, ", ")}."
+          )
+        )
+
+        :continue
+    end
   end
 
-  def handle_input("/export " <> format, session_pid, _session_id) do
-    fmt =
-      case String.trim(format) do
-        "json" -> :json
-        "lmml" -> :lmml
-        "lmmlz" -> :lmmlz
-        _ -> :markdown
-      end
+  def handle_input("/export", session_pid, session_id) do
+    handle_input("/export lmml", session_pid, session_id)
+  end
 
+  defp do_export(session_pid, fmt) do
     case Session.export_session(session_pid, fmt) do
       {:ok, path} ->
-        IO.puts(Formatter.format_success("Session history successfully exported to: #{path}"))
+        resumable? = fmt in [:lmml, :lmmlz]
+
+        note =
+          if resumable?,
+            do: " Resumable with /import #{path}.",
+            else: " Markdown is for reading only; use /export lmml for a resumable file."
+
+        IO.puts(Formatter.format_success("Session history exported to: #{path}.#{note}"))
 
       {:error, err} ->
         IO.puts(Formatter.format_error(err))
@@ -1127,18 +1177,38 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
-  def handle_input("/export", session_pid, session_id) do
-    handle_input("/export markdown", session_pid, session_id)
+  def handle_input("/permissions " <> mode, session_pid, _session_id) do
+    case String.trim(mode) do
+      m when m in ["auto", "yolo", "auto_approve"] ->
+        set_permission(session_pid, :auto_approve)
+
+      m when m in ["ask", "confirm", "ask_confirm"] ->
+        set_permission(session_pid, :ask_confirm)
+
+      other ->
+        IO.puts(
+          Formatter.format_error(
+            "Unknown /permissions argument '#{other}'. Usage: /permissions [auto | ask]"
+          )
+        )
+
+        :continue
+    end
   end
 
-  def handle_input("/permissions " <> mode, session_pid, _session_id) do
-    perm =
-      case String.trim(mode) do
-        "auto" -> :auto_approve
-        "yolo" -> :auto_approve
-        _ -> :ask_confirm
-      end
+  def handle_input("/permissions", session_pid, _session_id) do
+    current = Session.get_info(session_pid).permission_mode
 
+    IO.puts(
+      Formatter.format_info(
+        "Permission safety mode is currently '#{current}'. Usage: /permissions [auto | ask]"
+      )
+    )
+
+    :continue
+  end
+
+  defp set_permission(session_pid, perm) do
     {:ok, mode_set} = Session.set_permission_mode(session_pid, perm)
     IO.puts(Formatter.format_success("Permission safety mode set to: #{mode_set}"))
     :continue
@@ -1434,11 +1504,50 @@ defmodule Yoke.CLI.Repl do
           other -> other
         end
 
-      {:ok, current} = Session.set_model(session_pid, target_model)
-      {:ok, endpoint} = Session.get_endpoint(session_pid)
-      Yoke.CLI.Main.configure_ragex_ai(current, endpoint)
-      IO.puts(Formatter.format_success("Switched model to '#{current}'"))
-      :continue
+      # An unrecognised id used to be stored verbatim, so `/model deepseek-flsh`
+      # printed "Switched model to 'deepseek-flsh'" and only failed at the next
+      # HTTP 400. Validate against the provider's own list first.
+      case validate_model_id(session_pid, target_model) do
+        :ok ->
+          switch_model(session_pid, target_model)
+
+        {:error, message} ->
+          IO.puts(Formatter.format_error(message))
+          :continue
+      end
+    end
+  end
+
+  defp switch_model(session_pid, target_model) do
+    case Session.set_model(session_pid, target_model) do
+      {:ok, current} ->
+        {:ok, endpoint} = Session.get_endpoint(session_pid)
+        Yoke.CLI.Main.configure_ragex_ai(current, endpoint)
+        IO.puts(Formatter.format_success("Switched model to '#{current}'"))
+
+      {:error, reason} ->
+        IO.puts(Formatter.format_error(reason))
+    end
+
+    :continue
+  end
+
+  # Accepts any id the provider advertises. When the provider cannot be
+  # reached, the switch is allowed through with a warning rather than blocked:
+  # a transient network failure must not make the model unchangeable.
+  defp validate_model_id(session_pid, target_model) do
+    case DeepSeekAPI.list_models(Session.provider_options(session_pid)) do
+      {:ok, models} ->
+        if target_model in models do
+          :ok
+        else
+          {:error,
+           "Unknown model '#{target_model}'. Available: #{Enum.join(models, ", ")}. " <>
+             "Use /model to list them."}
+        end
+
+      {:error, _reason} ->
+        :ok
     end
   end
 
@@ -2080,7 +2189,9 @@ defmodule Yoke.CLI.Repl do
         IO.puts(Formatter.format_info("Saved checkpoints (newest first):"))
 
         Enum.each(checkpoints, fn cp ->
-          IO.puts("  ID: #{cp.id} | label: #{cp.label} | turn: #{cp.turn}")
+          IO.puts(
+            "  ID: #{cp.id} | label: #{cp.label} | turn: #{cp.turn} | at: #{format_checkpoint_time(cp)}"
+          )
         end)
 
       {:error, error} ->
@@ -2092,6 +2203,16 @@ defmodule Yoke.CLI.Repl do
 
     :continue
   end
+
+  defp format_checkpoint_time(%{timestamp: %DateTime{} = ts}) do
+    Calendar.strftime(ts, "%Y-%m-%d %H:%M")
+  end
+
+  defp format_checkpoint_time(%{timestamp: %NaiveDateTime{} = ts}) do
+    Calendar.strftime(ts, "%Y-%m-%d %H:%M")
+  end
+
+  defp format_checkpoint_time(_), do: "unknown"
 
   def handle_input("/checkpoint " <> rest, session_pid, session_id) do
     case String.trim(rest) do

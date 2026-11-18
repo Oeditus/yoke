@@ -66,6 +66,7 @@ defmodule Yoke.TaskEngine.Orchestrator do
 
             nil ->
               Task.shutdown(task, :brutal_kill)
+              notify_timeout(tc, timeout)
 
               {:error,
                "Tool execution timed out after #{timeout}ms. " <>
@@ -183,6 +184,28 @@ defmodule Yoke.TaskEngine.Orchestrator do
   end
 
   defp timeout_guidance(_), do: "Re-run it with `async: true` if it legitimately needs more time."
+
+  # A tool timeout otherwise surfaces only as the model narrating a retry: the
+  # spinner stops, nothing is said, and a 60-second stall has no visible cause.
+  # Report it once through the terminal seam the subagent/job notices already
+  # use. Best-effort: a non-TTY surface simply drops it.
+  defp notify_timeout(tc, timeout) do
+    if Yoke.CLI.TerminalOwner.active?() do
+      message =
+        Yoke.CLI.Formatter.format_warning(
+          "Tool '#{tc.name}' exceeded its #{div(timeout, 1000)}s budget and was stopped."
+        )
+
+      Yoke.CLI.TerminalOwner.interject(message <> "\r\n")
+      Yoke.CLI.TerminalOwner.redraw()
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
 
   defp run_single_tool(tc, session_state) do
     summary = format_short_summary(tc.name, tc.arguments)

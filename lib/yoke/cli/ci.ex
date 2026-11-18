@@ -898,23 +898,56 @@ defmodule Yoke.CLI.CI do
     if opts[:dry_run] do
       dry_run(review_opts)
     else
+      format = opts[:format] || "summary"
       result = Review.run(review_opts)
-      print_result(result, opts[:format] || "summary")
+      print_result(result, format)
+      emit_annotations(result, format)
       exit_code_for(result)
     end
   end
+
+  # Inline PR annotations are workflow commands the Actions runner reads from
+  # stdout. They are emitted for every format except `json`, whose consumer
+  # parses stdout as a single JSON document.
+  @doc """
+  Emits inline PR annotations for a completed review, unless the output format
+  is `json` (whose consumer parses stdout as a single JSON document).
+  """
+  @spec emit_annotations({:ok, map()} | {:error, term()}, String.t()) :: :ok
+  def emit_annotations({:ok, %{report: report}}, format) when format != "json" do
+    _ = Yoke.CI.Annotations.emit(report)
+    :ok
+  end
+
+  def emit_annotations(_result, _format), do: :ok
 
   defp dry_run(review_opts) do
     cwd = File.cwd!()
 
     case Review.resolve_context(review_opts, cwd) do
       {:ok, context} ->
+        bytes = byte_size(context.raw_diff)
+        cap = Yoke.Git.max_diff_bytes(cwd)
+        files = count_diff_files(context.raw_diff)
+
         IO.puts(
           Formatter.format_info(
             "Would review #{context.base_sha}...#{context.head_sha} " <>
-              "(#{byte_size(context.raw_diff)} bytes of diff)"
+              "(#{bytes} bytes of diff across #{files} file(s); cap: #{cap} bytes)"
           )
         )
+
+        # A dry run exists to catch this before spending a model call: the real
+        # run hard-fails when the diff exceeds the cap, so say so here.
+        if bytes > cap do
+          IO.puts(
+            Formatter.format_warning(
+              "This diff exceeds the cap and the real run would fail. " <>
+                "Raise max_diff_bytes in .yoke/policy.json (or pass --max-diff-bytes) " <>
+                "or narrow the range."
+            )
+          )
+        end
 
         0
 
@@ -924,17 +957,31 @@ defmodule Yoke.CLI.CI do
     end
   end
 
-  defp print_result({:ok, result}, format) do
-    case format do
-      "json" -> IO.puts(Yoke.Json.encode!(json_view(result)))
-      "markdown" -> IO.write(result.summary)
-      _ -> IO.write(result.summary)
-    end
-
-    IO.puts(Formatter.format_info("Artifact: #{result.artifact_path}"))
+  # Counts `diff --git a/x b/y` headers, which is one per changed file.
+  defp count_diff_files(raw_diff) when is_binary(raw_diff) do
+    raw_diff
+    |> String.split("\n")
+    |> Enum.count(&String.starts_with?(&1, "diff --git "))
   end
 
-  defp print_result({:error, reason}, _format) do
+  @doc "Prints a review result in the requested format."
+  @spec print_result({:ok, map()} | {:error, String.t()}, String.t()) :: :ok
+  def print_result({:ok, result}, format) do
+    case format do
+      "json" ->
+        IO.puts(Yoke.Json.encode!(json_view(result)))
+        # stdout is a single JSON document for this format, so the artifact
+        # notice goes to stderr rather than corrupting the payload.
+        IO.puts(:stderr, Formatter.format_info("Artifact: #{result.artifact_path}"))
+
+      _ ->
+        IO.write(result.summary)
+        IO.puts(Formatter.format_info("Artifact: #{result.artifact_path}"))
+    end
+  end
+
+  @doc false
+  def print_result({:error, reason}, _format) do
     IO.puts(Formatter.format_error(reason))
   end
 

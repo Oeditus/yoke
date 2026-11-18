@@ -168,41 +168,53 @@ defmodule Yoke.Practices do
       end)
       |> Enum.reverse()
 
-    # Disambiguate typescript/javascript if both detected
-    detected =
-      if "typescript" in detected and "javascript" in detected do
-        if File.exists?(Path.join(cwd, "tsconfig.json")) or
-             has_source_with_ext?(cwd, root_files, ".ts") or
-             has_source_with_ext?(cwd, root_files, ".tsx") do
-          has_js_sources? =
-            has_source_with_ext?(cwd, root_files, ".js") or
-              has_source_with_ext?(cwd, root_files, ".jsx")
-
-          if has_js_sources? do
-            detected
-          else
-            Enum.reject(detected, &(&1 == "javascript"))
-          end
-        else
-          detected
-        end
-      else
-        detected
-      end
-
-    # Disambiguate c/cpp if both detected
-    detected =
-      if "c" in detected and "cpp" in detected do
-        if has_source_with_ext?(cwd, root_files, ".c") do
-          detected
-        else
-          Enum.reject(detected, &(&1 == "c"))
-        end
-      else
-        detected
-      end
-
     detected
+    |> disambiguate_typescript(cwd, root_files)
+    |> disambiguate_c(root_files)
+  end
+
+  # A project with both `tsconfig.json` and `package.json` detects as both
+  # TypeScript and JavaScript. TypeScript is the superset, so JavaScript is only
+  # kept when the project also has real `.js`/`.jsx` sources; otherwise it is
+  # noise that would inject the JavaScript practice block into a pure-TS
+  # project.
+  defp disambiguate_typescript(detected, cwd, root_files) do
+    if "typescript" in detected and "javascript" in detected do
+      typescript_project? =
+        File.exists?(Path.join(cwd, "tsconfig.json")) or
+          has_source_with_ext?(cwd, root_files, ".ts") or
+          has_source_with_ext?(cwd, root_files, ".tsx")
+
+      javascript_sources? =
+        has_source_with_ext?(cwd, root_files, ".js") or
+          has_source_with_ext?(cwd, root_files, ".jsx")
+
+      if typescript_project? and not javascript_sources? do
+        Enum.reject(detected, &(&1 == "javascript"))
+      else
+        detected
+      end
+    else
+      detected
+    end
+  end
+
+  # `@language_indicators` lists `.h` under both C and C++, so a C++ project
+  # with headers but no `.c` file detects as both. Only keep C when a `.c`
+  # source actually exists.
+  defp disambiguate_c(detected, root_files) do
+    if "c" in detected and "cpp" in detected do
+      # `has_source_with_ext?/3` needs a cwd only for directory recursion; the
+      # root file list is enough here because `.c` files at the root are the
+      # signal.
+      if Enum.any?(root_files, &String.ends_with?(&1, ".c")) do
+        detected
+      else
+        Enum.reject(detected, &(&1 == "c"))
+      end
+    else
+      detected
+    end
   end
 
   defp has_source_with_ext?(cwd, root_files, ext) do

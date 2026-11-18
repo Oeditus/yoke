@@ -19,6 +19,10 @@ defmodule Yoke.Application do
       Yoke.CLI.TerminalOwner,
       # Synchronizes all user interactions and questions (interruptions) across main agents & subagents
       Yoke.CLI.InteractionServer,
+      # Single writer for the AI Guard audit trail. Must precede every component
+      # that can execute a tool, so an audit entry is never dropped because the
+      # writer had not started yet.
+      Yoke.AIGuard.AuditLog,
       # Tracks and analyzes bash command calls, counts, frequencies, and Ragex analogs
       Yoke.BashTracker,
       # Dynamic plugin hot-reloader & tool registry
@@ -31,7 +35,14 @@ defmodule Yoke.Application do
       Yoke.Brain.SessionSupervisor
     ]
 
-    opts = [strategy: :one_for_all, name: Yoke.Supervisor]
+    # `:rest_for_one` rather than `:one_for_all`: the children are ordered from
+    # least to most critical, so a crash in a collector (`Yoke.BashTracker`, the
+    # AI Guard audit writer) restarts only the children *after* it. With
+    # `:one_for_all` a statistics-collector crash restarted
+    # `Yoke.Brain.SessionSupervisor` and dropped every live conversation.
+    # A crash in the task engine or a session supervisor still restarts the
+    # session tree, which is the part that genuinely depends on it.
+    opts = [strategy: :rest_for_one, name: Yoke.Supervisor]
 
     case Supervisor.start_link(children, opts) do
       {:ok, pid} ->

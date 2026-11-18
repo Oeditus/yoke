@@ -72,9 +72,16 @@ so the probe happens exactly once.
 `:local`:
 
 * **Read-only by policy.** Any write-capable tool (`write_file`,
-  `replace_file`, `edit_files`, `git_commit`, …) and any write-ish `bash`
-  command is refused at the executor, before the tool runs. A prompt-injected
-  diff therefore cannot make the runner modify the checkout.
+  `replace_file`, `edit_files`, `git_commit`, …) is refused at the executor,
+  before the tool runs. **Every shell-executing tool (`bash`, `cmd`,
+  `run_command`, `shell`, `exec`) is refused outright**, regardless of the
+  command string: no substring heuristic can decide whether an arbitrary
+  command writes (`python3 -c "open('f','w')"`, `perl -pi -e`,
+  `git checkout -- .`, `echo hi>out.txt` all defeat a marker list). A review
+  does not need a shell — `Yoke.PRReview.Tools` supplies `read_file`,
+  `read_files`, `list_dir`, `grep_search`, `glob_search`, `git_diff` and
+  `git_root`, all pinned to the reviewed Git objects. A prompt-injected diff
+  therefore cannot make the runner modify the checkout.
 * **Per-call wall-clock budget.** `timeout_ms` bounds each tool call; a call
   that overruns is killed and reported as an error rather than hanging the job.
 * **AI Guard in `:enforce`.** Anything reaching the executor is screened with
@@ -902,3 +909,23 @@ a `.golden` file and confirm the test fails.
 * [`CI_PLAN.md`](CI_PLAN.md) — the design record and full roadmap.
 * [`ARCHITECTURE.md`](ARCHITECTURE.md) — Brain/Hands/Plugins overview.
 * [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — common failures.
+
+### 1.4 Sinks emitted by `yoke review`
+
+`yoke review` writes all three sinks on a successful run:
+
+| Sink | Destination | Content |
+| :--- | :--- | :--- |
+| Step summary | `$GITHUB_STEP_SUMMARY` | Markdown verdict and findings table |
+| Annotations | stdout | `::error file=...,line=...::` workflow commands, one per issue |
+| Artifact | `$RUNNER_TEMP/yoke-review.json` | Full JSON record of the run |
+
+Annotations are suppressed for `--format json`, whose consumer parses stdout as a
+single JSON document; the artifact notice is redirected to stderr in that case.
+Endorsements are never annotated -- an annotation is a call to action, and an
+endorsement is not one.
+
+`yoke review --dry-run` resolves the review context and reports the diff size,
+the changed-file count, and the effective `max_diff_bytes` cap without spending a
+model call. It warns when the diff exceeds the cap, which is the failure the real
+run would hit.

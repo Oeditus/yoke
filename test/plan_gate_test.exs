@@ -60,6 +60,83 @@ defmodule Yoke.PlanGateTest do
     end
   end
 
+  describe "write_ish_bash?/1 token classification" do
+    test "catches redirection without surrounding whitespace" do
+      assert PlanGate.write_ish_bash?(%{"command" => "echo hi>out.txt"})
+      assert PlanGate.write_ish_bash?(%{"command" => "cmd 2>&1 >log"})
+    end
+
+    test "catches in-place edit and destructive file commands by first word" do
+      for cmd <- [
+            "truncate -s0 f",
+            "ln -sf /etc/passwd f",
+            "shred f",
+            "chmod 777 f",
+            "patch -p1 < d",
+            "install -m 755 a b"
+          ] do
+        assert PlanGate.write_ish_bash?(%{"command" => cmd}),
+               "expected '#{cmd}' to be flagged"
+      end
+    end
+
+    test "catches git subcommands that mutate the tree" do
+      for cmd <- [
+            "git checkout -- .",
+            "git restore f",
+            "git clean -fdx",
+            "git stash",
+            "git rebase main"
+          ] do
+        assert PlanGate.write_ish_bash?(%{"command" => cmd}),
+               "expected '#{cmd}' to be flagged"
+      end
+    end
+
+    test "catches an interpreter with an inline program" do
+      for cmd <- [
+            "python3 -c \"open('f','w').write('x')\"",
+            "/usr/bin/python -c pass",
+            "perl -pi -e 's/a/b/' f"
+          ] do
+        assert PlanGate.write_ish_bash?(%{"command" => cmd}),
+               "expected '#{cmd}' to be flagged"
+      end
+    end
+
+    test "classifies by the command after a shell separator" do
+      assert PlanGate.write_ish_bash?(%{"command" => "cd lib && rm -rf build"})
+      assert PlanGate.write_ish_bash?(%{"command" => "ls; touch f"})
+    end
+
+    test "does not flag a quoted destructive word inside a read-only command" do
+      refute PlanGate.write_ish_bash?(%{"command" => "git log --grep 'rm -rf'"})
+      refute PlanGate.write_ish_bash?(%{"command" => "grep -r 'touch' lib"})
+    end
+
+    test "does not flag scp or rsync as a cp" do
+      refute PlanGate.write_ish_bash?(%{"command" => "scp host:a b"})
+      refute PlanGate.write_ish_bash?(%{"command" => "rsync -a a b"})
+    end
+
+    test "keeps plain sed and plain git reads read-only" do
+      refute PlanGate.write_ish_bash?(%{"command" => "sed 's/a/b/' f"})
+      refute PlanGate.write_ish_bash?(%{"command" => "git status"})
+      refute PlanGate.write_ish_bash?(%{"command" => "git diff HEAD"})
+    end
+
+    test "does not mistake arrow tokens for shell redirection" do
+      refute PlanGate.write_ish_bash?(%{"command" => "echo 'a -> b'"})
+      refute PlanGate.write_ish_bash?(%{"command" => "grep 'x => y' lib"})
+    end
+
+    test "an empty command is read-only" do
+      refute PlanGate.write_ish_bash?(%{"command" => ""})
+      refute PlanGate.write_ish_bash?(%{})
+      refute PlanGate.write_ish_bash?(nil)
+    end
+  end
+
   describe "count_modifiers/1" do
     test "counts modifiers over a mixed batch with string keys" do
       calls = [

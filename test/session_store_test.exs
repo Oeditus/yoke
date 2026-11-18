@@ -159,7 +159,7 @@ defmodule Yoke.Brain.SessionStoreTest do
 
     File.write!(
       Path.join(tmp_dir, ".yoke/sessions/legacy_json.json"),
-      Jason.encode!(legacy)
+      Yoke.Json.encode!(legacy)
     )
 
     assert {:ok, loaded} = SessionStore.load_session("legacy_json", tmp_dir)
@@ -178,7 +178,7 @@ defmodule Yoke.Brain.SessionStoreTest do
 
       File.write!(
         source_path,
-        Jason.encode!(%{
+        Yoke.Json.encode!(%{
           "session_id" => "from_source",
           "model" => "deepseek-reasoner",
           "permission_mode" => "auto_approve",
@@ -208,7 +208,7 @@ defmodule Yoke.Brain.SessionStoreTest do
 
       File.write!(
         source_path,
-        Jason.encode!(%{"messages" => [%{"role" => "user", "content" => "Hi"}]})
+        Yoke.Json.encode!(%{"messages" => [%{"role" => "user", "content" => "Hi"}]})
       )
 
       assert {:ok, session_id, _file_path} =
@@ -225,7 +225,7 @@ defmodule Yoke.Brain.SessionStoreTest do
 
       File.write!(
         source_path,
-        Jason.encode!([
+        Yoke.Json.encode!([
           %{"role" => "user", "content" => "Hi"},
           %{"role" => "assistant", "content" => "Hello!"}
         ])
@@ -291,7 +291,7 @@ defmodule Yoke.Brain.SessionStoreTest do
 
       File.write!(
         source_path,
-        Jason.encode!(%{"messages" => [%{"role" => "user", "content" => "Hi"}]})
+        Yoke.Json.encode!(%{"messages" => [%{"role" => "user", "content" => "Hi"}]})
       )
 
       assert {:ok, "dup_id", _} =
@@ -320,17 +320,34 @@ defmodule Yoke.Brain.SessionStoreTest do
 
     test "returns an error when no messages array is present", %{tmp_dir: tmp_dir} do
       source_path = Path.join(tmp_dir, "no_messages.json")
-      File.write!(source_path, Jason.encode!(%{"session_id" => "whatever"}))
+      File.write!(source_path, Yoke.Json.encode!(%{"session_id" => "whatever"}))
 
       assert {:error, msg} = SessionStore.import_session(source_path, [], tmp_dir)
       assert msg =~ "messages"
     end
 
     test "returns an error when the source file does not exist", %{tmp_dir: tmp_dir} do
-      assert {:error, msg} =
-               SessionStore.import_session(Path.join(tmp_dir, "missing.json"), [], tmp_dir)
+      path = Path.join(tmp_dir, "nope.lmml")
+      assert {:error, reason} = SessionStore.import_session(path, [], tmp_dir)
+      assert reason =~ "Failed to read"
+    end
 
-      assert msg =~ "Failed to read"
+    test "rejects a Markdown export with an actionable message", %{tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "session_export.md")
+      File.write!(path, "# Session Export\n\n### USER\nhello\n")
+
+      assert {:error, reason} = SessionStore.import_session(path, [], tmp_dir)
+      assert reason =~ "Markdown export"
+      assert reason =~ "/export lmml"
+      refute reason =~ "Invalid JSON"
+    end
+
+    test "rejects a .markdown extension too", %{tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "notes.markdown")
+      File.write!(path, "# notes\n")
+
+      assert {:error, reason} = SessionStore.import_session(path, [], tmp_dir)
+      assert reason =~ "Markdown export"
     end
   end
 

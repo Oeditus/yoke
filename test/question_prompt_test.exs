@@ -136,7 +136,7 @@ defmodule Yoke.CLI.QuestionPromptTest do
       q = "Select target database:"
       ans = %{selected: ["PostgreSQL", "SQLite"]}
       formatted = QuestionPrompt.format_answer(q, ans)
-      assert {:ok, decoded} = Jason.decode(formatted)
+      assert {:ok, decoded} = Yoke.Json.decode(formatted)
 
       assert decoded["question"] == "Select target database:"
       assert decoded["selected_options"] == ["PostgreSQL", "SQLite"]
@@ -147,7 +147,7 @@ defmodule Yoke.CLI.QuestionPromptTest do
       q = "What features to add?"
       ans = %{selected: ["Auth"], custom: "GraphQL API"}
       formatted = QuestionPrompt.format_answer(q, ans)
-      assert {:ok, decoded} = Jason.decode(formatted)
+      assert {:ok, decoded} = Yoke.Json.decode(formatted)
 
       assert decoded["question"] == "What features to add?"
       assert decoded["selected_options"] == ["Auth"]
@@ -158,7 +158,7 @@ defmodule Yoke.CLI.QuestionPromptTest do
       q = "Confirm deployment?"
       ans = %{cancelled: true}
       formatted = QuestionPrompt.format_answer(q, ans)
-      assert {:ok, decoded} = Jason.decode(formatted)
+      assert {:ok, decoded} = Yoke.Json.decode(formatted)
 
       assert decoded["question"] == "Confirm deployment?"
       assert decoded["status"] == "cancelled"
@@ -217,7 +217,7 @@ defmodule Yoke.CLI.QuestionPromptTest do
       }
 
       assert {:ok, json} = DefaultTools.ask_question(args)
-      assert {:ok, decoded} = Jason.decode(json)
+      assert {:ok, decoded} = Yoke.Json.decode(json)
       assert decoded["status"] == "answered"
       assert decoded["selected_options"] == ["Yes (Recommended)"]
     end

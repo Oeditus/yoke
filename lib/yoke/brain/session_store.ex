@@ -393,18 +393,35 @@ defmodule Yoke.Brain.SessionStore do
   # An `.lmml` narrative (sniffed by its content) is parsed through
   # `SessionLmml` so its metadata and messages are imported intact.
   defp parse_import_content(content, source_path) do
-    if lmml_narrative?(content) do
-      case SessionLmml.decode(content) do
-        {:ok, data} ->
-          {:ok, data["messages"], data}
+    cond do
+      markdown_export?(source_path) ->
+        {:error,
+         "'#{source_path}' is a Markdown export, which is for reading, not re-importing. " <>
+           "Use `/export lmml` to produce a resumable session file, then `/import` that."}
 
-        {:error, reason} ->
-          {:error, "Invalid lmml narrative in '#{source_path}': #{inspect(reason)}"}
-      end
-    else
-      parse_import_json(content, source_path)
+      lmml_narrative?(content) ->
+        case SessionLmml.decode(content) do
+          {:ok, data} ->
+            {:ok, data["messages"], data}
+
+          {:error, reason} ->
+            {:error, "Invalid lmml narrative in '#{source_path}': #{inspect(reason)}"}
+        end
+
+      true ->
+        parse_import_json(content, source_path)
     end
   end
+
+  # `export_session(:markdown)` runs the narrative through `Lmml.to_md/2`, which
+  # strips the `@@@` embeds the importer relies on, so the result can never be
+  # re-imported. Detect it by extension and say so, instead of falling through
+  # to the JSON parser and reporting "Invalid JSON" for a Markdown file.
+  defp markdown_export?(source_path) when is_binary(source_path) do
+    String.downcase(Path.extname(source_path)) in [".md", ".markdown"]
+  end
+
+  defp markdown_export?(_), do: false
 
   defp lmml_narrative?(content) when is_binary(content) do
     # A bare `.lmml` text narrative (not a zip archive) is our storage form.
@@ -439,12 +456,7 @@ defmodule Yoke.Brain.SessionStore do
   defp normalize_permission_mode(mode) when mode in ["auto_approve", "ask_confirm"], do: mode
   defp normalize_permission_mode(_), do: "ask_confirm"
 
-  defp generate_session_id do
-    <<a::32, b::16, c::16, d::16, e::48>> = :crypto.strong_rand_bytes(16)
-
-    :io_lib.format("~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b", [a, b, c, d, e])
-    |> IO.iodata_to_binary()
-  end
+  defp generate_session_id, do: Yoke.UUID.v4()
 
   @doc "Lists all saved session IDs (`.lmmlz`, `.lmml`, and legacy `.json`)."
   def list_sessions(cwd \\ ".") do

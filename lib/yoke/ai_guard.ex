@@ -46,7 +46,9 @@ defmodule Yoke.AIGuard do
           }
   end
 
-  @audit_file ".yoke/logs/ai_guard_audit.jsonl"
+  @doc "Returns the repo-relative audit log path."
+  @spec audit_file() :: String.t()
+  def audit_file, do: Yoke.AIGuard.AuditLog.audit_file()
 
   # Risk patterns for input/prompt injection and credentials
   @secret_patterns [
@@ -70,7 +72,12 @@ defmodule Yoke.AIGuard do
     {~r/system\s+prompt\s+override/i, "Prompt injection: override attempt"}
   ]
 
-  @doc "Evaluates an LLM request prompt or response completion."
+  @doc """
+  Evaluates an LLM request prompt or response completion.
+
+  `opts` accepts `:mode`, `:target`, and `:cwd` (the workspace whose audit log
+  receives the entry; defaults to the process working directory).
+  """
   def guard_llm(content, phase, opts \\ []) when phase in [:input, :output] do
     start_time = System.monotonic_time(:millisecond)
     mode = get_mode(opts)
@@ -105,11 +112,19 @@ defmodule Yoke.AIGuard do
       duration_ms: duration_ms
     }
 
-    log_and_audit(verdict)
+    log_and_audit(verdict, opts[:cwd] || ".")
     verdict
   end
 
-  @doc "Evaluates a tool call and its arguments before execution."
+  @doc """
+  Evaluates a tool call and its arguments before execution.
+
+  `opts`:
+
+    * `:mode` -- `:observe` or `:enforce` (default: application env, else `:observe`)
+    * `:cwd` -- workspace whose `.yoke/logs/ai_guard_audit.jsonl` receives the
+      audit entry. Defaults to the process working directory.
+  """
   def guard_tool(tool_name, args, opts \\ []) do
     start_time = System.monotonic_time(:millisecond)
     mode = get_mode(opts)
@@ -137,28 +152,12 @@ defmodule Yoke.AIGuard do
       duration_ms: duration_ms
     }
 
-    log_and_audit(verdict)
+    log_and_audit(verdict, opts[:cwd] || ".")
     verdict
   end
 
-  @doc "Retrieves recent audit log entries."
-  def audit_log(cwd \\ ".") do
-    path = Path.join(cwd, @audit_file)
-
-    if File.exists?(path) do
-      path
-      |> File.stream!()
-      |> Enum.map(fn line ->
-        case Yoke.Json.decode(line) do
-          {:ok, map} -> map
-          _ -> nil
-        end
-      end)
-      |> Enum.reject(&is_nil/1)
-    else
-      []
-    end
-  end
+  @doc "Retrieves recent audit log entries for `cwd`."
+  def audit_log(cwd \\ "."), do: Yoke.AIGuard.AuditLog.read(cwd)
 
   # Helper functions
 
@@ -207,7 +206,7 @@ defmodule Yoke.AIGuard do
 
   defp evaluate_tool_risk(_, _), do: []
 
-  defp log_and_audit(%Verdict{} = verdict) do
+  defp log_and_audit(%Verdict{} = verdict, cwd) do
     if verdict.action in [:flagged, :blocked] do
       msg =
         "[AI Guard:#{verdict.mode}] #{verdict.phase} on target '#{verdict.target}': #{verdict.reason}"
@@ -218,10 +217,10 @@ defmodule Yoke.AIGuard do
       end
     end
 
-    write_audit_entry(verdict)
+    write_audit_entry(verdict, cwd)
   end
 
-  defp write_audit_entry(%Verdict{} = verdict) do
+  defp write_audit_entry(%Verdict{} = verdict, cwd) do
     entry = %{
       "timestamp" => verdict.timestamp,
       "phase" => to_string(verdict.phase),
@@ -232,13 +231,9 @@ defmodule Yoke.AIGuard do
       "duration_ms" => verdict.duration_ms
     }
 
-    try do
-      path = @audit_file
-      File.mkdir_p!(Path.dirname(path))
-      line = Yoke.Json.encode!(entry) <> "\n"
-      File.write!(path, line, [:append])
-    rescue
-      _ -> :ok
+    case Yoke.Json.encode(entry) do
+      {:ok, line} -> Yoke.AIGuard.AuditLog.append(cwd, line <> "\n")
+      {:error, _} -> :ok
     end
   end
 end

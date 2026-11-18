@@ -131,19 +131,24 @@ defmodule Yoke.Config do
     Application.put_env(:yoke, :assistant_name, name)
   end
 
-  @doc "Returns true if God mode is enabled (auto-answering all model questions and confirmations)."
+  @doc """
+  Returns true if God mode is enabled (auto-answering all model questions and confirmations).
+
+  Reads `Application.get_env(:yoke, :god_mode)` first, then the config files.
+  There is deliberately no `MIX_ENV=test` default here: a production module that
+  auto-approves every permission decision under test would make a test that
+  forgets to disable it pass silently, which is the worst failure mode for a
+  permission gate. `test/test_helper.exs` sets the application env explicitly
+  instead, so the default is visible and overridable in one place.
+  """
   def god_mode?(cwd \\ ".") do
     case Application.get_env(:yoke, :god_mode) do
       b when is_boolean(b) ->
         b
 
       _ ->
-        if function_exported?(Mix, :env, 0) and Mix.env() == :test do
-          true
-        else
-          cfg = load_config(cwd)
-          Map.get(cfg, "god_mode", false) or Map.get(cfg, "god_mode_enabled", false)
-        end
+        cfg = load_config(cwd)
+        Map.get(cfg, "god_mode", false) or Map.get(cfg, "god_mode_enabled", false)
     end
   end
 

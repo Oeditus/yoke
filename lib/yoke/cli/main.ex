@@ -371,12 +371,8 @@ defmodule Yoke.CLI.Main do
     end
   end
 
-  def generate_uuid do
-    <<a::32, b::16, c::16, d::16, e::48>> = :crypto.strong_rand_bytes(16)
-
-    :io_lib.format("~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b", [a, b, c, d, e])
-    |> IO.iodata_to_binary()
-  end
+  @doc "Returns a random (version 4) UUID string."
+  defdelegate generate_uuid, to: Yoke.UUID, as: :v4
 
   @doc false
   def configure_ragex_ai do

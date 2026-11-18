@@ -264,35 +264,11 @@ defmodule Yoke.CI.Review do
   end
 
   @doc """
-  Returns a stable identifier for this run.
+  Returns a stable, time-ordered identifier for this run.
 
-  A UUIDv7-shaped value (time-ordered) so runs sort chronologically without a
-  database.
+  A UUIDv7-shaped value so runs sort chronologically without a database. See
+  `Yoke.UUID.v7/0`.
   """
   @spec run_uid() :: String.t()
-  def run_uid do
-    # UUIDv7: 48-bit big-endian Unix milliseconds, then 80 random bits with
-    # the version (7) and variant (RFC 4122) nibbles set. Built byte-wise
-    # rather than with sub-byte bit patterns, which are easy to get subtly
-    # wrong at the 6/8-byte group boundaries.
-    ms = System.system_time(:millisecond)
-    <<ms_hi::16, ms_lo::32>> = <<ms::48>>
-    <<r1, r2, r3, r4, r5, r6, r7, r8, r9, r10>> = :crypto.strong_rand_bytes(10)
-
-    # Byte layout of a UUIDv7 (16 bytes):
-    #   0..5  ms_hi, ms_lo          (48-bit timestamp)
-    #   6     version_byte          (0x70 | random nibble)
-    #   7     r3
-    #   8     variant_byte          (0x80 | random 6 bits)
-    #   9..15 r4..r10
-    version_byte = Bitwise.bor(0x70, Bitwise.band(r1, 0x0F))
-    variant_byte = Bitwise.bor(0x80, Bitwise.band(r2, 0x3F))
-
-    <<g1::binary-size(4), g2::binary-size(2), g3::binary-size(2), g4::binary-size(2),
-      g5::binary-size(6)>> =
-      <<ms_hi::16, ms_lo::32, version_byte, r3, variant_byte, r4, r5, r6, r7, r8, r9, r10>>
-
-    hex = fn bytes -> Base.encode16(bytes, case: :lower) end
-    "#{hex.(g1)}-#{hex.(g2)}-#{hex.(g3)}-#{hex.(g4)}-#{hex.(g5)}"
-  end
+  def run_uid, do: Yoke.UUID.v7()
 end

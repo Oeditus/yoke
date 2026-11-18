@@ -33,27 +33,45 @@ defmodule Yoke.Hands.CIModeTest do
       end
     end
 
-    test "classifies bash by whether the command writes" do
-      refute Executor.write_tool?("bash", %{"command" => "ls -la"})
-      refute Executor.write_tool?("bash", %{"command" => "git status"})
-      refute Executor.write_tool?("bash", %{"command" => "mix test"})
-      refute Executor.write_tool?("bash", %{"command" => "grep -rn foo lib"})
-
-      assert Executor.write_tool?("bash", %{"command" => "rm -rf build"})
-      assert Executor.write_tool?("bash", %{"command" => "sed -i 's/a/b/' file.ex"})
-      assert Executor.write_tool?("bash", %{"command" => "git commit -m wip"})
-      assert Executor.write_tool?("bash", %{"command" => "echo hi > out.txt"})
-      assert Executor.write_tool?("bash", %{"command" => "tee out.txt"})
+    test "refuses every shell tool regardless of the command string" do
+      # A read-only CI target cannot decide whether an arbitrary shell command
+      # writes, so it refuses the shell outright. Each of these slipped past the
+      # substring classifier this used to delegate to.
+      for command <- [
+            "ls -la",
+            "git status",
+            "mix test",
+            "grep -rn foo lib",
+            "rm -rf build",
+            "sed -i 's/a/b/' file.ex",
+            "git commit -m wip",
+            "echo hi > out.txt",
+            "echo hi>out.txt",
+            "tee out.txt",
+            "python3 -c \"open('f','w').write('x')\"",
+            "perl -pi -e 's/a/b/' f",
+            "git checkout -- .",
+            "truncate -s0 f",
+            "ln -sf /etc/passwd f",
+            "find . -delete"
+          ] do
+        assert Executor.write_tool?("bash", %{"command" => command}),
+               "expected bash '#{command}' to be refused in :ci mode"
+      end
     end
 
-    test "does not mistake arrow tokens for shell redirection" do
-      refute Executor.write_tool?("bash", %{"command" => "echo 'a -> b'"})
-      refute Executor.write_tool?("bash", %{"command" => "grep 'x => y' lib"})
+    test "refuses every shell tool alias" do
+      for tool <- ~w(bash cmd run_command shell exec) do
+        assert Executor.write_tool?(tool, %{"command" => "ls"}),
+               "expected #{tool} to be refused in :ci mode"
+      end
     end
 
     test "tolerates non-string and missing arguments" do
-      refute Executor.write_tool?("bash")
-      refute Executor.write_tool?("bash", %{})
+      # The tool name alone is enough: a shell tool is write-capable without
+      # inspecting its arguments at all.
+      assert Executor.write_tool?("bash")
+      assert Executor.write_tool?("bash", %{})
       refute Executor.write_tool?(:read_file, %{})
       refute Executor.write_tool?(nil, %{})
     end
@@ -121,10 +139,17 @@ defmodule Yoke.Hands.CIModeTest do
     test "a per-call timeout is enforced", %{tmp_dir: dir} do
       executor = %Executor{mode: :ci, cwd: dir, timeout_ms: 1}
 
-      # `bash` with a sleep is the simplest reliably-slow tool; it is refused
-      # as a write only when the command writes, and `sleep` does not.
-      assert {:error, reason} = Executor.execute(executor, "bash", %{"command" => "sleep 5"})
+      # `bash` is refused outright in `:ci` mode (a read-only target cannot
+      # decide whether an arbitrary shell command writes), so the timeout is
+      # exercised through a write-allowed executor instead.
+      allowed = %Executor{mode: :ci, cwd: dir, timeout_ms: 1, allow_writes: true}
+
+      assert {:error, reason} = Executor.execute(allowed, "bash", %{"command" => "sleep 5"})
       assert reason =~ "budget"
+
+      # The refusal is still the default answer for the same call.
+      assert {:error, refused} = Executor.execute(executor, "bash", %{"command" => "sleep 5"})
+      assert refused =~ "read-only"
     end
 
     test "the default executor mode is unchanged (:local)", %{tmp_dir: dir} do

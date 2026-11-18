@@ -68,13 +68,18 @@ defmodule Yoke.Git do
 
     if byte_size(diff) > limit do
       {:error,
-       "Review diff is #{div(byte_size(diff), 1000)} KB, over the #{div(limit, 1000)} KB " <>
+       "Review diff is #{format_bytes(byte_size(diff))}, over the #{format_bytes(limit)} " <>
          "limit. No partial review was generated. Either review a smaller commit range, " <>
          "or raise the limit with `max_diff_bytes` in .yoke/policy.json."}
     else
       :ok
     end
   end
+
+  # `div(bytes, 1000)` rendered any limit under a kilobyte as "0 KB", which made
+  # the error message claim a zero-byte budget. Report bytes below 1 KB.
+  defp format_bytes(bytes) when is_integer(bytes) and bytes < 1_000, do: "#{bytes} bytes"
+  defp format_bytes(bytes), do: "#{div(bytes, 1000)} KB"
 
   defp review_diff_args(range, extra \\ []) do
     [

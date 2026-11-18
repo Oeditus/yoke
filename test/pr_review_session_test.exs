@@ -380,7 +380,7 @@ defmodule Yoke.PRReview.SessionTest do
     refute List.last(final["messages"])["content"] =~ "no new evidence"
   end
 
-  test "background notices and model changes survive review completion while concurrent turns are refused",
+  test "background notices survive review completion, and model changes are refused mid-turn",
        %{repo: repo} do
     owner = self()
 
@@ -398,15 +398,28 @@ defmodule Yoke.PRReview.SessionTest do
     assert {:error, busy} = Session.generate_code_review(pid, "main", "feature")
     assert busy =~ "already running"
     assert {:error, _} = Session.send_user_message(pid, "Do something else")
-    assert {:ok, "new-model"} = Session.set_model(pid, "new-model")
+
+    # A model switch mid-turn is refused: the in-flight task already captured
+    # the old model, so accepting it would silently apply to the next turn only
+    # and be lost on restart (it is now persisted when idle).
+    assert {:error, switching} = Session.set_model(pid, "new-model")
+    assert switching =~ "Cannot change model"
+
+    # A completion notice that arrives mid-turn must not be discarded by the
+    # post-turn merge, which replaces the actor's messages with the turn task's
+    # own copy.
     send(pid, {:job_completed, "job-test", "test command", {:exited, 0}, "Background output"})
-    assert {:ok, during} = Session.get_messages(pid)
-    assert Enum.any?(during, &String.contains?(&1["content"], "Background output"))
+    assert Session.pending_background_notice?(pid)
+
     send(server, :release)
     assert {:ok, _} = Task.await(task, 5_000)
+
     assert {:ok, after_review} = Session.get_messages(pid)
     assert Enum.any?(after_review, &String.contains?(&1["content"], "Background output"))
-    assert {:ok, "new-model"} = Session.get_model(pid)
+
+    # The review left the model untouched, and it can be switched once idle.
+    assert {:ok, "review-test"} = Session.get_model(pid)
+    assert {:ok, "new-model"} = Session.set_model(pid, "new-model")
   end
 
   test "cancelling a review preserves original conversation and does not persist partial evidence",

@@ -53,7 +53,7 @@ defmodule Yoke.CLI.InteractionServerTest do
       ]
 
       result = InteractionServer.ask(questions)
-      assert {:ok, decoded1} = Jason.decode(List.first(String.split(result, "\n\n")))
+      assert {:ok, decoded1} = Yoke.Json.decode(List.first(String.split(result, "\n\n")))
       assert decoded1["status"] == "answered"
     end
 

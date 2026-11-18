@@ -237,8 +237,14 @@ defmodule Yoke.Brain.Session do
     GenServer.call(pid, :get_turn_tokens, :infinity)
   end
 
-  @doc "Exports session conversation history into JSON or Markdown file."
-  def export_session(pid, format \\ :markdown) do
+  @doc """
+  Exports the session conversation history to a file under `.yoke/exports/`.
+
+  Defaults to `:lmml`, which is resumable via `/import`. `:markdown` is for
+  reading only: it strips the `@@@` embeds the importer relies on, so it cannot
+  be re-imported.
+  """
+  def export_session(pid, format \\ :lmml) do
     GenServer.call(pid, {:export_session, format}, :infinity)
   end
 
@@ -376,6 +382,9 @@ defmodule Yoke.Brain.Session do
       # turn and reply to its still-waiting caller without this GenServer
       # ever blocking its own mailbox for the turn's duration.
       active_turn: nil,
+      # Completion notices that arrived while a turn was running. Flushed into
+      # `messages` by the post-turn merge in `handle_info({ref, result}, ...)`.
+      pending_notices: [],
       images: %{},
       # Optional hard run budgets (`docs/CI_PLAN.md` Phase 1.3). `nil` in the
       # interactive REPL; a `Yoke.CI.Budget` struct in a CI run, where
@@ -601,6 +610,12 @@ defmodule Yoke.Brain.Session do
   end
 
   @impl true
+  def handle_call({:set_model, _model}, _from, %{active_turn: active} = state)
+      when not is_nil(active) do
+    {:reply, {:error, "Cannot change model while a turn is running."}, state}
+  end
+
+  @impl true
   def handle_call({:set_model, model}, _from, state) do
     new_state = %{
       state
@@ -608,6 +623,10 @@ defmodule Yoke.Brain.Session do
         provider_options: Keyword.put(state.provider_options, :model, model)
     }
 
+    # Persisted for the same reason `{:set_provider, ...}` is: the choice must
+    # survive a restart. Previously only the in-memory state changed, so a
+    # `/model` switch was silently forgotten while a `/provider` switch was not.
+    SessionStore.save_session(new_state, state.cwd)
     {:reply, {:ok, model}, new_state}
   end
 
@@ -687,7 +706,10 @@ defmodule Yoke.Brain.Session do
 
   @impl true
   def handle_call(:pending_background_notice, _from, state) do
-    {:reply, has_pending_notice?(state.messages), state}
+    pending? =
+      Map.get(state, :pending_notices, []) != [] or has_pending_notice?(state.messages)
+
+    {:reply, pending?, state}
   end
 
   @impl true
@@ -941,6 +963,7 @@ defmodule Yoke.Brain.Session do
       endpoint: state.endpoint,
       max_context_tokens: state.provider_options[:max_context_tokens],
       permission_mode: state.permission_mode,
+      sandbox_workspace: state.sandbox_workspace,
       cwd: state.cwd,
       message_count: length(state.messages),
       snapshot_count: length(state.snapshots),
@@ -1039,8 +1062,20 @@ defmodule Yoke.Brain.Session do
   @impl true
   def handle_call({:export_session, format}, _from, state) do
     export_dir = Path.join(state.cwd, ".yoke/exports")
-    File.mkdir_p!(export_dir)
 
+    # `File.mkdir_p!` here would raise inside `handle_call` and destroy the
+    # conversation on a read-only checkout or a full disk. Every other
+    # persistence path in this module reports the failure instead.
+    case File.mkdir_p(export_dir) do
+      :ok ->
+        do_export_session(format, state, export_dir)
+
+      {:error, reason} ->
+        {:reply, {:error, "Cannot create #{export_dir}: #{inspect(reason)}"}, state}
+    end
+  end
+
+  defp do_export_session(format, state, export_dir) do
     timestamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%d_%H%M%S")
 
     fmt_atom =
@@ -1210,6 +1245,8 @@ defmodule Yoke.Brain.Session do
           %{new_turn_state | active_turn: nil}
       end
 
+    completed = flush_pending_notices(completed)
+
     GenServer.reply(from, final_response)
     {:noreply, completed}
   end
@@ -1253,7 +1290,7 @@ defmodule Yoke.Brain.Session do
       end
 
     notice = %{"role" => "user", "content" => notice_content}
-    new_state = %{state | messages: state.messages ++ [notice]}
+    new_state = append_or_buffer_notice(state, notice)
     SessionStore.save_session(new_state, state.cwd)
 
     if Yoke.CLI.TerminalOwner.active?() do
@@ -1287,9 +1324,30 @@ defmodule Yoke.Brain.Session do
     """
 
     notice = %{"role" => "user", "content" => notice_content}
-    new_state = %{state | messages: state.messages ++ [notice]}
+    new_state = append_or_buffer_notice(state, notice)
     SessionStore.save_session(new_state, state.cwd)
     {:noreply, new_state}
+  end
+
+  # A completion notice that arrives while a turn is running cannot be appended
+  # to `state.messages` directly: the in-flight agent-loop Task holds its own
+  # copy of the state, and `handle_info({ref, result}, ...)` replaces this
+  # actor's messages with that copy when the turn finishes -- silently dropping
+  # anything appended in the interim. Buffer it instead and let the post-turn
+  # merge append it, so the model actually sees the result it was told about.
+  defp append_or_buffer_notice(%{active_turn: nil} = state, notice) do
+    %{state | messages: state.messages ++ [notice]}
+  end
+
+  defp append_or_buffer_notice(state, notice) do
+    %{state | pending_notices: Map.get(state, :pending_notices, []) ++ [notice]}
+  end
+
+  defp flush_pending_notices(state) do
+    case Map.get(state, :pending_notices, []) do
+      [] -> state
+      notices -> %{state | messages: state.messages ++ notices, pending_notices: []}
+    end
   end
 
   @impl true
@@ -1880,95 +1938,12 @@ defmodule Yoke.Brain.Session do
   def sanitize_messages(_), do: []
 
   @doc "Repairs malformed tool sequences in message history."
-  def repair_tool_messages(messages) when is_list(messages) do
-    {acc, pending} =
-      Enum.reduce(messages, {[], []}, fn msg, {acc_messages, pending_ids} ->
-        role = Map.get(msg, "role") || Map.get(msg, :role)
-        calls = Map.get(msg, "tool_calls") || Map.get(msg, :tool_calls)
-
-        cond do
-          role == "tool" ->
-            call_id = Map.get(msg, "tool_call_id") || Map.get(msg, :tool_call_id)
-
-            if call_id != nil and call_id in pending_ids do
-              new_pending = List.delete(pending_ids, call_id)
-              {acc_messages ++ [msg], new_pending}
-            else
-              content = Map.get(msg, "content") || Map.get(msg, :content, "")
-
-              converted = %{
-                "role" => "user",
-                "content" => "[Tool Output #{call_id || "unknown"}]: #{content}"
-              }
-
-              {acc_messages ++ [converted], pending_ids}
-            end
-
-          role == "assistant" and is_list(calls) and calls != [] ->
-            acc_messages = fill_pending_tool_responses(acc_messages, pending_ids)
-
-            new_ids =
-              calls
-              |> Enum.map(fn tc -> Map.get(tc, "id") || Map.get(tc, :id) end)
-              |> Enum.reject(&is_nil/1)
-
-            {acc_messages ++ [msg], new_ids}
-
-          true ->
-            acc_messages = fill_pending_tool_responses(acc_messages, pending_ids)
-            {acc_messages ++ [msg], []}
-        end
-      end)
-
-    fill_pending_tool_responses(acc, pending)
-  end
-
-  def repair_tool_messages(_), do: []
-
-  defp fill_pending_tool_responses(messages, []) do
-    messages
-  end
-
-  defp fill_pending_tool_responses(messages, pending_ids) when is_list(pending_ids) do
-    tool_responses =
-      Enum.map(pending_ids, fn id ->
-        %{
-          "role" => "tool",
-          "tool_call_id" => id,
-          "content" => "SYSTEM NOTICE: Tool execution result unavailable."
-        }
-      end)
-
-    messages ++ tool_responses
-  end
+  defdelegate repair_tool_messages(messages), to: Yoke.Brain.MessageRepair, as: :repair
 
   @doc "Aggressively converts all tool-role messages into user messages to recover from strict API 400 validation failures."
-  def convert_all_tool_roles_to_user_messages(messages) when is_list(messages) do
-    Enum.map(messages, fn msg ->
-      role = Map.get(msg, "role") || Map.get(msg, :role)
-      calls = Map.get(msg, "tool_calls") || Map.get(msg, :tool_calls)
-
-      cond do
-        role == "tool" ->
-          call_id = Map.get(msg, "tool_call_id") || Map.get(msg, :tool_call_id) || "unknown"
-          content = Map.get(msg, "content") || Map.get(msg, :content, "")
-
-          %{
-            "role" => "user",
-            "content" => "[Tool Output #{call_id}]: #{content}"
-          }
-
-        role == "assistant" and is_list(calls) ->
-          content = Map.get(msg, "content") || ""
-          msg |> Map.drop(["tool_calls", :tool_calls]) |> Map.put("content", content)
-
-        true ->
-          msg
-      end
-    end)
-  end
-
-  def convert_all_tool_roles_to_user_messages(_), do: []
+  defdelegate convert_all_tool_roles_to_user_messages(messages),
+    to: Yoke.Brain.MessageRepair,
+    as: :flatten_tool_roles
 
   defp handle_text_response_turn(state, response) do
     state = accumulate_usage(state, response[:usage])
@@ -2523,6 +2498,22 @@ defmodule Yoke.Brain.Session do
 
   defp destructive_bash_command?(_, _), do: false
 
+  # The permission modal's options, ordered by scope and annotated with which
+  # ones write to disk. Seven bare options gave no hint that "Allow always"
+  # variants persist a config entry while "Allow once" does not.
+  @doc false
+  def tool_permission_options do
+    [
+      "Allow once (this call only)",
+      "Allow always for this session (in memory)",
+      "Allow always (saves to project .yoke/config.json)",
+      "Allow always (saves to ~/.yoke/config.json)",
+      "Deny tool execution (this call only)",
+      "Deny always (saves to project .yoke/config.json)",
+      "Deny always (saves to ~/.yoke/config.json)"
+    ]
+  end
+
   defp confirm_tool_with_user(tool_name, args, reason, state) do
     # Never ask for ask_question or ragex tools
     if tool_name == "ask_question" or ragex_tool?(tool_name) do
@@ -2531,19 +2522,9 @@ defmodule Yoke.Brain.Session do
       summary = format_tool_confirmation_summary(tool_name, args)
       q = "#{reason}:\n#{summary}"
 
-      opts = [
-        "Allow once",
-        "Allow always for this session",
-        "Allow always (save to project config)",
-        "Allow always (save to global config)",
-        "Deny tool execution",
-        "Deny always (save to project config)",
-        "Deny always (save to global config)"
-      ]
-
       case Yoke.Interaction.ask(:tool_permission, %{
              question: q,
-             options: opts,
+             options: tool_permission_options(),
              tool: tool_name,
              args: args,
              reason: reason,
@@ -2653,161 +2634,10 @@ defmodule Yoke.Brain.Session do
     end
   end
 
-  def format_tool_confirmation_summary(tool_name, args) when is_map(args) do
-    case tool_name do
-      name when name in ["replace_file_content", "replace_file", "edit_file"] ->
-        format_replace_summary(tool_name, args)
-
-      name when name in ["write_file", "write_to_file", "create_file"] ->
-        format_write_summary(tool_name, args)
-
-      name when name in ["bash", "cmd", "run_command", "shell", "exec"] ->
-        format_bash_summary(tool_name, args)
-
-      name when name in ["read_file", "view_file", "file_read"] ->
-        format_read_file_summary(tool_name, args)
-
-      name when name in ["read_files", "read_multiple_files"] ->
-        format_read_files_summary(tool_name, args)
-
-      _ ->
-        summary =
-          args
-          |> Enum.map_join("\n", fn {k, v} ->
-            str_v = if is_binary(v), do: truncate_str(v, 60), else: inspect(v)
-            "  #{k}: #{str_v}"
-          end)
-
-        """
-        Tool: #{tool_name}
-        #{summary}
-        """
-        |> String.trim()
-    end
-  end
-
-  def format_tool_confirmation_summary(tool_name, args) do
-    "Tool: #{tool_name}\nArgs: #{inspect(args)}"
-  end
-
-  defp format_replace_summary(tool_name, args) do
-    file = args["TargetFile"] || args["path"] || args["AbsolutePath"] || args["file"] || "file"
-    target = args["TargetContent"] || args["target"] || ""
-    replacement = args["ReplacementContent"] || args["replacement"] || ""
-    start_line = args["StartLine"] || args["line_start"]
-    end_line = args["EndLine"] || args["line_end"]
-
-    lines_info = if start_line, do: " (lines #{start_line}-#{end_line})", else: ""
-
-    diff_summary =
-      cond do
-        target != "" and replacement != "" ->
-          t_preview = truncate_lines(target, 2)
-          r_preview = truncate_lines(replacement, 2)
-
-          """
-          Target:
-          - #{t_preview}
-          Replacement:
-          + #{r_preview}
-          """
-
-        replacement != "" ->
-          r_preview = truncate_lines(replacement, 3)
-
-          """
-          Replacement:
-          + #{r_preview}
-          """
-
-        true ->
-          ""
-      end
-
-    """
-    Tool: #{tool_name}
-    File: #{file}#{lines_info}
-    #{diff_summary}
-    """
-    |> String.trim()
-  end
-
-  defp format_write_summary(tool_name, args) do
-    file = args["TargetFile"] || args["path"] || args["AbsolutePath"] || "file"
-    content = args["CodeContent"] || args["content"] || ""
-    line_count = length(String.split(content, "\n"))
-    preview = truncate_lines(content, 3)
-
-    """
-    Tool: #{tool_name}
-    File: #{file} (#{line_count} lines)
-    Preview:
-    #{preview}
-    """
-    |> String.trim()
-  end
-
-  defp format_bash_summary(tool_name, args) do
-    cmd = args["CommandLine"] || args["command"] || args["cmd"] || ""
-
-    """
-    Tool: #{tool_name}
-    Command: $ #{cmd}
-    """
-    |> String.trim()
-  end
-
-  defp format_read_file_summary(tool_name, args) do
-    file = args["AbsolutePath"] || args["path"] || args["file"] || "file"
-    start_line = args["StartLine"]
-    end_line = args["EndLine"]
-    range = if start_line, do: " (lines #{start_line}-#{end_line})", else: ""
-
-    """
-    Tool: #{tool_name}
-    File: #{file}#{range}
-    """
-    |> String.trim()
-  end
-
-  defp format_read_files_summary(tool_name, args) do
-    files = args["paths"] || []
-
-    file_list =
-      if is_list(files) and files != [] do
-        Enum.map_join(files, "\n", fn f -> "  - #{f}" end)
-      else
-        "  (none specified)"
-      end
-
-    """
-    Tool: #{tool_name}
-    Files (#{if is_list(files), do: length(files), else: 0}):
-    #{file_list}
-    """
-    |> String.trim()
-  end
-
-  defp truncate_lines(text, max_lines) when is_binary(text) do
-    lines = String.split(text, "\n")
-
-    if length(lines) <= max_lines do
-      text
-    else
-      preview = Enum.take(lines, max_lines) |> Enum.join("\n")
-      "#{preview}\n  ... [#{length(lines)} lines total]"
-    end
-  end
-
-  defp truncate_str(str, max_len) when is_binary(str) do
-    clean = String.replace(str, "\n", "\\n")
-
-    if String.length(clean) <= max_len do
-      clean
-    else
-      String.slice(clean, 0, max_len) <> "..."
-    end
-  end
+  @doc "Renders a bounded summary of a tool call for the permission modal."
+  defdelegate format_tool_confirmation_summary(tool_name, args),
+    to: Yoke.Brain.ConfirmationSummary,
+    as: :render
 
   defp auto_checkpoint(state, label) do
     snapshot = %{

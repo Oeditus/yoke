@@ -45,7 +45,7 @@ defmodule Yoke.AliasesTest do
     }
 
     aliases_file = Path.join([tmp_dir, ".yoke", "aliases.json"])
-    File.write!(aliases_file, Jason.encode!(custom))
+    File.write!(aliases_file, Yoke.Json.encode!(custom))
 
     aliases = Aliases.load_aliases(tmp_dir)
     assert Map.has_key?(aliases, "my-flow")
@@ -61,7 +61,7 @@ defmodule Yoke.AliasesTest do
     }
 
     cfg_file = Path.join([tmp_dir, ".yoke", "config.json"])
-    File.write!(cfg_file, Jason.encode!(cfg))
+    File.write!(cfg_file, Yoke.Json.encode!(cfg))
 
     aliases = Aliases.load_aliases(tmp_dir)
     assert Map.has_key?(aliases, "config-alias")

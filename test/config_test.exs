@@ -416,4 +416,58 @@ defmodule Yoke.ConfigTest do
       end
     end
   end
+
+  describe "god_mode?/1" do
+    # A production module must not carry a `MIX_ENV=test` default that
+    # auto-approves every permission decision: a test that forgets to disable
+    # it would pass silently, which is the worst failure mode for a permission
+    # gate. `test/test_helper.exs` sets the application env explicitly instead.
+    setup do
+      prior = Application.get_env(:yoke, :god_mode)
+      Application.delete_env(:yoke, :god_mode)
+
+      on_exit(fn ->
+        if prior == nil,
+          do: Application.delete_env(:yoke, :god_mode),
+          else: Application.put_env(:yoke, :god_mode, prior)
+      end)
+
+      :ok
+    end
+
+    test "defaults to false with no application env and no config file" do
+      tmp_dir =
+        Path.join(System.tmp_dir!(), "god_mode_default_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp_dir)
+
+      try do
+        refute Config.god_mode?(tmp_dir)
+      after
+        File.rm_rf!(tmp_dir)
+      end
+    end
+
+    test "honours an explicit application env value" do
+      Application.put_env(:yoke, :god_mode, true)
+      assert Config.god_mode?()
+
+      Application.put_env(:yoke, :god_mode, false)
+      refute Config.god_mode?()
+    end
+
+    test "honours a workspace config file" do
+      tmp_dir =
+        Path.join(System.tmp_dir!(), "god_mode_config_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp_dir)
+
+      try do
+        assert :ok = Config.save_config(%{"god_mode" => true}, tmp_dir)
+        assert Config.god_mode?(tmp_dir)
+      after
+        File.rm_rf!(tmp_dir)
+      end
+    end
+  end
 end

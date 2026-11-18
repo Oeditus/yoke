@@ -40,3 +40,36 @@ yoke --node brain@127.0.0.1 --connect hands@127.0.0.1
 **Symptom**: `Failed to fetch tools/list from MCP server`
 **Resolution**:
 Check that the MCP server binary is executable and installed in system `$PATH`. Test manual execution via `/mcp list` or inspect `.yoke/config.json`.
+
+---
+
+## 5. `/import` rejects a Markdown export
+**Symptom**: `'...' is a Markdown export, which is for reading, not re-importing.`
+**Cause**: `/export markdown` runs the session narrative through `Lmml.to_md/2`,
+which strips the `@@@` embeds the importer relies on. The result is a readable
+document, not a resumable session.
+**Resolution**: Use `/export lmml` (or `/export lmmlz` when images are attached)
+to produce a resumable file, then `/import` that. `/export` with no argument now
+defaults to `lmml` for this reason.
+
+---
+
+## 6. `yoke review --dry-run` reports a diff over the cap
+**Symptom**: `This diff exceeds the cap and the real run would fail.`
+**Cause**: The review diff is larger than `max_diff_bytes` (default 300 KB,
+configurable in `.yoke/policy.json`). The real run refuses to generate a partial
+review rather than reviewing a truncated diff.
+**Resolution**: Raise `max_diff_bytes` in `.yoke/policy.json`, pass
+`--max-diff-bytes <n>` for a one-off run, or narrow the commit range.
+
+---
+
+## 7. A tool call times out with no visible cause
+**Symptom**: The spinner stops, the model narrates a retry, and nothing explains
+the pause.
+**Cause**: A tool call exceeded its per-call budget (60 s by default) and was
+stopped. The terminal now shows `Tool '<name>' exceeded its Ns budget and was
+stopped.` when a TTY is attached.
+**Resolution**: For a command that legitimately needs longer, re-run it with
+`async: true` so it becomes a background job; for a long-lived server or watcher,
+use `async: true` as well rather than blocking the turn.

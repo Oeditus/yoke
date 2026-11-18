@@ -133,35 +133,48 @@ defmodule Yoke.CLI.Formatter do
       #{cyan()}/checkpoint [label]#{reset()}     List snapshots; with a label, save conversation/provider state
       #{cyan()}/clear#{reset()}                  Clear terminal output
       #{cyan()}/commit <message>#{reset()}       Auto-commit staged workspace changes to git
-      #{cyan()}/commit-structured [files]#{reset()} or #{cyan()}/cpr#{reset()} Commit staged changes with 5 PR sections (no PR)
       #{cyan()}/compact#{reset()}                Compress conversation context to save tokens
       #{cyan()}/cost#{reset()}                   Display token usage and session cost statistics
       #{cyan()}/diff#{reset()}                   Show colorized git diff of workspace changes
+      #{cyan()}/doctor#{reset()}                 Diagnose environment, provider, and toolchain readiness
+      #{cyan()}/edit#{reset()}                   Compose a prompt in $EDITOR and send it
+      #{cyan()}/endpoint [url]#{reset()}         Show or set the generation endpoint URL
+      #{cyan()}/env#{reset()}                    Show relevant environment variables (secrets redacted)
       #{cyan()}/exit#{reset()} or #{cyan()}/quit#{reset()}            Exit Yoke
       #{cyan()}/explorer#{reset()}               Launch interactive TUI for exploring & managing .yoke configs, rules, skills, jobs & analytics
-      #{cyan()}/finish [files] [--commit-only]#{reset()} or #{cyan()}/pr#{reset()} Format, structured commit (5 sections) & PR
+      #{cyan()}/export [format]#{reset()}        Export the session (lmml | lmmlz | json | markdown)
+      #{cyan()}/git <args>#{reset()}             Run a git subcommand and show its output
       #{cyan()}/god [on|off|status]#{reset()}    Toggle God mode (auto-answer all model questions/confirmations)
       #{cyan()}/guide#{reset()} or #{cyan()}/docs#{reset()}        Display Getting Started & Customization Guide summary
       #{cyan()}/help [command]#{reset()}         Show command menu or detailed help (e.g. /help workflow)
+      #{cyan()}/history [search <q>]#{reset()}    Show or search REPL input history
       #{cyan()}/import <path> [id]#{reset()}     Import an external session .lmml or JSON file into Yoke's session store
       #{cyan()}/jobs [kill <id>|kill all]#{reset()} List or kill background jobs
       #{cyan()}/lessons [add <text>]#{reset()}   View or record operational lessons learned in project/lessons.md
+      #{cyan()}/lint [files]#{reset()}           Run the linter and offer to apply its fixes
       #{cyan()}/mcp [list|add|load]#{reset()}    Manage Model Context Protocol (MCP) servers and tools
       #{cyan()}/mode [local|remote|docker]#{reset()}  Set Hands execution target
       #{cyan()}/model#{reset()} or #{cyan()}/models#{reset()}        List available API models dynamically or switch model (/model <id>)
       #{cyan()}/nodes#{reset()}                  View distributed Erlang node cluster status
       #{cyan()}/permissions [auto|ask]#{reset()} Set tool execution safety mode
+      #{cyan()}/plan [on|off|status|threshold <n>]#{reset()} Configure the plan-approval gate
       #{cyan()}/plugins [reload]#{reset()}       List tools or hot-reload plugins live without dropping state
+      #{cyan()}/practices [add|learn|squeeze|edit]#{reset()} View, teach, or edit language good practices
       #{cyan()}/prboard#{reset()}                 Live PR review queue board (alias for /review queue)
       #{cyan()}/provider [local|local-qwen|deepseek]#{reset()} Select generation provider atomically; show local/remote status
       #{cyan()}/ragex#{reset()}                  Mount first-class Ragex code analysis & refactoring MCP tools (@../ragex)
       #{cyan()}/reset#{reset()}                  Reset conversation context, history, and clear screen
+      #{cyan()}/resume [id]#{reset()}            Resume a saved session (same as /session switch)
       #{cyan()}/review [queue|next|skip|patterns|<pr>]#{reset()} Interactive PR review, queue triage, atomic inline comments, living memory
       #{cyan()}/review_conversation [id]#{reset()} Review conversation history (current session or specific ID)
+      #{cyan()}/rules [add|delete|toggle]#{reset()}  Manage prompt preamble rules in .yoke/rules.json
+      #{cyan()}/sandbox [on|off]#{reset()}        Toggle workspace sandbox bounds
       #{cyan()}/scrap [note|clear]#{reset()}     Capture or view transient scratch notes in project/scrap.md
-      #{cyan()}/session#{reset()}                Display active session metadata & statistics
+      #{cyan()}/session [list|switch|cleanup]#{reset()} Display metadata, list, switch, or prune sessions
+      #{cyan()}/skill <name>#{reset()}            Execute a skill (back-compat alias for /skills <name>)
       #{cyan()}/skills [show|path|edit|new|<name>]#{reset()} List, inspect, scaffold, or execute skills
       #{cyan()}/spar [soc|adv] <topic>#{reset()} Prompt Socratic or Adversarial sparring session with prior-art sweep
+      #{cyan()}/stats#{reset()}                  Session analytics dashboard (tokens, cost, tools, jobs)
       #{cyan()}/subagent <prompt>#{reset()}      Spawn a background subagent worker for sub-tasks
       #{cyan()}/sweep <tokens>#{reset()}         Run multi-corpus prior-art search across workflow, reference, lessons, and vault
       #{cyan()}/undo#{reset()}                   Roll back state to previous checkpoint

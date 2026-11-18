@@ -641,12 +641,7 @@ defmodule Yoke.Client.DeepSeekAPI do
   def opencode_endpoint?(_), do: false
 
   @doc "Generates a unique UUID v4 string for session tracking."
-  def generate_session_id do
-    <<a::32, b::16, c::16, d::16, e::48>> = :crypto.strong_rand_bytes(16)
-
-    :io_lib.format("~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b", [a, b, c, d, e])
-    |> IO.iodata_to_binary()
-  end
+  defdelegate generate_session_id, to: Yoke.UUID, as: :v4
 
   @doc "Returns true if an endpoint target URL is a local or loopback address."
   def local_endpoint?(endpoint) when is_binary(endpoint) do

@@ -24,10 +24,10 @@ defmodule Yoke.CLIReplTest do
       if File.exists?(cfg_path) do
         case File.read(cfg_path) do
           {:ok, content} ->
-            case Jason.decode(content) do
+            case Yoke.Json.decode(content) do
               {:ok, map} ->
                 cleaned = Map.drop(map, ["god_mode", "assistant_name"])
-                File.write!(cfg_path, Jason.encode!(cleaned, pretty: true))
+                File.write!(cfg_path, Yoke.Json.encode!(cleaned, pretty: true))
 
               _ ->
                 :ok
@@ -263,6 +263,74 @@ defmodule Yoke.CLIReplTest do
     assert :continue = Repl.handle_input("/model v4", pid, id)
   end
 
+  describe "/model validation" do
+    test "rejects an unknown model id instead of storing it", %{
+      session_pid: pid,
+      session_id: id
+    } do
+      assert :continue = Repl.handle_input("/model flash", pid, id)
+      assert {:ok, "deepseek-flash"} = Yoke.Brain.Session.get_model(pid)
+
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          Repl.handle_input("/model deepseek-flsh", pid, id)
+        end)
+
+      assert output =~ "Unknown model 'deepseek-flsh'"
+      assert output =~ "Available:"
+
+      # The typo did not change the active model.
+      assert {:ok, "deepseek-flash"} = Yoke.Brain.Session.get_model(pid)
+    end
+  end
+
+  describe "/permissions argument validation" do
+    test "accepts both spellings and reports the resulting mode", %{
+      session_pid: pid,
+      session_id: id
+    } do
+      assert :continue = Repl.handle_input("/permissions auto", pid, id)
+      assert Yoke.Brain.Session.get_info(pid).permission_mode == :auto_approve
+
+      assert :continue = Repl.handle_input("/permissions ask", pid, id)
+      assert Yoke.Brain.Session.get_info(pid).permission_mode == :ask_confirm
+    end
+
+    test "an unknown argument is rejected and leaves the mode unchanged", %{
+      session_pid: pid,
+      session_id: id
+    } do
+      assert :continue = Repl.handle_input("/permissions auto", pid, id)
+
+      output =
+        ExUnit.CaptureIO.capture_io(fn -> Repl.handle_input("/permissions off", pid, id) end)
+
+      assert output =~ "Unknown /permissions argument 'off'"
+      assert Yoke.Brain.Session.get_info(pid).permission_mode == :auto_approve
+    end
+
+    test "a bare /permissions reports the current mode", %{
+      session_pid: pid,
+      session_id: id
+    } do
+      assert :continue = Repl.handle_input("/permissions ask", pid, id)
+
+      output = ExUnit.CaptureIO.capture_io(fn -> Repl.handle_input("/permissions", pid, id) end)
+      assert output =~ "ask_confirm"
+    end
+  end
+
+  describe "/checkpoint listing" do
+    test "shows the timestamp of each snapshot", %{session_pid: pid, session_id: id} do
+      assert :continue = Repl.handle_input("/checkpoint first", pid, id)
+
+      output = ExUnit.CaptureIO.capture_io(fn -> Repl.handle_input("/checkpoint", pid, id) end)
+
+      assert output =~ "label: first"
+      assert output =~ "at: 20"
+    end
+  end
+
   test "handles /config default_branch commands", %{session_pid: pid, session_id: id} do
     prior = Application.get_env(:yoke, :default_branch)
 
@@ -309,10 +377,10 @@ defmodule Yoke.CLIReplTest do
       if File.exists?(cfg_path) do
         case File.read(cfg_path) do
           {:ok, content} ->
-            case Jason.decode(content) do
+            case Yoke.Json.decode(content) do
               {:ok, map} ->
                 cleaned = Map.drop(map, ["default_branch"])
-                File.write!(cfg_path, Jason.encode!(cleaned, pretty: true))
+                File.write!(cfg_path, Yoke.Json.encode!(cleaned, pretty: true))
 
               _ ->
                 :ok
@@ -363,10 +431,10 @@ defmodule Yoke.CLIReplTest do
       if File.exists?(cfg_path) do
         case File.read(cfg_path) do
           {:ok, content} ->
-            case Jason.decode(content) do
+            case Yoke.Json.decode(content) do
               {:ok, map} ->
                 cleaned = Map.drop(map, ["assistant_name"])
-                File.write!(cfg_path, Jason.encode!(cleaned, pretty: true))
+                File.write!(cfg_path, Yoke.Json.encode!(cleaned, pretty: true))
 
               _ ->
                 :ok
@@ -383,6 +451,67 @@ defmodule Yoke.CLIReplTest do
     assert :continue = Repl.handle_input("/mode local", pid, id)
     assert :continue = Repl.handle_input("/mode remote hands@127.0.0.1", pid, id)
     assert :continue = Repl.handle_input("/mode docker yoke_box", pid, id)
+  end
+
+  describe "/sandbox argument validation" do
+    test "an unknown argument is rejected and leaves the mode unchanged", %{
+      session_pid: pid,
+      session_id: id
+    } do
+      assert :continue = Repl.handle_input("/sandbox on", pid, id)
+      assert Yoke.Brain.Session.get_info(pid).sandbox_workspace
+
+      # A typo must not silently *disable* the sandbox.
+      output = ExUnit.CaptureIO.capture_io(fn -> Repl.handle_input("/sandbox maybe", pid, id) end)
+      assert output =~ "Unknown /sandbox argument"
+      assert output =~ "/sandbox [on | off]"
+      assert Yoke.Brain.Session.get_info(pid).sandbox_workspace
+
+      assert :continue = Repl.handle_input("/sandbox off", pid, id)
+      refute Yoke.Brain.Session.get_info(pid).sandbox_workspace
+    end
+
+    test "a bare /sandbox reports the current state instead of toggling it", %{
+      session_pid: pid,
+      session_id: id
+    } do
+      assert :continue = Repl.handle_input("/sandbox off", pid, id)
+
+      output = ExUnit.CaptureIO.capture_io(fn -> Repl.handle_input("/sandbox", pid, id) end)
+      assert output =~ "currently DISABLED"
+      refute Yoke.Brain.Session.get_info(pid).sandbox_workspace
+    end
+  end
+
+  describe "/export argument validation" do
+    test "an unknown format is rejected and writes nothing", %{
+      session_pid: pid,
+      session_id: id
+    } do
+      output = ExUnit.CaptureIO.capture_io(fn -> Repl.handle_input("/export xml", pid, id) end)
+
+      assert output =~ "Unknown export format 'xml'"
+      assert output =~ "markdown"
+    end
+
+    test "a bare /export produces a resumable .lmml file", %{
+      session_pid: pid,
+      session_id: id
+    } do
+      output = ExUnit.CaptureIO.capture_io(fn -> Repl.handle_input("/export", pid, id) end)
+
+      assert output =~ ".lmml"
+      assert output =~ "Resumable"
+    end
+
+    test "a markdown export says it is not resumable", %{
+      session_pid: pid,
+      session_id: id
+    } do
+      output = ExUnit.CaptureIO.capture_io(fn -> Repl.handle_input("/export md", pid, id) end)
+
+      assert output =~ "reading only"
+    end
   end
 
   test "handles checkpoint and undo operations", %{session_pid: pid, session_id: id} do

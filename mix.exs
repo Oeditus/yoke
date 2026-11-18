@@ -162,7 +162,13 @@ defmodule Yoke.MixProject do
         "credo --strict",
         "dialyzer",
         "deps.audit"
-      ]
+      ],
+      # `test/test_helper.exs` builds its exclusion list dynamically: under
+      # `--no-start` it excludes `:app`, and on CI it excludes `:ragex` and
+      # `:skip_in_gha`. There was no documented way to run *only* the
+      # app-dependent tests, so this alias makes the split usable in both
+      # directions.
+      "test.app": ["test --only app"]
     ]
   end
 end

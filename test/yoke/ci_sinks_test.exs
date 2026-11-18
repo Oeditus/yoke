@@ -275,4 +275,69 @@ defmodule Yoke.CI.SinksTest do
       assert Artifact.default_path() == Path.join(System.tmp_dir!(), "yoke-review.json")
     end
   end
+
+  describe "yoke review emits annotations" do
+    # `yoke review` used to compute `Annotations.render/1` and return it in the
+    # result map without ever writing it to stdout, so findings never landed as
+    # inline PR annotations. `lint` did it correctly; `review` did not.
+    test "annotations reach stdout for a non-JSON format" do
+      result = {:ok, %{report: report([finding(%{severity: "high"})])}}
+
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          send(self(), {:emitted, Yoke.CLI.CI.emit_annotations(result, "summary")})
+        end)
+
+      assert_received {:emitted, :ok}
+      assert output =~ "::error"
+      assert output =~ "file=lib/foo.ex"
+      assert output =~ "line=10"
+    end
+
+    test "annotations are suppressed for --format json" do
+      result = {:ok, %{report: report([finding(%{severity: "high"})])}}
+
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :ok = Yoke.CLI.CI.emit_annotations(result, "json")
+        end)
+
+      assert output == ""
+    end
+
+    test "an error result emits nothing" do
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :ok = Yoke.CLI.CI.emit_annotations({:error, "boom"}, "summary")
+        end)
+
+      assert output == ""
+    end
+  end
+
+  describe "U7: --format json keeps stdout parseable" do
+    test "the artifact notice goes to stderr, not stdout" do
+      result =
+        {:ok, %{report: report([]), artifact_path: "/tmp/a.json", exit_code: 0, identity: %{}}}
+
+      parent = self()
+
+      {stderr, stdout} =
+        ExUnit.CaptureIO.with_io(fn ->
+          ExUnit.CaptureIO.capture_io(:stderr, fn ->
+            Yoke.CLI.CI.print_result(result, "json")
+            send(parent, :printed)
+          end)
+        end)
+
+      assert_received :printed
+
+      assert stderr =~ "Artifact: /tmp/a.json"
+
+      # stdout is exactly one JSON document, with no decoration appended.
+      assert {:ok, decoded} = Yoke.Json.decode(stdout)
+      assert decoded["artifact_path"] == "/tmp/a.json"
+      refute stdout =~ "Artifact:"
+    end
+  end
 end

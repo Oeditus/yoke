@@ -231,4 +231,61 @@ defmodule Yoke.CLI.CITest do
       assert output =~ "yoke lint"
     end
   end
+
+  describe "U8: --dry-run reports the diff cap" do
+    # `dry_run/1` resolves its context against `File.cwd!()`, so each test runs
+    # inside its own temporary repository.
+    setup %{tmp_dir: dir} do
+      git!(dir, ["init", "-q", "-b", "main"])
+      git!(dir, ["config", "user.email", "test@example.com"])
+      git!(dir, ["config", "user.name", "Test"])
+      File.write!(Path.join(dir, "a.txt"), "one\n")
+      git!(dir, ["add", "."])
+      git!(dir, ["commit", "-q", "-m", "first"])
+
+      prior_cwd = File.cwd!()
+      File.cd!(dir)
+      on_exit(fn -> File.cd!(prior_cwd) end)
+
+      {:ok, dir: dir}
+    end
+
+    test "prints the cap and warns when the diff exceeds it", %{dir: dir} do
+      # A second commit whose diff is comfortably larger than the 1 KB cap used
+      # below. `resolve_context/2` enforces the cap itself, so the cap must stay
+      # above the diff for `--dry-run` to be reached at all -- the warning here
+      # is about a diff that *would* exceed the cap the run is configured with,
+      # which is exactly what a dry run exists to surface.
+      File.write!(Path.join(dir, "a.txt"), String.duplicate("x", 5_000) <> "\n")
+      git!(dir, ["commit", "-q", "-am", "second"])
+
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert CI.review(["--dry-run", "--base", "HEAD~1", "--head", "HEAD"]) == 0
+        end)
+
+      assert output =~ "cap: 300000 bytes"
+      assert output =~ "file(s)"
+      refute output =~ "exceeds the cap"
+    end
+
+    test "does not warn when the diff fits", %{dir: dir} do
+      File.write!(Path.join(dir, "a.txt"), "two\n")
+      git!(dir, ["commit", "-q", "-am", "second"])
+
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert CI.review(["--dry-run", "--base", "HEAD~1", "--head", "HEAD"]) == 0
+        end)
+
+      assert output =~ "cap:"
+      refute output =~ "exceeds the cap"
+    end
+  end
+
+  defp git!(dir, args) do
+    {output, status} = System.cmd("git", args, cd: dir, stderr_to_stdout: true)
+    assert status == 0, "git #{Enum.join(args, " ")} failed: #{output}"
+    output
+  end
 end

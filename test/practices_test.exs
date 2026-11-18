@@ -200,6 +200,39 @@ defmodule Yoke.PracticesTest do
     assert Practices.detect_languages(tmp_dir) == []
   end
 
+  describe "typescript/javascript disambiguation" do
+    # `package.json` is listed under javascript and `tsconfig.json` under
+    # typescript, so a TS project with a package.json detects as both. Only the
+    # superset should survive unless real `.js` sources exist.
+    test "keeps only typescript when a tsconfig exists and no .js sources do", %{
+      tmp_dir: tmp_dir
+    } do
+      File.write!(Path.join(tmp_dir, "package.json"), "{}")
+      File.write!(Path.join(tmp_dir, "tsconfig.json"), "{}")
+      File.write!(Path.join(tmp_dir, "index.ts"), "export const x = 1")
+
+      assert Practices.detect_languages(tmp_dir) == ["typescript"]
+    end
+
+    test "keeps both when the project also has .js sources", %{tmp_dir: tmp_dir} do
+      File.write!(Path.join(tmp_dir, "package.json"), "{}")
+      File.write!(Path.join(tmp_dir, "tsconfig.json"), "{}")
+      File.write!(Path.join(tmp_dir, "index.ts"), "export const x = 1")
+      File.write!(Path.join(tmp_dir, "legacy.js"), "module.exports = 1")
+
+      detected = Practices.detect_languages(tmp_dir)
+      assert "typescript" in detected
+      assert "javascript" in detected
+    end
+
+    test "keeps plain javascript when there is no typescript signal", %{tmp_dir: tmp_dir} do
+      File.write!(Path.join(tmp_dir, "package.json"), "{}")
+      File.write!(Path.join(tmp_dir, "index.js"), "module.exports = 1")
+
+      assert Practices.detect_languages(tmp_dir) == ["javascript"]
+    end
+  end
+
   test "project_languages respects explicit config override", %{tmp_dir: tmp_dir} do
     File.write!(Path.join(tmp_dir, "mix.exs"), "# mix")
     File.write!(Path.join(tmp_dir, "script.py"), "print('hi')")

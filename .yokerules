@@ -15,7 +15,7 @@
 - Use `Yoke.Json`, backed by built-in `JSON` and OTP `:json`, for project JSON handling; do not add a direct `:jason` dependency.
 
 ## Quality and writing
-- Run focused tests, then `mix test --exclude ragex --exclude skip_in_gha` for the CI-style suite. `mix test --no-start` excludes tests tagged `:app`; it is not equivalent to full application coverage. Coverage uses `mix coveralls.github --exclude ragex --exclude skip_in_gha` in CI.
+- Run focused tests, then `mix test --exclude ragex --exclude skip_in_gha` for the CI-style suite. `mix test --no-start` excludes tests tagged `:app`; it is not equivalent to full application coverage. `mix test.app` runs *only* the tests that need the started application tree. Coverage uses `mix coveralls.github --exclude ragex --exclude skip_in_gha` in CI.
 - Check `mix format --check-formatted`, `mix credo --strict`, and `mix dialyzer` with an available PLT. `mix quality.ci` also runs `mix deps.audit`; vulnerability auditing may require network access and is separate from offline regression tests. Use the installed toolchain, and report unavailable checks rather than claiming success.
 - Prefer pattern matching for short known-size lists in tests, such as `assert [first, second] = result`, rather than `length/1` assertions.
 - Use professional, text-only technical writing: no emojis in code comments, documentation, review findings, or commit messages. Keep machine-specific paths, credentials, sessions, and logs out of tracked guidance; share only `.yoke/practices/elixir.lmml` and the existing CI policy under `.yoke/`.
