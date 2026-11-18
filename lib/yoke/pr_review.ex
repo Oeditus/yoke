@@ -680,11 +680,11 @@ defmodule Yoke.PRReview do
       end)
 
     full_body =
-      cond do
-        novel_sidenotes == [] ->
+      case novel_sidenotes do
+        [] ->
           review_body
 
-        true ->
+        [_ | _] ->
           sidenotes_text =
             Enum.map_join(novel_sidenotes, "\n", fn f ->
               loc = if f.file, do: "`#{f.file}`#{if f.line, do: ":#{f.line}"}", else: "General"
