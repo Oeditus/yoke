@@ -53,6 +53,18 @@ defmodule Yoke.Linter do
         docs: "https://checkstyle.sourceforge.io"
       },
       %{
+        name: "cargo",
+        aliases: ["cargo_check", "rust"],
+        description: "Rust compiler & borrow checker (via cargo check --all-targets)",
+        docs: "https://doc.rust-lang.org/cargo/commands/cargo-check.html"
+      },
+      %{
+        name: "clippy",
+        aliases: ["cargo_clippy"],
+        description: "Rust linter and idiomatic style checks (via cargo clippy --all-targets)",
+        docs: "https://doc.rust-lang.org/clippy/"
+      },
+      %{
         name: "all",
         aliases: [],
         description: "Run all supported linter tools in sequence",
@@ -125,6 +137,8 @@ defmodule Yoke.Linter do
       t when t in ["javac", "java", "compile"] -> "javac"
       t when t in ["mvn", "maven"] -> "mvn"
       "checkstyle" -> "checkstyle"
+      t when t in ["cargo", "cargo_check", "rust"] -> "cargo"
+      t when t in ["clippy", "cargo_clippy"] -> "clippy"
       "all" -> :all
       "help" -> :unknown
       "list" -> :unknown
@@ -134,12 +148,18 @@ defmodule Yoke.Linter do
 
   defp run_all(rest, cwd) do
     tools =
-      if not File.exists?(Path.join(cwd, "mix.exs")) and
-           (File.exists?(Path.join(cwd, "pom.xml")) or
-              File.exists?(Path.join(cwd, "build.gradle"))) do
-        ["javac"]
-      else
-        ["oeditus_credo", "propwise", "credo"]
+      cond do
+        not File.exists?(Path.join(cwd, "mix.exs")) and
+            (File.exists?(Path.join(cwd, "pom.xml")) or
+               File.exists?(Path.join(cwd, "build.gradle"))) ->
+          ["javac"]
+
+        not File.exists?(Path.join(cwd, "mix.exs")) and
+            File.exists?(Path.join(cwd, "Cargo.toml")) ->
+          ["cargo", "clippy"]
+
+        true ->
+          ["oeditus_credo", "propwise", "credo"]
       end
 
     results =
@@ -163,6 +183,14 @@ defmodule Yoke.Linter do
 
   defp run_single_tool("checkstyle", rest, cwd) do
     exec_mvn(["checkstyle:check" | rest], cwd)
+  end
+
+  defp run_single_tool("cargo", rest, cwd) do
+    exec_cargo(["check", "--all-targets" | filter_target_args(rest)], cwd)
+  end
+
+  defp run_single_tool("clippy", rest, cwd) do
+    exec_cargo(["clippy", "--all-targets" | filter_target_args(rest)], cwd)
   end
 
   defp run_single_tool(tool, rest, cwd) do
@@ -337,6 +365,27 @@ defmodule Yoke.Linter do
     end
   end
 
+  defp filter_target_args(["project" | rest]), do: rest
+  defp filter_target_args(rest), do: rest
+
+  defp exec_cargo(args, cwd) do
+    cond do
+      not File.exists?(Path.join(cwd, "Cargo.toml")) ->
+        {:error, "No Cargo.toml found in #{cwd}."}
+
+      not is_binary(System.find_executable("cargo")) ->
+        {:error, "cargo executable not found on PATH."}
+
+      true ->
+        case System.cmd("cargo", args, cd: cwd, stderr_to_stdout: true) do
+          {output, 0} -> {:ok, output}
+          {output, _code} -> {:error, output}
+        end
+    end
+  rescue
+    e -> {:error, "Failed to run cargo: #{Exception.message(e)}"}
+  end
+
   def help_text do
     """
     Usage: /linter [fix] <tool> [project | diff [ref] | cr [base] [head] | <args>]
@@ -346,6 +395,8 @@ defmodule Yoke.Linter do
       • propwise - Property-based testing candidate detector (https://propwise.hexdocs.pm)
       • credo - Standard Credo static analyzer
       • dialyzer - Dialyxir static type checker
+      • javac / mvn / checkstyle - Java compilation and style checks
+      • cargo / clippy - Rust type-checking (`cargo check`) and linting (`cargo clippy`)
       • all - Run all tools sequentially
 
     Examples:

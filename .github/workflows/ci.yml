@@ -18,7 +18,7 @@ jobs:
       # "cancelled" is not "passed" or "failed".
       fail-fast: false
       matrix:
-        elixir: ['1.19', '1.20']
+        elixir: ['1.20']
         # Keep the supported OTP matrix independent of native build caches.
         otp: ['29']
     steps:

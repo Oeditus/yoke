@@ -371,14 +371,14 @@ defmodule Yoke.Plugin.DefaultTools do
       %{
         name: "run_linter",
         description:
-          "Run linters and static analysis tools against whole project, diff, or CR targets. Supports Elixir (credo, oeditus_credo, dialyzer, propwise) and Java (javac to compile main and test sources via ./mvnw or ./gradlew, mvn, checkstyle).",
+          "Run linters and static analysis tools against whole project, diff, or CR targets. Supports Elixir (credo, oeditus_credo, dialyzer, propwise), Java (javac to compile main and test sources via ./mvnw or ./gradlew, mvn, checkstyle), and Rust (cargo for cargo check, clippy for cargo clippy).",
         parameters: %{
           type: "object",
           properties: %{
             args: %{
               type: "string",
               description:
-                "Linter command arguments (e.g. 'javac', 'credo', 'checkstyle', 'propwise cr main', 'oeditus_credo diff', 'all cr main')."
+                "Linter command arguments (e.g. 'javac', 'cargo', 'clippy', 'credo', 'checkstyle', 'propwise cr main', 'oeditus_credo diff', 'all cr main')."
             }
           },
           required: ["args"]
@@ -512,6 +512,7 @@ defmodule Yoke.Plugin.DefaultTools do
 
   def write_file(%{"path" => path, "content" => content}) do
     with :ok <- validate_java_write(path, content),
+         :ok <- validate_rust_write(path, content),
          :ok <- path |> Path.dirname() |> File.mkdir_p(),
          :ok <- File.write(path, content) do
       {:ok, "Successfully wrote #{byte_size(content)} bytes to #{path}"}
@@ -1179,6 +1180,24 @@ defmodule Yoke.Plugin.DefaultTools do
 
         _ ->
           :ok
+      end
+    else
+      :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp validate_rust_write(path, content) do
+    if Path.extname(path) == ".rs" and
+         Code.ensure_loaded?(Metastatic.Adapters.Rust) and
+         Metastatic.Adapters.Rust.available?() do
+      case Metastatic.Adapters.Rust.parse(content) do
+        {:ok, _ast} ->
+          :ok
+
+        {:error, reason} when is_binary(reason) ->
+          {:error, "Rust syntax error for '#{path}': #{reason}"}
       end
     else
       :ok

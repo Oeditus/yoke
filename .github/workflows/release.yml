@@ -14,7 +14,7 @@ jobs:
       NX_DEFAULT_BACKEND: Nx.BinaryBackend
     strategy:
       matrix:
-        elixir: ['1.19', '1.20']
+        elixir: ['1.20']
         otp: ['29']
     steps:
       - uses: actions/checkout@v3

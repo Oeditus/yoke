@@ -16,6 +16,8 @@ defmodule Yoke.LinterTest do
       assert "javac" in names
       assert "mvn" in names
       assert "checkstyle" in names
+      assert "cargo" in names
+      assert "clippy" in names
       assert "all" in names
     end
   end
@@ -32,6 +34,23 @@ defmodule Yoke.LinterTest do
     test "returns error on unknown tool" do
       {:error, err} = Linter.run("unknown_tool")
       assert String.contains?(err, "Unknown linter tool")
+    end
+
+    test "returns clear error when running cargo or clippy outside a Cargo project" do
+      tmp_dir =
+        Path.join(System.tmp_dir!(), "yoke_no_cargo_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp_dir)
+
+      try do
+        assert {:error, err1} = Linter.run("cargo", tmp_dir)
+        assert err1 =~ "No Cargo.toml found"
+
+        assert {:error, err2} = Linter.run("clippy", tmp_dir)
+        assert err2 =~ "No Cargo.toml found"
+      after
+        File.rm_rf!(tmp_dir)
+      end
     end
 
     @tag ragex: true

@@ -9,7 +9,7 @@ defmodule Yoke.MixProject do
     [
       app: :yoke,
       version: "0.24.0",
-      elixir: "~> 1.19",
+      elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       test_coverage: [tool: ExCoveralls],
@@ -109,7 +109,7 @@ defmodule Yoke.MixProject do
   # Opt-in source override for validating changes before a Ragex Hex release.
   defp ragex_dep do
     case System.get_env("LOCAL_RAGEX") do
-      nil -> {:ragex, "~> 0.39"}
+      nil -> {:ragex, "~> 0.43"}
       path -> {:ragex, path: Path.expand(path), override: true}
     end
   end
