@@ -235,6 +235,7 @@ defmodule Yoke.CLI.ConfigExplorerLoadingTest do
     worker_monitor = Process.monitor(worker_pid)
     send(worker_pid, :proceed)
     assert_receive {:DOWN, ^worker_monitor, :process, ^worker_pid, _}
+    wait_for_explorer_load(task.pid, :settings)
 
     # Reader returns :timeout (simulating idle timeout, no key pressed by user)
     send(reader_pid, {:key, :timeout})
@@ -253,6 +254,20 @@ defmodule Yoke.CLI.ConfigExplorerLoadingTest do
       {:worker, tab, pid} -> {tab, pid}
     after
       1_000 -> flunk("Explorer worker did not start")
+    end
+  end
+
+  defp wait_for_explorer_load(pid, tab, attempts \\ 500)
+  defp wait_for_explorer_load(_pid, tab, 0), do: flunk("Timed out waiting for #{tab} load message")
+
+  defp wait_for_explorer_load(pid, tab, attempts) do
+    {:messages, messages} = Process.info(pid, :messages)
+
+    if Enum.any?(messages, &match?({:explorer_load, _, ^tab, _}, &1)) do
+      :ok
+    else
+      Process.sleep(1)
+      wait_for_explorer_load(pid, tab, attempts - 1)
     end
   end
 end
