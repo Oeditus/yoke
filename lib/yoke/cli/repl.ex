@@ -1119,16 +1119,6 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
-  defp set_sandbox(session_pid, enabled) do
-    {:ok, val} = Session.set_sandbox_mode(session_pid, enabled)
-
-    status_str =
-      if val, do: "ENABLED (file refs & tools restricted to workspace)", else: "DISABLED"
-
-    IO.puts(Formatter.format_success("Workspace sandbox bounds set to: #{status_str}"))
-    :continue
-  end
-
   def handle_input("/export " <> format, session_pid, _session_id) do
     case String.trim(format) do
       "json" ->
@@ -1156,25 +1146,6 @@ defmodule Yoke.CLI.Repl do
 
   def handle_input("/export", session_pid, session_id) do
     handle_input("/export lmml", session_pid, session_id)
-  end
-
-  defp do_export(session_pid, fmt) do
-    case Session.export_session(session_pid, fmt) do
-      {:ok, path} ->
-        resumable? = fmt in [:lmml, :lmmlz]
-
-        note =
-          if resumable?,
-            do: " Resumable with /import #{path}.",
-            else: " Markdown is for reading only; use /export lmml for a resumable file."
-
-        IO.puts(Formatter.format_success("Session history exported to: #{path}.#{note}"))
-
-      {:error, err} ->
-        IO.puts(Formatter.format_error(err))
-    end
-
-    :continue
   end
 
   def handle_input("/permissions " <> mode, session_pid, _session_id) do
@@ -1205,12 +1176,6 @@ defmodule Yoke.CLI.Repl do
       )
     )
 
-    :continue
-  end
-
-  defp set_permission(session_pid, perm) do
-    {:ok, mode_set} = Session.set_permission_mode(session_pid, perm)
-    IO.puts(Formatter.format_success("Permission safety mode set to: #{mode_set}"))
     :continue
   end
 
@@ -1515,39 +1480,6 @@ defmodule Yoke.CLI.Repl do
           IO.puts(Formatter.format_error(message))
           :continue
       end
-    end
-  end
-
-  defp switch_model(session_pid, target_model) do
-    case Session.set_model(session_pid, target_model) do
-      {:ok, current} ->
-        {:ok, endpoint} = Session.get_endpoint(session_pid)
-        Yoke.CLI.Main.configure_ragex_ai(current, endpoint)
-        IO.puts(Formatter.format_success("Switched model to '#{current}'"))
-
-      {:error, reason} ->
-        IO.puts(Formatter.format_error(reason))
-    end
-
-    :continue
-  end
-
-  # Accepts any id the provider advertises. When the provider cannot be
-  # reached, the switch is allowed through with a warning rather than blocked:
-  # a transient network failure must not make the model unchangeable.
-  defp validate_model_id(session_pid, target_model) do
-    case DeepSeekAPI.list_models(Session.provider_options(session_pid)) do
-      {:ok, models} ->
-        if target_model in models do
-          :ok
-        else
-          {:error,
-           "Unknown model '#{target_model}'. Available: #{Enum.join(models, ", ")}. " <>
-             "Use /model to list them."}
-        end
-
-      {:error, _reason} ->
-        :ok
     end
   end
 
@@ -2203,16 +2135,6 @@ defmodule Yoke.CLI.Repl do
 
     :continue
   end
-
-  defp format_checkpoint_time(%{timestamp: %DateTime{} = ts}) do
-    Calendar.strftime(ts, "%Y-%m-%d %H:%M")
-  end
-
-  defp format_checkpoint_time(%{timestamp: %NaiveDateTime{} = ts}) do
-    Calendar.strftime(ts, "%Y-%m-%d %H:%M")
-  end
-
-  defp format_checkpoint_time(_), do: "unknown"
 
   def handle_input("/checkpoint " <> rest, session_pid, session_id) do
     case String.trim(rest) do
@@ -2911,6 +2833,88 @@ defmodule Yoke.CLI.Repl do
 
     :continue
   end
+
+  # ---------------------------------------------------------------------
+  # Private helpers for the slash commands above.
+  # ---------------------------------------------------------------------
+
+  defp set_sandbox(session_pid, enabled) do
+    {:ok, val} = Session.set_sandbox_mode(session_pid, enabled)
+
+    status_str =
+      if val, do: "ENABLED (file refs & tools restricted to workspace)", else: "DISABLED"
+
+    IO.puts(Formatter.format_success("Workspace sandbox bounds set to: #{status_str}"))
+    :continue
+  end
+
+  defp do_export(session_pid, fmt) do
+    case Session.export_session(session_pid, fmt) do
+      {:ok, path} ->
+        resumable? = fmt in [:lmml, :lmmlz]
+
+        note =
+          if resumable?,
+            do: " Resumable with /import #{path}.",
+            else: " Markdown is for reading only; use /export lmml for a resumable file."
+
+        IO.puts(Formatter.format_success("Session history exported to: #{path}.#{note}"))
+
+      {:error, err} ->
+        IO.puts(Formatter.format_error(err))
+    end
+
+    :continue
+  end
+
+  defp set_permission(session_pid, perm) do
+    {:ok, mode_set} = Session.set_permission_mode(session_pid, perm)
+    IO.puts(Formatter.format_success("Permission safety mode set to: #{mode_set}"))
+    :continue
+  end
+
+  defp switch_model(session_pid, target_model) do
+    case Session.set_model(session_pid, target_model) do
+      {:ok, current} ->
+        {:ok, endpoint} = Session.get_endpoint(session_pid)
+        Yoke.CLI.Main.configure_ragex_ai(current, endpoint)
+        IO.puts(Formatter.format_success("Switched model to '#{current}'"))
+
+      {:error, reason} ->
+        IO.puts(Formatter.format_error(reason))
+    end
+
+    :continue
+  end
+
+  # Accepts any id the provider advertises. When the provider cannot be
+  # reached, the switch is allowed through with a warning rather than blocked:
+  # a transient network failure must not make the model unchangeable.
+  defp validate_model_id(session_pid, target_model) do
+    case DeepSeekAPI.list_models(Session.provider_options(session_pid)) do
+      {:ok, models} ->
+        if target_model in models do
+          :ok
+        else
+          {:error,
+           "Unknown model '#{target_model}'. Available: #{Enum.join(models, ", ")}. " <>
+             "Use /model to list them."}
+        end
+
+      {:error, _reason} ->
+        :ok
+    end
+  end
+
+  defp format_checkpoint_time(%{timestamp: %DateTime{} = ts}) do
+    Calendar.strftime(ts, "%Y-%m-%d %H:%M")
+  end
+
+  defp format_checkpoint_time(%{timestamp: %NaiveDateTime{} = ts}) do
+    Calendar.strftime(ts, "%Y-%m-%d %H:%M")
+  end
+
+  defp format_checkpoint_time(_), do: "unknown"
 
   # Helper to safely send message and handle potential actor exits gracefully
   defp try_send_message(session_pid, user_prompt) do

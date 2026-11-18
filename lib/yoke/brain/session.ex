@@ -1075,28 +1075,6 @@ defmodule Yoke.Brain.Session do
     end
   end
 
-  defp do_export_session(format, state, export_dir) do
-    timestamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%d_%H%M%S")
-
-    fmt_atom =
-      case format do
-        f when f in [:json, "json"] -> :json
-        f when f in [:lmml, "lmml"] -> :lmml
-        f when f in [:lmmlz, "lmmlz"] -> :lmmlz
-        _ -> :markdown
-      end
-
-    ext = to_string(fmt_atom)
-    ext = if ext == "markdown", do: "md", else: ext
-    filename = "session_#{state.session_id}_#{timestamp}.#{ext}"
-    export_path = Path.join(export_dir, filename)
-
-    case export_session_content(fmt_atom, state, export_path) do
-      {:ok, path} -> {:reply, {:ok, path}, state}
-      {:error, err} -> {:reply, {:error, "Failed to write export file: #{inspect(err)}"}, state}
-    end
-  end
-
   @impl true
   def handle_call({:record_error, error_text}, _from, state) do
     clean_text =
@@ -1329,6 +1307,17 @@ defmodule Yoke.Brain.Session do
     {:noreply, new_state}
   end
 
+  @impl true
+  def handle_info(msg, state) do
+    Logger.debug("[Brain.Session] Unhandled message: #{inspect(msg)}")
+    {:noreply, state}
+  end
+
+  @impl true
+  def code_change(_old_vsn, state, _extra) do
+    {:ok, state}
+  end
+
   # A completion notice that arrives while a turn is running cannot be appended
   # to `state.messages` directly: the in-flight agent-loop Task holds its own
   # copy of the state, and `handle_info({ref, result}, ...)` replaces this
@@ -1350,15 +1339,26 @@ defmodule Yoke.Brain.Session do
     end
   end
 
-  @impl true
-  def handle_info(msg, state) do
-    Logger.debug("[Brain.Session] Unhandled message: #{inspect(msg)}")
-    {:noreply, state}
-  end
+  defp do_export_session(format, state, export_dir) do
+    timestamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%d_%H%M%S")
 
-  @impl true
-  def code_change(_old_vsn, state, _extra) do
-    {:ok, state}
+    fmt_atom =
+      case format do
+        f when f in [:json, "json"] -> :json
+        f when f in [:lmml, "lmml"] -> :lmml
+        f when f in [:lmmlz, "lmmlz"] -> :lmmlz
+        _ -> :markdown
+      end
+
+    ext = to_string(fmt_atom)
+    ext = if ext == "markdown", do: "md", else: ext
+    filename = "session_#{state.session_id}_#{timestamp}.#{ext}"
+    export_path = Path.join(export_dir, filename)
+
+    case export_session_content(fmt_atom, state, export_path) do
+      {:ok, path} -> {:reply, {:ok, path}, state}
+      {:error, err} -> {:reply, {:error, "Failed to write export file: #{inspect(err)}"}, state}
+    end
   end
 
   # Agent Execution Loop

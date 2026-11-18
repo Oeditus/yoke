@@ -156,9 +156,16 @@ defmodule Yoke.MixProject do
 
   defp aliases do
     [
-      quality: ["format", "credo --strict", "dialyzer", "deps.audit"],
+      quality: [
+        "format",
+        "compile --warnings-as-errors",
+        "credo --strict",
+        "dialyzer",
+        "deps.audit"
+      ],
       "quality.ci": [
         "format --check-formatted",
+        "compile --warnings-as-errors",
         "credo --strict",
         "dialyzer",
         "deps.audit"
