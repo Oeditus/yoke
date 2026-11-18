@@ -258,7 +258,9 @@ defmodule Yoke.CLI.ConfigExplorerLoadingTest do
   end
 
   defp wait_for_explorer_load(pid, tab, attempts \\ 500)
-  defp wait_for_explorer_load(_pid, tab, 0), do: flunk("Timed out waiting for #{tab} load message")
+
+  defp wait_for_explorer_load(_pid, tab, 0),
+    do: flunk("Timed out waiting for #{tab} load message")
 
   defp wait_for_explorer_load(pid, tab, attempts) do
     {:messages, messages} = Process.info(pid, :messages)
