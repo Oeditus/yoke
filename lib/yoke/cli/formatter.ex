@@ -13,7 +13,7 @@ defmodule Yoke.CLI.Formatter do
   already build their lines out of these helpers.
   """
 
-  alias Yoke.CLI.Output
+  alias Yoke.CLI.{MarkdownFallback, MdexNif, Output}
 
   # IO ANSI shortcuts. Each is suppressed to "" when output is not a TTY.
   def reset, do: Output.style(IO.ANSI.reset())
@@ -269,11 +269,16 @@ defmodule Yoke.CLI.Formatter do
   @doc "Renders markdown text using Marcli library into styled ANSI terminal text."
   def format_markdown(text) when is_binary(text) do
     safe_text = sanitize_utf8(text)
-    Marcli.render(safe_text)
+
+    if MdexNif.available?() do
+      Marcli.render(safe_text)
+    else
+      MarkdownFallback.render(safe_text)
+    end
   rescue
-    _ -> sanitize_utf8(text)
+    _ -> MarkdownFallback.render(sanitize_utf8(text))
   catch
-    _kind, _reason -> sanitize_utf8(text)
+    _kind, _reason -> MarkdownFallback.render(sanitize_utf8(text))
   end
 
   def format_markdown(text), do: inspect(text)
@@ -430,13 +435,20 @@ defmodule Yoke.CLI.Formatter do
   end
 
   defp render_reasoning_markdown(clean_body, color) do
-    theme = %Marcli.Theme{Marcli.Theme.default() | reset: reset() <> color}
-
     rendered =
-      clean_body
-      |> Marcli.render(theme: theme, newline: "\r\n")
-      |> String.replace(~r/(?<!\r)\n/, "\r\n")
-      |> String.trim_trailing("\r\n")
+      if MdexNif.available?() do
+        theme = %Marcli.Theme{Marcli.Theme.default() | reset: reset() <> color}
+
+        clean_body
+        |> Marcli.render(theme: theme, newline: "\r\n")
+        |> String.replace(~r/(?<!\r)\n/, "\r\n")
+        |> String.trim_trailing("\r\n")
+      else
+        clean_body
+        |> sanitize_utf8()
+        |> MarkdownFallback.render(newline: "\r\n", base_color: color)
+        |> String.trim_trailing("\r\n")
+      end
 
     color <> rendered <> reset()
   rescue

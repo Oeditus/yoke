@@ -59,6 +59,7 @@ defmodule Yoke.CLI.Main do
     # output. Installing here -- the first statement of the escript's entry
     # point -- is what actually silences them. Idempotent.
     Yoke.CLI.LogFormatter.install()
+    Yoke.CLI.MdexNif.prepare()
 
     configure_ragex_ai()
     configure_exla()
