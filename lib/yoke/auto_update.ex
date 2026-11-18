@@ -442,10 +442,8 @@ defmodule Yoke.AutoUpdate do
   @spec install_from_release(map(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def install_from_release(release_data, opts \\ []) do
     assets = Map.get(release_data, "assets", [])
-    yoke_asset = Enum.find(assets, fn a -> Map.get(a, "name") == "yoke" end)
-
-    sha_asset =
-      Enum.find(assets, fn a -> Map.get(a, "name") in ["yoke.sha256", "yoke.sha256sum"] end)
+    platform = Keyword.get_lazy(opts, :platform, &current_platform/0)
+    {yoke_asset, sha_asset} = select_release_assets(assets, platform)
 
     if yoke_asset == nil do
       {:error, "No 'yoke' binary asset found in release."}
@@ -458,6 +456,50 @@ defmodule Yoke.AutoUpdate do
         install_binary(binary_content, target_path)
       end
     end
+  end
+
+  @doc false
+  @spec select_release_assets([map()], String.t()) :: {map() | nil, map() | nil}
+  def select_release_assets(assets, platform \\ current_platform()) when is_list(assets) do
+    preferred_name = "yoke-#{platform}"
+
+    yoke_asset =
+      Enum.find(assets, fn a -> Map.get(a, "name") == preferred_name end) ||
+        Enum.find(assets, fn a -> Map.get(a, "name") == "yoke" end)
+
+    sha_asset =
+      case yoke_asset do
+        %{"name" => name} ->
+          Enum.find(assets, fn a ->
+            Map.get(a, "name") in ["#{name}.sha256", "#{name}.sha256sum"]
+          end)
+
+        _ ->
+          nil
+      end
+
+    {yoke_asset, sha_asset}
+  end
+
+  defp current_platform do
+    os =
+      case :os.type() do
+        {:unix, :darwin} -> "darwin"
+        {:unix, :linux} -> "linux"
+        {_, name} -> to_string(name)
+      end
+
+    arch =
+      case :erlang.system_info(:system_architecture)
+           |> to_string()
+           |> String.split("-")
+           |> hd() do
+        "x86_64" -> "amd64"
+        "aarch64" -> "arm64"
+        other -> other
+      end
+
+    "#{os}-#{arch}"
   end
 
   @doc "Writes binary content atomically to target_path and sets executable permissions."

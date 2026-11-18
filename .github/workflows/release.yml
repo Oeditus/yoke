@@ -79,11 +79,19 @@ jobs:
         run: mix quality.ci
 
   build_release:
-    name: Build & Publish Release
-    runs-on: ubuntu-latest
+    name: Build & Publish Release (${{ matrix.asset_name }})
+    runs-on: ${{ matrix.os }}
     needs: [test, linters]
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_name: yoke
+          - os: macos-latest
+            asset_name: yoke-darwin-arm64
     env:
       # Dedicated Mix env: mix.exs deliberately excludes bumblebee/nx/exla/
       # image (Ragex's embeddings/vector-search/image-processing deps) under
@@ -97,16 +105,20 @@ jobs:
         with:
           elixir-version: '1.20'
           otp-version: '29'
-      - name: Install system dependencies (libgit2)
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libgit2-dev build-essential
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libgit2
       - name: Restore dependencies cache
         uses: actions/cache@v3
         with:
           path: deps
-          key: ${{ runner.os }}-mix-escript-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-mix-escript-
+          key: ${{ runner.os }}-${{ runner.arch }}-mix-escript-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-mix-escript-
       - name: Install dependencies
         run: mix deps.get
 
@@ -139,15 +151,20 @@ jobs:
       - name: Build yoke escript
         run: |
           mix escript.build
-          mv yoke_escript yoke
+          mv yoke_escript ${{ matrix.asset_name }}
 
       - name: Compute checksum
-        run: sha256sum yoke > yoke.sha256
+        run: |
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ matrix.asset_name }}" > "${{ matrix.asset_name }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.asset_name }}" > "${{ matrix.asset_name }}.sha256"
+          fi
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            yoke
-            yoke.sha256
+            ${{ matrix.asset_name }}
+            ${{ matrix.asset_name }}.sha256
           generate_release_notes: true

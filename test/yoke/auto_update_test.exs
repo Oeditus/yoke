@@ -545,4 +545,36 @@ defmodule Yoke.AutoUpdateTest do
       assert msg =~ "No 'yoke' binary asset found"
     end
   end
+
+  describe "select_release_assets/2" do
+    test "prefers platform-specific asset and matching checksum when present" do
+      assets = [
+        %{"name" => "yoke", "browser_download_url" => "https://example.com/yoke"},
+        %{"name" => "yoke.sha256", "browser_download_url" => "https://example.com/yoke.sha256"},
+        %{
+          "name" => "yoke-darwin-arm64",
+          "browser_download_url" => "https://example.com/yoke-darwin-arm64"
+        },
+        %{
+          "name" => "yoke-darwin-arm64.sha256",
+          "browser_download_url" => "https://example.com/yoke-darwin-arm64.sha256"
+        }
+      ]
+
+      {bin, sha} = AutoUpdate.select_release_assets(assets, "darwin-arm64")
+      assert bin["name"] == "yoke-darwin-arm64"
+      assert sha["name"] == "yoke-darwin-arm64.sha256"
+    end
+
+    test "falls back to generic 'yoke' asset when no platform asset exists" do
+      assets = [
+        %{"name" => "yoke", "browser_download_url" => "https://example.com/yoke"},
+        %{"name" => "yoke.sha256", "browser_download_url" => "https://example.com/yoke.sha256"}
+      ]
+
+      {bin, sha} = AutoUpdate.select_release_assets(assets, "linux-amd64")
+      assert bin["name"] == "yoke"
+      assert sha["name"] == "yoke.sha256"
+    end
+  end
 end
