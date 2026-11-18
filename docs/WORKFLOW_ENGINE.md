@@ -45,7 +45,7 @@ for this").
 
 | # | Step type | What it does |
 | :--- | :--- | :--- |
-| ① | `branch` | Creates and checks out `yoke/elixir/<run-id>` off the current branch. If the current branch isn't `main`/`master`, it warns and asks for confirmation before branching off it anyway. |
+| ① | `branch` | Creates and checks out `yoke/elixir/<run-id>` off the current branch. If the current branch isn't `main`/`master`, it warns and asks for confirmation before branching off it anyway. A detached HEAD or a directory outside a Git repository halts the run with an explicit message naming the SHA (or the missing repository) -- there is no branch to record as the run's origin, so branching is refused rather than guessed. |
 | ② | `task_description` | Summarizes your request into a structured Markdown spec (Goal / Requirements / Acceptance Criteria), saved to the run's `task_description.md`. |
 | ③ | `task_split` | Asks the model whether the task can be split into 2-5 independent, non-clashing subtasks. If it proposes a split, you're asked to approve it before anything runs in parallel. |
 | ④ | `tests_and_docs` | After the task (or each subtask) is implemented, requires tests and documentation updates for the change, then actually runs `mix test` to verify it -- not just trusting the model's claim. |
