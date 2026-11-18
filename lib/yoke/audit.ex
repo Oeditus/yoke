@@ -11,13 +11,16 @@ defmodule Yoke.Audit do
   LLM call, no network. They exist so the agent's narrative is *grounded*:
   every claim it makes can be checked against a number produced here.
 
-    * **Shape** — languages, source/test file counts, line counts, largest
-      modules, `TODO`/`FIXME`/`HACK` markers.
-    * **Hygiene** — formatter/credo/dialyzer configuration, CI workflows,
-      lockfiles, docs, license, `.gitignore` coverage of build artifacts.
-    * **Health** — whether the project's own quality gate is wired up
-      (`mix quality`, `mix quality.ci`), test-to-source ratio, and the git
-      working-tree state.
+    * **Shape** — languages, source/test file counts, inline test counts,
+      line counts, largest modules, `TODO`/`FIXME`/`HACK` markers.
+    * **Hygiene** — language-appropriate formatter/linter/static-analysis
+      configuration, CI workflows, lockfiles, docs, license, `.gitignore`,
+      and project quality gates.
+    * **Health** — test-to-source ratio, sibling test coverage (when the
+      language convention defines one), and git working-tree state.
+
+  Language defaults and `.yoke/config.json` `"audit"` overrides are resolved
+  by `Yoke.Audit.Profiles`.
 
   ## 2. Narrative (the agent)
 
@@ -25,15 +28,9 @@ defmodule Yoke.Audit do
   parts**, **weaknesses & glitches**, **codebase improvements**, and **UX
   improvements**. The prompt insists on evidence — file paths and numbers —
   and forbids generic advice that would apply to any project.
-
-  ## Why not just ask the model "audit my project"?
-
-  Because an ungrounded audit is a horoscope: it will confidently praise
-  "good separation of concerns" in a 40-line script and warn about "potential
-  N+1 queries" in a repo with no database. Feeding measured facts first keeps
-  the output falsifiable.
   """
 
+  alias Yoke.Audit.Profiles
   alias Yoke.CLI.Formatter
 
   @marker_regex ~r/\b(TODO|FIXME|HACK|XXX|OPTIMIZE)\b/
@@ -44,18 +41,30 @@ defmodule Yoke.Audit do
 
   Returns a plain map (no struct) so it renders to JSON trivially and stays
   easy to extend.
+
+  ## Options
+
+    * `:audit_config` — override map (normally read from `.yoke/config.json` `"audit"`).
   """
-  @spec collect(String.t()) :: map()
-  def collect(cwd \\ ".") do
-    source_files = glob(cwd, ["lib/**/*.ex", "src/**/*", "app/**/*.py", "**/*.rb"], cwd)
-    test_files = glob(cwd, ["test/**/*.exs", "test/**/*.ex", "tests/**/*.py"], cwd)
+  @spec collect(String.t(), keyword()) :: map()
+  def collect(cwd \\ ".", opts \\ []) do
+    detected_languages = safe(fn -> Yoke.Practices.detect_languages(cwd) end, [])
+    profile = Profiles.resolve(cwd, detected_languages, opts)
+
+    test_files = glob(cwd, profile.test_globs, cwd, profile.ignore_dirs)
+    test_set = MapSet.new(test_files)
+
+    source_files =
+      cwd
+      |> glob(profile.source_globs, cwd, profile.ignore_dirs)
+      |> Enum.reject(&MapSet.member?(test_set, &1))
 
     %{
       cwd: Path.expand(cwd),
-      shape: shape(cwd, source_files, test_files),
-      hygiene: hygiene(cwd),
-      health: health(cwd, source_files, test_files),
-      markers: markers(cwd, source_files ++ test_files)
+      shape: shape(profile, source_files, test_files),
+      hygiene: hygiene(cwd, profile),
+      health: health(cwd, profile, source_files, test_files),
+      markers: markers(cwd, source_files, test_set)
     }
   end
 
@@ -63,93 +72,103 @@ defmodule Yoke.Audit do
   # Facts
   # ---------------------------------------------------------------------
 
-  defp shape(cwd, source_files, test_files) do
+  defp shape(profile, source_files, test_files) do
     sizes =
       source_files
       |> Enum.map(fn path -> {path, line_count(path)} end)
       |> Enum.sort_by(fn {_path, lines} -> -lines end)
 
     %{
-      languages: safe(fn -> Yoke.Practices.detect_languages(cwd) end, []),
+      languages: profile.languages,
       source_file_count: length(source_files),
       test_file_count: length(test_files),
+      inline_tested_count: count_inline_tested(source_files, profile.inline_test_regexes),
       source_lines: sizes |> Enum.map(&elem(&1, 1)) |> Enum.sum(),
       largest_modules: Enum.take(sizes, @max_modules_listed)
     }
   end
 
-  defp hygiene(cwd) do
+  defp count_inline_tested(_source_files, []), do: 0
+
+  defp count_inline_tested(source_files, regexes) do
+    Enum.count(source_files, fn path ->
+      case File.read(path) do
+        {:ok, content} -> Enum.any?(regexes, &Regex.match?(&1, content))
+        _ -> false
+      end
+    end)
+  end
+
+  defp hygiene(cwd, profile) do
+    tools =
+      Enum.map(profile.tools, fn tool ->
+        status =
+          cond do
+            exists_any?(cwd, tool.files) -> :configured
+            tool.builtin -> :builtin
+            true -> :missing
+          end
+
+        %{key: tool.key, label: tool.label, status: status}
+      end)
+
     %{
-      has_formatter: exists_any?(cwd, [".formatter.exs", "rustfmt.toml", ".prettierrc"]),
-      has_credo: exists_any?(cwd, [".credo.exs", ".credo.ex"]),
-      has_dialyzer: exists_any?(cwd, [".dialyzer_ignore.exs", "dialyzer.ignore-warnings"]),
+      tools: tools,
+      has_formatter:
+        Enum.any?(tools, &(&1.key == :formatter and &1.status in [:configured, :builtin])),
       has_ci: exists_any?(cwd, [".github/workflows", ".gitlab-ci.yml", "azure-pipelines.yml"]),
-      has_lockfile:
-        exists_any?(cwd, ["mix.lock", "Cargo.lock", "package-lock.json", "poetry.lock"]),
+      has_lockfile: exists_any?(cwd, profile.lockfiles),
       has_readme: exists_any?(cwd, ["README.md", "README.rst", "README"]),
       has_license: exists_any?(cwd, ["LICENSE", "LICENSE.md", "COPYING"]),
       has_docs_dir: exists_any?(cwd, ["docs", "doc"]),
       has_gitignore: exists_any?(cwd, [".gitignore"]),
       has_project_rules: exists_any?(cwd, [".yokerules", ".yoke/rules.md", ".yoke/SYSTEM.md"]),
       has_practices: exists_any?(cwd, [".yoke/practices"]),
-      quality_aliases: quality_aliases(cwd),
+      quality_gates: Profiles.detect_quality_gates(cwd, profile),
       ci_workflows: ci_workflows(cwd)
     }
   end
 
-  defp health(cwd, source_files, test_files) do
+  defp health(cwd, profile, source_files, test_files) do
     source_count = length(source_files)
     test_count = length(test_files)
+    supports_sibling_tests? = profile.test_mappings != []
 
     %{
       git_dirty?: safe(fn -> Yoke.Git.dirty?(cwd) end, nil),
       base_branch: safe(fn -> Yoke.Git.default_base_branch(cwd) end, nil),
       test_to_source_ratio:
         if(source_count == 0, do: nil, else: Float.round(test_count / source_count, 2)),
-      untested_files: untested_files(cwd, source_files, test_files)
+      supports_sibling_tests?: supports_sibling_tests?,
+      untested_files:
+        if(supports_sibling_tests?,
+          do: untested_files(cwd, profile.test_mappings, source_files, test_files),
+          else: []
+        )
     }
   end
 
-  # Source files whose sibling test file does not exist. Elixir convention is
-  # `lib/foo/bar.ex` -> `test/foo/bar_test.exs`; anything else is reported as
-  # "no obvious test file" rather than "untested" (it may be covered
-  # indirectly, which is exactly what the agent should verify).
-  #
-  # The comparison is on the *whole relative path*, not just the basename.
-  # Matching basenames alone reported `lib/yoke/ci/lint.ex` as untested
-  # whenever some unrelated `lint_test.exs` lived anywhere in `test/`, and
-  # conversely reported `lib/foo/bar.ex` as untested even when
-  # `test/foo/bar_test.exs` existed but a *different* module owned the same
-  # basename. Both directions made the audit's own measurements untrustworthy,
-  # which matters because the audit is a product feature whose output is
-  # presented as ground truth.
-  defp untested_files(cwd, source_files, test_files) do
+  # Source files whose sibling test file does not exist, evaluated on the full
+  # relative path (not basename) according to the active language mapping(s).
+  defp untested_files(cwd, mappings, source_files, test_files) do
     test_paths = MapSet.new(test_files, &relative(&1, cwd))
 
     source_files
-    |> Enum.filter(&String.ends_with?(&1, ".ex"))
-    |> Enum.reject(fn path -> MapSet.member?(test_paths, expected_test_path(path, cwd)) end)
+    |> Enum.filter(fn path ->
+      rel = relative(path, cwd)
+      expected = Enum.find_value(mappings, &Profiles.expected_test_path(rel, &1))
+      expected != nil and not MapSet.member?(test_paths, expected)
+    end)
     |> Enum.map(&relative(&1, cwd))
     |> Enum.sort()
     |> Enum.take(@max_modules_listed)
   end
 
-  # `lib/foo/bar.ex` -> `test/foo/bar_test.exs`. Elixir projects keep tests
-  # under `test/` mirroring the `lib/` tree, so the sibling path is derived by
-  # swapping the leading segment and appending `_test.exs`.
-  defp expected_test_path(source_path, cwd) do
-    relative = relative(source_path, cwd)
-
-    relative
-    |> String.replace_prefix("lib/", "test/")
-    |> String.replace_suffix(".ex", "_test.exs")
-  end
-
   defp relative(path, cwd), do: Path.relative_to(Path.expand(path), Path.expand(cwd))
 
-  defp markers(cwd, files) do
-    files
-    |> Enum.reject(&marker_noise?(cwd, &1))
+  defp markers(cwd, source_files, test_set) do
+    source_files
+    |> Enum.reject(&marker_noise?(cwd, &1, test_set))
     |> Enum.flat_map(fn path ->
       case File.read(path) do
         {:ok, content} ->
@@ -172,32 +191,11 @@ defmodule Yoke.Audit do
     |> Enum.take(50)
   end
 
-  # Two sources of pure noise in a marker scan:
-  #
-  #   * this module itself, whose regex and section headings literally spell
-  #     out the marker keywords;
-  #   * test files, whose fixtures deliberately contain `TODO`/`FIXME` text.
-  #
-  # Neither is a real outstanding task, and including them makes the report
-  # look like it has work queued when it does not.
-  defp marker_noise?(cwd, path) do
-    relative = Path.relative_to(Path.expand(path), Path.expand(cwd))
-    relative == "lib/yoke/audit.ex" or String.starts_with?(relative, "test/")
-  end
-
-  # Matches both the keyword form (`quality: [...]`, as written inside a
-  # `def project` body) and the string-keyed form (`"quality" => [...]`, as
-  # seen in a `Map`-style alias table).
-  defp quality_aliases(cwd) do
-    case File.read(Path.join(cwd, "mix.exs")) do
-      {:ok, content} ->
-        for name <- ["quality", "quality.ci"],
-            String.contains?(content, ["\"#{name}\"", "#{name}:"]),
-            do: name
-
-      _ ->
-        []
-    end
+  # Exclude test files and this module itself (whose regex/headings spell out
+  # the marker keywords).
+  defp marker_noise?(cwd, path, test_set) do
+    relative = relative(path, cwd)
+    relative == "lib/yoke/audit.ex" or MapSet.member?(test_set, path)
   end
 
   defp ci_workflows(cwd) do
@@ -242,10 +240,34 @@ defmodule Yoke.Audit do
           Enum.map_join(Enum.take(list, 10), "\n", &"  • `#{&1.file}:#{&1.line}` — #{&1.text}")
       end
 
-    untested =
-      case health.untested_files do
-        [] -> "  (none — every source file has a matching test file)"
-        files -> Enum.map_join(files, "\n", &"  • `#{&1}`")
+    inline_note =
+      if shape.inline_tested_count > 0,
+        do: " • Inline-tested source files: #{shape.inline_tested_count}",
+        else: ""
+
+    tools_line =
+      case hygiene.tools do
+        [] ->
+          ""
+
+        tools ->
+          rendered =
+            Enum.map_join(tools, " • ", fn t -> "#{t.label}: #{tool_flag(t.status)}" end)
+
+          "\n- #{rendered}"
+      end
+
+    untested_section =
+      if health.supports_sibling_tests? do
+        untested =
+          case health.untested_files do
+            [] -> "  (none — every source file has a matching test file)"
+            files -> Enum.map_join(files, "\n", &"  • `#{&1}`")
+          end
+
+        "\n- Source files with no obvious matching test file:\n#{untested}"
+      else
+        ""
       end
 
     """
@@ -253,22 +275,19 @@ defmodule Yoke.Audit do
 
     **Shape**
     - Languages: #{inspect(shape.languages)}
-    - Source files: #{shape.source_file_count} (#{shape.source_lines} lines) • Test files: #{shape.test_file_count}
+    - Source files: #{shape.source_file_count} (#{shape.source_lines} lines) • Test files: #{shape.test_file_count}#{inline_note}
     - Test/source file ratio: #{inspect(health.test_to_source_ratio)}
     - Largest modules:
     #{largest}
 
-    **Hygiene**
-    - Formatter: #{flag(hygiene.has_formatter)} • Credo: #{flag(hygiene.has_credo)} • Dialyzer: #{flag(hygiene.has_dialyzer)}
+    **Hygiene**#{tools_line}
     - CI: #{flag(hygiene.has_ci)} #{inspect(hygiene.ci_workflows)} • Lockfile: #{flag(hygiene.has_lockfile)}
     - README: #{flag(hygiene.has_readme)} • LICENSE: #{flag(hygiene.has_license)} • docs/: #{flag(hygiene.has_docs_dir)}
     - Project rules: #{flag(hygiene.has_project_rules)} • Practices: #{flag(hygiene.has_practices)}
-    - Quality aliases in mix.exs: #{inspect(hygiene.quality_aliases)}
+    - Quality gates: #{inspect(hygiene.quality_gates)}
 
     **Health**
-    - Git dirty: #{inspect(health.git_dirty?)} • Base branch: #{inspect(health.base_branch)}
-    - Source files with no obvious matching test file:
-    #{untested}
+    - Git dirty: #{inspect(health.git_dirty?)} • Base branch: #{inspect(health.base_branch)}#{untested_section}
 
     **Markers (TODO/FIXME/HACK/XXX/OPTIMIZE)**
     #{markers}
@@ -304,8 +323,8 @@ defmodule Yoke.Audit do
     ### Rules
 
     - Ground every claim in evidence: a file path, a line, a measured number.
-      "Consider adding tests" is worthless; "`lib/yoke/foo.ex` has no
-      `foo_test.exs` and holds 412 lines of branching logic" is actionable.
+      "Consider adding tests" is worthless; citing a specific module, its line
+      count, and the untested branching logic inside it is actionable.
     - Distinguish **defects** (wrong behaviour, broken invariants) from
       **smells** (works, but will hurt later) from **taste** (fine either way).
       Do not inflate taste into defects.
@@ -323,7 +342,7 @@ defmodule Yoke.Audit do
     """
     **1. Strong parts**
     What is genuinely well built, and *why* it holds up. Cite the mechanism
-    (a test, a type boundary, a supervision strategy), not just the file.
+    (a test, a type boundary, an ownership/concurrency invariant), not just the file.
 
     **2. Weaknesses & glitches to fix**
     Concrete defects and structural problems, worst first. For each: the
@@ -354,7 +373,7 @@ defmodule Yoke.Audit do
     """
     **1. Strong parts**
     What is genuinely well built, and *why* it holds up. Cite the mechanism
-    (a test, a type boundary, a supervision strategy), not just the file.
+    (a test, a type boundary, an ownership/concurrency invariant), not just the file.
 
     **2. Weaknesses & glitches to fix**
     Concrete defects and structural problems, worst first. For each: the
@@ -387,27 +406,20 @@ defmodule Yoke.Audit do
   # Helpers
   # ---------------------------------------------------------------------
 
-  # Globs relative to `cwd`, skipping the usual noise directories. `lib/**`
-  # style patterns are matched with Path.wildcard/2 which is fast enough for
-  # the project sizes this command is meant for.
-  defp glob(cwd, patterns, root) do
+  defp glob(cwd, patterns, root, ignore_dirs) do
+    expanded_root = Path.expand(root)
+
     patterns
     |> Enum.flat_map(fn pattern -> Path.wildcard(Path.join(cwd, pattern)) end)
-    |> Enum.reject(&noise?(Path.expand(root), &1))
+    |> Enum.reject(&noise?(expanded_root, &1, ignore_dirs))
     |> Enum.filter(&File.regular?/1)
     |> Enum.uniq()
   end
 
-  @noise ~w(deps _build node_modules .git .elixir_ls target build dist .yoke tmp)
-
-  # Only the path *relative to the project root* decides whether a file is
-  # noise. Checking the absolute path would disqualify every project that
-  # happens to live under a directory named e.g. `tmp` or `build`
-  # (`/tmp/myproj`, `/home/u/build/myproj`), reporting zero source files.
-  defp noise?(root, path) do
+  defp noise?(root, path, ignore_dirs) do
     relative = Path.relative_to(Path.expand(path), root)
     parts = Path.split(relative)
-    Enum.any?(@noise, &(&1 in parts))
+    Enum.any?(ignore_dirs, &(&1 in parts))
   end
 
   defp line_count(path) do
@@ -424,6 +436,10 @@ defmodule Yoke.Audit do
   defp flag(true), do: "✓"
   defp flag(false), do: "✗"
   defp flag(_), do: "?"
+
+  defp tool_flag(:configured), do: "✓"
+  defp tool_flag(:builtin), do: "✓ (built-in)"
+  defp tool_flag(_), do: "✗"
 
   defp safe(fun, default) do
     fun.()

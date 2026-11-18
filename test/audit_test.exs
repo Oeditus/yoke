@@ -76,7 +76,7 @@ defmodule Yoke.AuditTest do
 
       assert facts.hygiene.has_formatter == false
       assert facts.hygiene.has_readme == false
-      assert facts.hygiene.quality_aliases == ["quality"]
+      assert facts.hygiene.quality_gates == ["quality"]
     end
 
     test "detects a source file with no matching test file", %{dir: dir} do
@@ -195,5 +195,159 @@ defmodule Yoke.AuditTest do
     header = dir |> Audit.collect() |> Audit.format_header()
     assert header =~ "Project Audit"
     assert header =~ Path.expand(dir)
+  end
+
+  describe "Rust workspace audit" do
+    setup do
+      dir = Path.join(System.tmp_dir!(), "yoke_audit_rust_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(dir, "crates/core/src"))
+      File.mkdir_p!(Path.join(dir, "crates/core/tests"))
+      File.mkdir_p!(Path.join(dir, "target/debug"))
+
+      File.write!(Path.join(dir, "Cargo.toml"), """
+      [workspace]
+      members = ["crates/core"]
+
+      [workspace.lints.clippy]
+      all = "warn"
+      """)
+
+      File.write!(Path.join(dir, "Cargo.lock"), "# lockfile\n")
+      File.write!(Path.join(dir, "justfile"), "check:\n\tcargo clippy\n")
+
+      File.write!(Path.join(dir, "crates/core/src/lib.rs"), """
+      pub fn add(a: i32, b: i32) -> i32 {
+          // TODO: handle overflow
+          a + b
+      }
+
+      #[cfg(test)]
+      mod tests {
+          #[test]
+          fn works() {
+              assert_eq!(super::add(1, 2), 3);
+          }
+      }
+      """)
+
+      File.write!(Path.join(dir, "crates/core/tests/integration.rs"), """
+      #[test]
+      fn integration_works() {
+          // TODO: test fixture, not a real task
+          assert_eq!(2 + 2, 4);
+      }
+      """)
+
+      File.write!(Path.join(dir, "target/debug/generated.rs"), "fn ignored() {}\n")
+
+      on_exit(fn -> File.rm_rf!(dir) end)
+      {:ok, rust_dir: dir}
+    end
+
+    test "counts workspace crates, integration tests, and inline tests", %{rust_dir: dir} do
+      facts = Audit.collect(dir)
+
+      assert facts.shape.languages == ["rust"]
+      assert facts.shape.source_file_count == 1
+      assert facts.shape.test_file_count == 1
+      assert facts.shape.inline_tested_count == 1
+      assert facts.shape.source_lines > 0
+
+      assert facts.hygiene.has_lockfile == true
+      assert facts.hygiene.has_formatter == true
+      assert "Cargo.toml [lints]" in facts.hygiene.quality_gates
+      assert "justfile" in facts.hygiene.quality_gates
+
+      # Integration test markers are excluded just like Elixir test/ markers.
+      assert length(facts.markers) == 1
+      assert hd(facts.markers).file == "crates/core/src/lib.rs"
+    end
+
+    test "renders Rust-appropriate hygiene without Elixir-only labels", %{rust_dir: dir} do
+      md = dir |> Audit.collect() |> Audit.format_facts()
+
+      assert md =~ "Formatter (rustfmt)"
+      assert md =~ "Linter (clippy)"
+      assert md =~ "Inline-tested source files: 1"
+      refute md =~ "Credo"
+      refute md =~ "Dialyzer"
+      refute md =~ "Quality aliases in mix.exs"
+      refute md =~ "every source file has a matching test file"
+    end
+  end
+
+  describe "Go project audit" do
+    setup do
+      dir = Path.join(System.tmp_dir!(), "yoke_audit_go_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(dir, "pkg/math"))
+
+      File.write!(Path.join(dir, "go.mod"), "module example.com/demo\n")
+      File.write!(Path.join(dir, "go.sum"), "")
+
+      File.write!(
+        Path.join(dir, "pkg/math/add.go"),
+        "package math\nfunc Add(a, b int) int { return a + b }\n"
+      )
+
+      File.write!(Path.join(dir, "pkg/math/add_test.go"), "package math\n")
+
+      File.write!(
+        Path.join(dir, "pkg/math/sub.go"),
+        "package math\nfunc Sub(a, b int) int { return a - b }\n"
+      )
+
+      on_exit(fn -> File.rm_rf!(dir) end)
+      {:ok, go_dir: dir}
+    end
+
+    test "separates *_test.go from source files and maps sibling tests", %{go_dir: dir} do
+      facts = Audit.collect(dir)
+
+      assert facts.shape.languages == ["go"]
+      assert facts.shape.source_file_count == 2
+      assert facts.shape.test_file_count == 1
+      assert facts.health.supports_sibling_tests? == true
+      assert facts.health.untested_files == ["pkg/math/sub.go"]
+    end
+  end
+
+  describe ".yoke/config.json audit overrides" do
+    test "overrides globs, ignore_dirs, and hygiene tools per project" do
+      dir = Path.join(System.tmp_dir!(), "yoke_audit_cfg_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(dir, ".yoke"))
+      File.mkdir_p!(Path.join(dir, "custom_src/generated"))
+      File.mkdir_p!(Path.join(dir, "custom_tests"))
+
+      File.write!(Path.join(dir, "custom_src/main.xyz"), "fn main() {}\n")
+      File.write!(Path.join(dir, "custom_src/generated/skip.xyz"), "fn skip() {}\n")
+      File.write!(Path.join(dir, "custom_tests/main_test.xyz"), "fn test_main() {}\n")
+      File.write!(Path.join(dir, ".xyzfmt"), "")
+      File.write!(Path.join(dir, "Taskfile.yml"), "version: '3'\n")
+
+      File.write!(
+        Path.join(dir, ".yoke/config.json"),
+        Yoke.Json.encode!(%{
+          "audit" => %{
+            "languages" => ["xyz"],
+            "source_globs" => ["custom_src/**/*.xyz"],
+            "test_globs" => ["custom_tests/**/*.xyz"],
+            "ignore_dirs" => ["generated"],
+            "hygiene" => %{
+              "formatter" => [".xyzfmt"],
+              "quality_gates" => ["Taskfile.yml"]
+            }
+          }
+        })
+      )
+
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      facts = Audit.collect(dir)
+      assert facts.shape.languages == ["xyz"]
+      assert facts.shape.source_file_count == 1
+      assert facts.shape.test_file_count == 1
+      assert facts.hygiene.has_formatter == true
+      assert "Taskfile.yml" in facts.hygiene.quality_gates
+    end
   end
 end
