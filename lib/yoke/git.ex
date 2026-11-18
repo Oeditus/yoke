@@ -123,12 +123,76 @@ defmodule Yoke.Git do
 
   @doc "Returns current git branch name or empty string."
   def current_branch(cwd \\ ".") do
-    case System.cmd("git", ["branch", "--show-current"], cd: cwd, stderr_to_stdout: true) do
-      {branch, 0} -> String.trim(branch)
+    case checkout_state(cwd) do
+      {:branch, name} -> name
       _ -> ""
     end
+  end
+
+  @doc """
+  Describes what the working tree is currently checked out to.
+
+  Returns one of:
+
+    * `{:branch, name}` -- on a local branch.
+    * `{:detached, sha}` -- detached HEAD at `sha`.
+    * `{:error, reason}` -- not a repository, or git is unavailable.
+
+  `current_branch/1` collapses every non-branch case to `""`, which is fine for
+  display but loses the distinction between "detached HEAD" and "not a
+  repository". Callers that need to explain *why* there is no branch -- the
+  workflow `branch` step is the main one -- should use this instead.
+  """
+  @spec checkout_state(String.t()) ::
+          {:branch, String.t()} | {:detached, String.t()} | {:error, String.t()}
+  def checkout_state(cwd \\ ".") do
+    case System.cmd("git", ["branch", "--show-current"], cd: cwd, stderr_to_stdout: true) do
+      {branch, 0} ->
+        case String.trim(branch) do
+          "" -> detached_state(cwd)
+          name -> {:branch, name}
+        end
+
+      {_out, code} ->
+        case ensure_repository(cwd) do
+          :ok ->
+            {:error, "git branch --show-current exited with status #{code}"}
+
+          {:error, _} ->
+            {:error, "not a Git working tree"}
+        end
+    end
   rescue
-    _ -> ""
+    e -> {:error, "Git not available: #{Exception.message(e)}"}
+  end
+
+  @doc """
+  Returns `:ok` when `cwd` is inside a Git working tree, or `{:error, reason}`.
+
+  Used by callers that need to distinguish "not a repository" from a genuine
+  Git failure before reporting it to a user.
+  """
+  @spec ensure_repository(String.t()) :: :ok | {:error, String.t()}
+  def ensure_repository(cwd \\ ".") do
+    case System.cmd("git", ["rev-parse", "--is-inside-work-tree"],
+           cd: cwd,
+           stderr_to_stdout: true
+         ) do
+      {"true\n", 0} -> :ok
+      {"true", 0} -> :ok
+      _ -> {:error, "not a Git working tree"}
+    end
+  rescue
+    e -> {:error, "Git not available: #{Exception.message(e)}"}
+  end
+
+  defp detached_state(cwd) do
+    case System.cmd("git", ["rev-parse", "--short", "HEAD"], cd: cwd, stderr_to_stdout: true) do
+      {sha, 0} -> {:detached, String.trim(sha)}
+      {out, _} -> {:error, "Cannot resolve HEAD in #{cwd}: #{String.trim(out)}"}
+    end
+  rescue
+    e -> {:error, "Git not available: #{Exception.message(e)}"}
   end
 
   @doc """

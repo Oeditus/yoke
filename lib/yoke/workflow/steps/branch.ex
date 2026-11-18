@@ -14,12 +14,28 @@ defmodule Yoke.Workflow.Steps.Branch do
   @impl true
   def run(context, params) do
     prefix = Map.get(params, "branch_prefix") || "yoke/#{context.workflow.name}"
-    current = Git.current_branch(context.cwd)
 
-    if current in context.workflow.base_branch_prefixes do
-      create(context, prefix, current)
-    else
-      warn_and_confirm(context, prefix, current)
+    case Git.checkout_state(context.cwd) do
+      {:branch, current} ->
+        if current in context.workflow.base_branch_prefixes do
+          create(context, prefix, current)
+        else
+          warn_and_confirm(context, prefix, current)
+        end
+
+      # A detached HEAD has no branch to record as `original_branch`, and
+      # branching from it silently would leave the user on a workflow branch
+      # with no way back to where they started. Say so instead of asking them
+      # to confirm branching off an empty name.
+      {:detached, sha} ->
+        {:halt,
+         "Cannot start a workflow from a detached HEAD (at #{sha}). " <>
+           "Check out a branch first, then run the workflow again."}
+
+      {:error, reason} ->
+        {:halt,
+         "Cannot start a workflow: #{reason}. " <>
+           "A workflow must run inside a Git repository on a named branch."}
     end
   end
 
