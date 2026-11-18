@@ -244,6 +244,43 @@ defmodule Yoke.Brain.SessionLmmlTest do
       assert {:ok, decoded} = SessionLmml.decode(bundle)
       assert decoded["messages"] == [%{"role" => "user", "content" => "from bundle"}]
     end
+
+    test "round-trips tool_calls and tool messages containing literal @@@ markers" do
+      messages = [
+        %{"role" => "user", "content" => "inspect @@@manifest.json\n@@@"},
+        %{
+          "role" => "assistant",
+          "content" => "",
+          "tool_calls" => [
+            %{
+              "id" => "call_1",
+              "type" => "function",
+              "function" => %{"name" => "read_file", "arguments" => "{}"}
+            }
+          ]
+        },
+        %{"role" => "tool", "tool_call_id" => "call_1", "content" => "@@@message.0.json\n{}\n@@@"}
+      ]
+
+      {:ok, narrative} =
+        SessionLmml.encode(
+          %{
+            session_id: "at_markers",
+            model: "deepseek-chat",
+            permission_mode: :ask_confirm,
+            step_count: 1,
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            messages: messages,
+            snapshots: []
+          },
+          "at_markers"
+        )
+
+      assert :ok = SessionLmml.validate(narrative)
+      assert {:ok, decoded} = SessionLmml.decode(narrative)
+      assert decoded["messages"] == messages
+    end
   end
 
   describe "validate/1" do

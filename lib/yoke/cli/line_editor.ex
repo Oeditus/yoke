@@ -1552,6 +1552,9 @@ defmodule Yoke.CLI.LineEditor do
       :tab ->
         handle_tab(state)
 
+      :shift_tab ->
+        handle_shift_tab(state)
+
       :ctrl_c ->
         handle_interrupt(state, "^C")
 
@@ -1718,8 +1721,14 @@ defmodule Yoke.CLI.LineEditor do
         raw_loop(new_state)
 
       {:none, new_state} ->
-        raw_loop(new_state)
+        raw_loop(accept_ghost_suggestion_line(new_state))
     end
+  end
+
+  defp handle_shift_tab(%{search_mode: true} = state), do: raw_loop(state)
+
+  defp handle_shift_tab(state) do
+    raw_loop(accept_ghost_suggestion_full(state))
   end
 
   defp handle_ctrl_r(%{search_mode: false} = state) do
@@ -2518,7 +2527,40 @@ defmodule Yoke.CLI.LineEditor do
     {prompt_str, highlighted_text <> ghost_str, buffer_prefix_len}
   end
 
-  def accept_ghost_suggestion(%{cursor: cursor, buffer: buffer, history: history} = state) do
+  def accept_ghost_suggestion(%{cursor: cursor, buffer: buffer} = state) do
+    case apply_ghost_suggestion(state, :full) do
+      {:ok, new_state} ->
+        new_state
+
+      :none ->
+        clamped = max(0, min(cursor, length(buffer)))
+        move_right(%{state | cursor: clamped})
+    end
+  end
+
+  @doc """
+  Expands a single line of the current ghost auto-suggestion into the buffer
+  (used by `<Tab>` when no slash-command or backtick-path completion applies).
+  """
+  def accept_ghost_suggestion_line(state) do
+    case apply_ghost_suggestion(state, :line) do
+      {:ok, new_state} -> new_state
+      :none -> state
+    end
+  end
+
+  @doc """
+  Expands the entire (possibly multiline) ghost auto-suggestion into the buffer
+  (used by `<Shift>+<Tab>`).
+  """
+  def accept_ghost_suggestion_full(state) do
+    case apply_ghost_suggestion(state, :full) do
+      {:ok, new_state} -> new_state
+      :none -> state
+    end
+  end
+
+  defp apply_ghost_suggestion(%{cursor: cursor, buffer: buffer, history: history} = state, mode) do
     clamped = max(0, min(cursor, length(buffer)))
 
     if clamped == length(buffer) do
@@ -2527,13 +2569,25 @@ defmodule Yoke.CLI.LineEditor do
       suggestion = get_ghost_suggestion(raw_text, history, config)
 
       if suggestion != "" do
-        new_chars = String.graphemes(raw_text <> suggestion)
-        %{state | buffer: new_chars, cursor: length(new_chars)}
+        chunk = if mode == :line, do: take_one_suggestion_line(suggestion), else: suggestion
+        new_chars = String.graphemes(raw_text <> chunk)
+        {:ok, %{state | buffer: new_chars, cursor: length(new_chars)}}
       else
-        move_right(%{state | cursor: clamped})
+        :none
       end
     else
-      move_right(%{state | cursor: clamped})
+      :none
+    end
+  end
+
+  defp take_one_suggestion_line(suggestion) do
+    if String.starts_with?(suggestion, "\n") do
+      rest = String.slice(suggestion, 1..-1//1)
+      [first_line | _] = String.split(rest, "\n", parts: 2)
+      "\n" <> first_line
+    else
+      [first_line | _] = String.split(suggestion, "\n", parts: 2)
+      first_line
     end
   end
 
@@ -2851,6 +2905,7 @@ defmodule Yoke.CLI.LineEditor do
   # submits. Also produced by pasting multi-line clipboard text.
   defp match_key("\n"), do: :newline
   defp match_key("\t"), do: :tab
+  defp match_key("\e[Z"), do: :shift_tab
   defp match_key("\x01"), do: :ctrl_a
   defp match_key("\x02"), do: :ctrl_b
   defp match_key("\x03"), do: :ctrl_c

@@ -498,6 +498,61 @@ defmodule Yoke.LineEditorTest do
       assert LineEditor.get_ghost_suggestion("git com", history, cfg) == "mit -m 'fix'"
     end
 
+    test "accept_ghost_suggestion_line/1 expands only one line at a time while accept_ghost_suggestion_full/1 expands the entire multiline message" do
+      cfg = %{"enable_autosuggestions" => true}
+      history = ["first line\nsecond line\nthird line"]
+
+      state = %{
+        buffer: String.graphemes("fir"),
+        cursor: 3,
+        history: history,
+        config: cfg
+      }
+
+      step1 = LineEditor.accept_ghost_suggestion_line(state)
+      assert Enum.join(step1.buffer) == "first line"
+      assert step1.cursor == String.length("first line")
+
+      step2 = LineEditor.accept_ghost_suggestion_line(step1)
+      assert Enum.join(step2.buffer) == "first line\nsecond line"
+      assert step2.cursor == String.length("first line\nsecond line")
+
+      step3 = LineEditor.accept_ghost_suggestion_line(step2)
+      assert Enum.join(step3.buffer) == "first line\nsecond line\nthird line"
+
+      step4 = LineEditor.accept_ghost_suggestion_line(step3)
+      assert step4 == step3
+
+      full = LineEditor.accept_ghost_suggestion_full(state)
+      assert Enum.join(full.buffer) == "first line\nsecond line\nthird line"
+      assert full.cursor == String.length("first line\nsecond line\nthird line")
+    end
+
+    test "accept_ghost_suggestion_line/1 and full/1 no-op when cursor is not at end or no suggestion matches" do
+      cfg = %{"enable_autosuggestions" => true}
+      history = ["hello world\nsecond line"]
+
+      mid_cursor = %{
+        buffer: String.graphemes("hel"),
+        cursor: 1,
+        history: history,
+        config: cfg
+      }
+
+      assert LineEditor.accept_ghost_suggestion_line(mid_cursor) == mid_cursor
+      assert LineEditor.accept_ghost_suggestion_full(mid_cursor) == mid_cursor
+
+      no_match = %{
+        buffer: String.graphemes("zzz"),
+        cursor: 3,
+        history: history,
+        config: cfg
+      }
+
+      assert LineEditor.accept_ghost_suggestion_line(no_match) == no_match
+      assert LineEditor.accept_ghost_suggestion_full(no_match) == no_match
+    end
+
     test "calculates physical terminal display width of prompts with Nerd Font symbols" do
       prompt_str = "\e[36m󰉋 ragec\e[0m \e[32m󰚩 deepseek-chat\e[0m ❯ "
 

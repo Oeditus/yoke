@@ -80,7 +80,7 @@ defmodule Yoke.Brain.SessionLmml do
       |> Enum.with_index()
       |> Enum.map_join("\n\n", fn {msg, idx} ->
         role = String.upcase(Map.get(msg, "role") || "unknown")
-        text = readable_text(msg)
+        text = msg |> readable_text() |> String.replace("@@@", "\\@\\@\\@")
 
         """
         ## #{role}

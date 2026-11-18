@@ -422,11 +422,13 @@ defmodule Yoke.Brain.Session do
               state
             end
 
+          restored_messages = sanitize_messages(saved_data["messages"] || initial_messages)
+
           %{
             state
-            | messages: saved_data["messages"] || initial_messages,
+            | messages: restored_messages,
               snapshots: restore_snapshots(saved_data["snapshots"] || []),
-              turn_count: saved_turn(saved_data["turn_count"], saved_data["messages"] || []),
+              turn_count: saved_turn(saved_data["turn_count"], restored_messages),
               images: saved_data["images"] || saved_data[:images] || %{}
           }
 
@@ -793,7 +795,7 @@ defmodule Yoke.Brain.Session do
 
         new_state = %{
           state
-          | messages: latest.messages,
+          | messages: sanitize_messages(latest.messages),
             turn_count: snapshot_turn(latest),
             model: provider_opts[:model],
             endpoint: provider_opts[:endpoint],
@@ -1572,8 +1574,26 @@ defmodule Yoke.Brain.Session do
 
   defp non_retriable_api_error?(_), do: false
 
+  defp tool_call_sequence_error?(reason) when is_binary(reason) do
+    String.contains?(reason, "tool_calls") or String.contains?(reason, "tool_call_id")
+  end
+
+  defp tool_call_sequence_error?(_), do: false
+
   defp handle_api_error(state, depth, retries, reason) do
     cond do
+      tool_call_sequence_error?(reason) and retries == 0 ->
+        Logger.warning(
+          "[Brain.Session] Provider rejected tool-call sequence (#{reason}); flattening tool roles and retrying once."
+        )
+
+        repaired_state = %{
+          state
+          | messages: convert_all_tool_roles_to_user_messages(state.messages)
+        }
+
+        run_agent_loop(repaired_state, depth, retries + 1)
+
       non_retriable_api_error?(reason) ->
         {{:error, reason}, %{state | status: :idle}}
 

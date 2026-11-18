@@ -78,6 +78,42 @@ defmodule Yoke.Brain.MessageRepairTest do
       assert [_, %{"tool_call_id" => "a"}, %{"role" => "user"}] = repaired
     end
 
+    test "fills pending calls before converting an interrupting orphan tool message" do
+      messages = [
+        assistant_with_calls(["a", "b"]),
+        tool_result("a", "ok"),
+        tool_result("orphan", "stray"),
+        tool_result("b", "late")
+      ]
+
+      repaired = MessageRepair.repair(messages)
+
+      assert [
+               %{"role" => "assistant", "tool_calls" => _},
+               %{"role" => "tool", "tool_call_id" => "a"},
+               %{"role" => "tool", "tool_call_id" => "b", "content" => content_b},
+               %{"role" => "user", "content" => "[Tool Output orphan]: stray"},
+               %{"role" => "user", "content" => "[Tool Output b]: late"}
+             ] = repaired
+
+      assert content_b =~ "result unavailable"
+    end
+
+    test "drops tool_calls from assistant message when all call ids are missing or empty" do
+      messages = [
+        %{
+          "role" => "assistant",
+          "content" => "oops",
+          "tool_calls" => [%{"type" => "function", "function" => %{"name" => "bash"}}]
+        }
+      ]
+
+      assert [%{"role" => "assistant", "content" => "oops"} = cleaned] =
+               MessageRepair.repair(messages)
+
+      refute Map.has_key?(cleaned, "tool_calls")
+    end
+
     test "is idempotent" do
       messages = [assistant_with_calls(["a"]), %{"role" => "assistant", "content" => "x"}]
       once = MessageRepair.repair(messages)

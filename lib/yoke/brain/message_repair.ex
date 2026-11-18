@@ -42,7 +42,7 @@ defmodule Yoke.Brain.MessageRepair do
             if call_id != nil and call_id in pending_ids do
               {acc_messages ++ [msg], List.delete(pending_ids, call_id)}
             else
-              {acc_messages ++ [orphan_to_user(msg, call_id)], pending_ids}
+              {fill_pending(acc_messages, pending_ids) ++ [orphan_to_user(msg, call_id)], []}
             end
 
           role == "assistant" and is_list(calls) and calls != [] ->
@@ -51,9 +51,14 @@ defmodule Yoke.Brain.MessageRepair do
             new_ids =
               calls
               |> Enum.map(fn tc -> Map.get(tc, "id") || Map.get(tc, :id) end)
-              |> Enum.reject(&is_nil/1)
+              |> Enum.reject(&(is_nil(&1) or &1 == ""))
 
-            {acc_messages ++ [msg], new_ids}
+            if new_ids == [] do
+              clean_msg = Map.drop(msg, ["tool_calls", :tool_calls])
+              {acc_messages ++ [clean_msg], []}
+            else
+              {acc_messages ++ [msg], new_ids}
+            end
 
           true ->
             {fill_pending(acc_messages, pending_ids) ++ [msg], []}
