@@ -60,6 +60,7 @@ defmodule Yoke.CLI.Main do
     # point -- is what actually silences them. Idempotent.
     Yoke.CLI.LogFormatter.install()
     Yoke.CLI.MdexNif.prepare()
+    Yoke.CLI.FileSystemMac.prepare()
 
     configure_ragex_ai()
     configure_exla()

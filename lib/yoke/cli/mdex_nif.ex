@@ -19,6 +19,8 @@ defmodule Yoke.CLI.MdexNif do
   Markdown fallback.
   """
 
+  alias Yoke.CLI.EscriptAsset
+
   @persistent_key {__MODULE__, :available}
 
   # Embed the NIF binary only for `:escript` builds so dev/test/release builds
@@ -53,19 +55,14 @@ defmodule Yoke.CLI.MdexNif do
     end
 
   if nif_source_path do
+    Code.ensure_compiled!(Yoke.CLI.EscriptAsset)
+
     @external_resource nif_source_path
     @embedded_nif_name Path.basename(nif_source_path)
     @embedded_nif_gz :zlib.gzip(File.read!(nif_source_path))
     @embedded_nif_hash Base.encode16(:crypto.hash(:sha256, @embedded_nif_gz), case: :lower)
                        |> binary_part(0, 16)
-    @embedded_os_type :os.type()
-    @embedded_arch (case :erlang.system_info(:system_architecture)
-                         |> to_string()
-                         |> String.split("-")
-                         |> hd() do
-                      "arm64" -> "aarch64"
-                      other -> other
-                    end)
+    @embedded_platform EscriptAsset.current_platform()
 
     @doc """
     Prepares the `mdex_native` NIF when running inside an escript archive.
@@ -74,9 +71,9 @@ defmodule Yoke.CLI.MdexNif do
     """
     @spec prepare() :: :ok | {:error, term()}
     def prepare do
-      if escript?() do
-        if current_platform() == {@embedded_os_type, @embedded_arch} do
-          app_dir = Path.join(cache_root(), @embedded_nif_hash)
+      if EscriptAsset.escript?() do
+        if EscriptAsset.current_platform() == @embedded_platform do
+          app_dir = Path.join(EscriptAsset.cache_root("nif", "mdex_native"), @embedded_nif_hash)
           extract_and_register(app_dir, @embedded_nif_name, @embedded_nif_gz)
         else
           :persistent_term.put(@persistent_key, false)
@@ -89,51 +86,6 @@ defmodule Yoke.CLI.MdexNif do
       reason ->
         :persistent_term.put(@persistent_key, false)
         {:error, reason}
-    end
-
-    defp escript? do
-      case :escript.script_name() do
-        [_ | _] -> true
-        _ -> false
-      end
-    rescue
-      _ -> false
-    end
-
-    defp current_platform do
-      arch =
-        case :erlang.system_info(:system_architecture)
-             |> to_string()
-             |> String.split("-")
-             |> hd() do
-          "arm64" -> "aarch64"
-          other -> other
-        end
-
-      {:os.type(), arch}
-    end
-
-    defp cache_root do
-      home_cache =
-        case System.user_home() do
-          home when is_binary(home) and home != "" ->
-            Path.join([home, ".cache", "yoke", "nif", "mdex_native"])
-
-          _ ->
-            nil
-        end
-
-      if home_cache && writable_dir?(home_cache) do
-        home_cache
-      else
-        Path.join([System.tmp_dir!(), "yoke_nif", "mdex_native"])
-      end
-    end
-
-    defp writable_dir?(dir) do
-      File.mkdir_p(dir) == :ok
-    rescue
-      _ -> false
     end
   else
     @doc """
@@ -178,26 +130,10 @@ defmodule Yoke.CLI.MdexNif do
   def extract_and_register(app_dir, nif_name, nif_gz)
       when is_binary(app_dir) and is_binary(nif_name) and is_binary(nif_gz) do
     ebin_dir = Path.join(app_dir, "ebin")
-    nif_dir = Path.join([app_dir, "priv", "native"])
-    nif_path = Path.join(nif_dir, nif_name)
+    nif_path = Path.join([app_dir, "priv", "native", nif_name])
 
-    unless File.regular?(nif_path) do
-      File.mkdir_p!(ebin_dir)
-      File.mkdir_p!(nif_dir)
-
-      tmp_path = "#{nif_path}.tmp.#{:erlang.unique_integer([:positive])}"
-      File.write!(tmp_path, :zlib.gunzip(nif_gz))
-      File.chmod!(tmp_path, 0o755)
-
-      case File.rename(tmp_path, nif_path) do
-        :ok ->
-          :ok
-
-        {:error, _} ->
-          File.rm(tmp_path)
-          unless File.regular?(nif_path), do: raise("Failed to extract #{nif_name}")
-      end
-    end
+    File.mkdir_p!(ebin_dir)
+    :ok = EscriptAsset.atomic_extract(nif_path, nif_gz)
 
     unless Application.app_dir(:mdex_native) == app_dir do
       :code.add_patha(String.to_charlist(ebin_dir))
