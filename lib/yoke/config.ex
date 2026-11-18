@@ -85,7 +85,20 @@ defmodule Yoke.Config do
     # Auto-update: periodically checks GitHub Releases for new Yoke releases on startup.
     "auto_update" => true,
     # Interval in seconds between update checks (default: 86400 = 24 hours).
-    "update_check_interval" => 86_400
+    "update_check_interval" => 86_400,
+    # /review GitHub posting tuning options:
+    # - review_post_endorsements: include "👍" / endorsement findings when posting (does not affect verdict)
+    # - review_post_summary: post a top-level summary comment even when findings are present (always posted when clean)
+    # - review_robot_instructions: include Recommended Fix Prompt for AI agents inside the summary comment
+    # - review_post_inline_comments: post findings as inline diff comments (when false, all go to the review body)
+    # - review_poster_name: override header name in posted review summary (nil falls back to assistant_name)
+    # - review_poster_icon: override header icon in posted review summary (default "🪢", "" for none)
+    "review_post_endorsements" => true,
+    "review_post_summary" => false,
+    "review_robot_instructions" => false,
+    "review_post_inline_comments" => true,
+    "review_poster_name" => nil,
+    "review_poster_icon" => "\u{1FAA2}"
   }
 
   @doc "Returns the configured project languages list or nil if auto-detection should be used."
@@ -129,6 +142,42 @@ defmodule Yoke.Config do
   @doc "Sets the global assistant name."
   def set_assistant_name(name) when is_binary(name) do
     Application.put_env(:yoke, :assistant_name, name)
+  end
+
+  @doc "Returns resolved `/review` posting & formatting options for `cwd`."
+  def review_options(cwd \\ ".") do
+    cfg = load_config(cwd)
+
+    [
+      post_endorsements: boolean_opt(cfg, "review_post_endorsements", true),
+      post_summary: boolean_opt(cfg, "review_post_summary", false),
+      robot_instructions: boolean_opt(cfg, "review_robot_instructions", false),
+      post_inline_comments: boolean_opt(cfg, "review_post_inline_comments", true),
+      poster_name: nonblank_string(Map.get(cfg, "review_poster_name")),
+      poster_icon: poster_icon_opt(cfg, "review_poster_icon", "\u{1FAA2}")
+    ]
+  end
+
+  defp boolean_opt(cfg, key, default) do
+    case Map.get(cfg, key) do
+      val when is_boolean(val) -> val
+      _ -> default
+    end
+  end
+
+  defp nonblank_string(val) when is_binary(val) do
+    trimmed = String.trim(val)
+    if trimmed == "", do: nil, else: trimmed
+  end
+
+  defp nonblank_string(_), do: nil
+
+  defp poster_icon_opt(cfg, key, default) do
+    case Map.fetch(cfg, key) do
+      {:ok, nil} -> ""
+      {:ok, val} when is_binary(val) -> String.trim(val)
+      _ -> default
+    end
   end
 
   @doc """

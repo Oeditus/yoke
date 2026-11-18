@@ -45,13 +45,51 @@ defmodule Yoke.PRReview do
     """
   end
 
+  @doc """
+  Parses `/review` command arguments into positional target args and merged tuning options.
+  """
+  def parse_review_args(args, cwd \\ ".") when is_binary(args) do
+    argv = OptionParser.split(args)
+
+    strict = [
+      endorsements: :boolean,
+      summary: :boolean,
+      robot_instructions: :boolean,
+      inline: :boolean,
+      poster_name: :string,
+      poster_icon: :string
+    ]
+
+    case OptionParser.parse(argv, strict: strict) do
+      {parsed, positional, []} ->
+        base_opts = Yoke.Config.review_options(cwd)
+        overrides = map_parsed_review_opts(parsed)
+        {:ok, Enum.join(positional, " "), Keyword.merge(base_opts, overrides)}
+
+      {_parsed, _positional, invalid} ->
+        bad = Enum.map_join(invalid, ", ", fn {opt, _val} -> opt end)
+        {:error, "Unknown or invalid /review option(s): #{bad}"}
+    end
+  end
+
+  defp map_parsed_review_opts(parsed) do
+    Enum.flat_map(parsed, fn
+      {:endorsements, val} -> [post_endorsements: val]
+      {:summary, val} -> [post_summary: val]
+      {:robot_instructions, val} -> [robot_instructions: val]
+      {:inline, val} -> [post_inline_comments: val]
+      {:poster_name, val} -> [poster_name: String.trim(val)]
+      {:poster_icon, val} -> [poster_icon: String.trim(val)]
+    end)
+  end
+
   @doc "Posts findings to the exact PR and commit whose diff was reviewed."
-  def post_context_review(context, findings, body, event \\ :derived) do
+  def post_context_review(context, findings, body, event \\ :derived, opts \\ []) do
     with :ok <- Yoke.PRReview.Context.verify_current(context),
          :ok <- Yoke.PRReview.Context.validate_findings(findings, context) do
       payload =
         findings
-        |> build_atomic_review_payload(body, event, context.valid_lines)
+        |> build_atomic_review_payload(body, event, context.valid_lines, opts)
         |> Map.put("commit_id", context.head_sha)
 
       with {:ok, result} <- post_atomic_review(context.pr_number, payload, context.cwd),
@@ -405,34 +443,74 @@ defmodule Yoke.PRReview do
   Builds the Markdown body for the GitHub PR comment/review.
   """
   def build_pr_comment_body(accepted_findings, _fix_prompt \\ "", opts \\ []) do
-    issues = actionable_findings(accepted_findings)
+    post_endorsements = Keyword.get(opts, :post_endorsements, true)
 
-    summary =
-      cond do
-        accepted_findings == [] ->
-          "No actionable issues found."
+    posted_findings =
+      if post_endorsements,
+        do: accepted_findings,
+        else: actionable_findings(accepted_findings)
 
-        issues == [] ->
-          "No actionable issues found. There are some comments left with observations."
+    post_summary = Keyword.get(opts, :post_summary, true)
 
-        true ->
-          "There are some comments left. Please address the reported issues."
-      end
+    if not post_summary and posted_findings != [] do
+      ""
+    else
+      issues = actionable_findings(accepted_findings)
 
-    assistant_name =
-      Keyword.get(opts, :assistant_name) ||
-        Yoke.Config.assistant_name(Keyword.get(opts, :cwd, "."))
+      summary =
+        cond do
+          posted_findings == [] ->
+            "No actionable issues found."
 
-    """
-    ## 🪢 Review from #{assistant_name}
+          issues == [] ->
+            "No actionable issues found. There are some comments left with observations."
 
-    **Code review: #{review_verdict(accepted_findings)}**
+          true ->
+            "There are some comments left. Please address the reported issues."
+        end
 
-    #{summary}
+      cwd = Keyword.get(opts, :cwd, ".")
 
-    #{ReviewDismissal.marker()}
-    """
-    |> Markdown.sanitize_review_body()
+      poster_name =
+        Keyword.get(opts, :poster_name) ||
+          Keyword.get(opts, :assistant_name) ||
+          Yoke.Config.assistant_name(cwd)
+
+      poster_icon = Keyword.get(opts, :poster_icon, "\u{1FAA2}") |> to_string() |> String.trim()
+
+      header =
+        if poster_icon == "",
+          do: "## Review from #{poster_name}",
+          else: "## #{poster_icon} Review from #{poster_name}"
+
+      robot_block =
+        if Keyword.get(opts, :robot_instructions, false) and issues != [] do
+          robot_prompt = issues |> build_fix_prompt() |> String.trim_trailing()
+
+          """
+
+          ---
+
+          ### Recommended Fix Prompt
+          ```
+          #{robot_prompt}
+          ```
+          """
+        else
+          ""
+        end
+
+      """
+      #{header}
+
+      **Code review: #{review_verdict(accepted_findings)}**
+
+      #{summary}
+      #{robot_block}
+      #{ReviewDismissal.marker()}
+      """
+      |> Markdown.sanitize_review_body()
+    end
   end
 
   @doc """
@@ -544,25 +622,38 @@ defmodule Yoke.PRReview do
         accepted_findings,
         review_body,
         event \\ :derived,
-        valid_diff_lines \\ nil
+        valid_diff_lines \\ nil,
+        opts \\ []
       ) do
     event_str =
       normalize_review_event(
         if event == :derived, do: review_event(accepted_findings), else: event
       )
 
+    post_endorsements = Keyword.get(opts, :post_endorsements, true)
+    post_inline_comments = Keyword.get(opts, :post_inline_comments, true)
+
+    posted_findings =
+      if post_endorsements,
+        do: accepted_findings,
+        else: actionable_findings(accepted_findings)
+
     {inline_comments, body_sidenotes} =
-      Enum.split_with(accepted_findings, fn f ->
-        if f.file && f.line do
-          if is_nil(valid_diff_lines) do
-            true
+      if post_inline_comments do
+        Enum.split_with(posted_findings, fn f ->
+          if f.file && f.line do
+            if is_nil(valid_diff_lines) do
+              true
+            else
+              MapSet.member?(valid_diff_lines, {f.file, f.line})
+            end
           else
-            MapSet.member?(valid_diff_lines, {f.file, f.line})
+            false
           end
-        else
-          false
-        end
-      end)
+        end)
+      else
+        {[], posted_findings}
+      end
 
     comments_payload =
       Enum.map(inline_comments, fn f ->
@@ -589,16 +680,22 @@ defmodule Yoke.PRReview do
       end)
 
     full_body =
-      if novel_sidenotes == [] do
-        review_body
-      else
-        sidenotes_text =
-          Enum.map_join(novel_sidenotes, "\n", fn f ->
-            loc = if f.file, do: "`#{f.file}`#{if f.line, do: ":#{f.line}"}", else: "General"
-            "#### #{loc}\n\n" <> format_sidenote_body(f)
-          end)
+      cond do
+        novel_sidenotes == [] ->
+          review_body
 
-        review_body <> "\n\n### General Observations & Out-of-Diff Notes\n" <> sidenotes_text
+        true ->
+          sidenotes_text =
+            Enum.map_join(novel_sidenotes, "\n", fn f ->
+              loc = if f.file, do: "`#{f.file}`#{if f.line, do: ":#{f.line}"}", else: "General"
+              "#### #{loc}\n\n" <> format_sidenote_body(f)
+            end)
+
+          if String.trim(review_body) == "" do
+            "### General Observations & Out-of-Diff Notes\n" <> sidenotes_text
+          else
+            review_body <> "\n\n### General Observations & Out-of-Diff Notes\n" <> sidenotes_text
+          end
       end
 
     %{

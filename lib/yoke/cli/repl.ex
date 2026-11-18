@@ -883,74 +883,84 @@ defmodule Yoke.CLI.Repl do
   def handle_input("/review " <> args, session_pid, _session_id) do
     cwd = Session.get_info(session_pid).cwd
 
-    case Yoke.PRReview.Context.resolve(args, cwd) do
-      {:ok, ctx} ->
-        IO.puts(
-          Formatter.format_info(
-            "Reviewing committed changes '#{ctx.base}' vs '#{ctx.head}' at #{String.slice(ctx.head_sha, 0, 12)} (working-tree edits excluded)…"
-          )
+    with {:ok, target_args, review_opts} <- Yoke.PRReview.parse_review_args(args, cwd),
+         {:ok, ctx} <- Yoke.PRReview.Context.resolve(target_args, cwd) do
+      IO.puts(
+        Formatter.format_info(
+          "Reviewing committed changes '#{ctx.base}' vs '#{ctx.head}' at #{String.slice(ctx.head_sha, 0, 12)} (working-tree edits excluded)…"
+        )
+      )
+
+      review_fn = fn ->
+        Session.generate_code_review(session_pid, ctx.base, ctx.head,
+          peer_comments: ctx.peer_comments,
+          review_context: ctx
+        )
+      end
+
+      res =
+        Yoke.CLI.Spinner.run(
+          fn -> Yoke.CLI.Interrupt.run(session_pid, review_fn) end,
+          title: "Generating Code Review… (Ctrl+Q to interrupt)"
         )
 
-        review_fn = fn ->
-          Session.generate_code_review(session_pid, ctx.base, ctx.head,
-            peer_comments: ctx.peer_comments,
-            review_context: ctx
-          )
-        end
+      case res do
+        {:ok, %{content: review_md}} ->
+          Formatter.safe_puts("\n" <> Formatter.format_agent_response(review_md) <> "\n")
+          Formatter.flush()
 
-        res =
-          Yoke.CLI.Spinner.run(
-            fn -> Yoke.CLI.Interrupt.run(session_pid, review_fn) end,
-            title: "Generating Code Review… (Ctrl+Q to interrupt)"
-          )
+          raw_findings = Yoke.PRReview.parse_findings(review_md)
+          findings = Yoke.PRReview.drop_already_reported(raw_findings, ctx.peer_comments)
 
-        case res do
-          {:ok, %{content: review_md}} ->
-            Formatter.safe_puts("\n" <> Formatter.format_agent_response(review_md) <> "\n")
-            Formatter.flush()
+          if findings == [] do
+            IO.puts(Formatter.format_info("Review completed: no new findings to triage."))
 
-            raw_findings = Yoke.PRReview.parse_findings(review_md)
-            findings = Yoke.PRReview.drop_already_reported(raw_findings, ctx.peer_comments)
+            body =
+              Yoke.PRReview.build_pr_comment_body([], "", [{:cwd, ctx.cwd} | review_opts])
 
-            if findings == [] do
-              IO.puts(Formatter.format_info("Review completed: no new findings to triage."))
-              body = Yoke.PRReview.build_pr_comment_body([], "", cwd: ctx.cwd)
-              maybe_post_review_to_github([], body, ctx)
-            else
-              {:ok, accepted_findings, _declined} = Yoke.PRReview.interactive_review(findings)
+            maybe_post_review_to_github([], body, ctx, review_opts)
+          else
+            {:ok, accepted_findings, _declined} = Yoke.PRReview.interactive_review(findings)
 
-              if accepted_findings != [] do
-                fix_prompt = Yoke.PRReview.build_fix_prompt(accepted_findings)
-                pr_body = Yoke.PRReview.build_pr_comment_body(accepted_findings, fix_prompt)
+            if accepted_findings != [] do
+              fix_prompt = Yoke.PRReview.build_fix_prompt(accepted_findings)
 
-                maybe_post_review_to_github(
+              pr_body =
+                Yoke.PRReview.build_pr_comment_body(
                   accepted_findings,
-                  pr_body,
-                  ctx
+                  fix_prompt,
+                  [{:cwd, ctx.cwd} | review_opts]
                 )
 
-                accepted_issues = Yoke.PRReview.actionable_findings(accepted_findings)
+              maybe_post_review_to_github(
+                accepted_findings,
+                pr_body,
+                ctx,
+                review_opts
+              )
 
-                if accepted_issues != [] do
-                  Yoke.PRReview.CLI.handle_review_fixes(session_pid, ctx, fix_prompt)
-                  Yoke.PRReview.CLI.maybe_record_review_patterns(accepted_issues, ctx)
-                else
-                  IO.puts(
-                    Formatter.format_info(
-                      "Only endorsements accepted; no fixes to apply or patterns to record."
-                    )
-                  )
-                end
+              accepted_issues = Yoke.PRReview.actionable_findings(accepted_findings)
+
+              if accepted_issues != [] do
+                Yoke.PRReview.CLI.handle_review_fixes(session_pid, ctx, fix_prompt)
+                Yoke.PRReview.CLI.maybe_record_review_patterns(accepted_issues, ctx)
               else
-                IO.puts(Formatter.format_info("No findings were accepted by user."))
+                IO.puts(
+                  Formatter.format_info(
+                    "Only endorsements accepted; no fixes to apply or patterns to record."
+                  )
+                )
               end
+            else
+              IO.puts(Formatter.format_info("No findings were accepted by user."))
             end
+          end
 
-          {:error, err} ->
-            IO.puts(Formatter.format_error(err))
-            Formatter.flush()
-        end
-
+        {:error, err} ->
+          IO.puts(Formatter.format_error(err))
+          Formatter.flush()
+      end
+    else
       {:error, err} ->
         IO.puts(Formatter.format_error(err))
         Formatter.flush()
@@ -1646,6 +1656,43 @@ defmodule Yoke.CLI.Repl do
 
   def handle_input("/config assistant", session_pid, session_id) do
     handle_input("/config assistant_name", session_pid, session_id)
+  end
+
+  def handle_input("/config review_poster_name default", _session_pid, _session_id) do
+    persist_local("review_poster_name", nil, "Review poster name reset to assistant_name")
+    :continue
+  end
+
+  def handle_input("/config review_poster_name " <> name, _session_pid, _session_id) do
+    n = String.trim(name)
+    persist_local("review_poster_name", n, "Review poster name set to '#{n}'")
+    :continue
+  end
+
+  def handle_input("/config review_poster_name", _session_pid, _session_id) do
+    IO.puts(Formatter.format_error("Usage: /config review_poster_name <name|default>"))
+    :continue
+  end
+
+  def handle_input("/config review_poster_icon default", _session_pid, _session_id) do
+    persist_local("review_poster_icon", "\u{1FAA2}", "Review poster icon reset to '\u{1FAA2}'")
+    :continue
+  end
+
+  def handle_input("/config review_poster_icon none", _session_pid, _session_id) do
+    persist_local("review_poster_icon", "", "Review poster icon disabled")
+    :continue
+  end
+
+  def handle_input("/config review_poster_icon " <> icon, _session_pid, _session_id) do
+    i = String.trim(icon)
+    persist_local("review_poster_icon", i, "Review poster icon set to '#{i}'")
+    :continue
+  end
+
+  def handle_input("/config review_poster_icon", _session_pid, _session_id) do
+    IO.puts(Formatter.format_error("Usage: /config review_poster_icon <icon|none|default>"))
+    :continue
   end
 
   def handle_input("/config default_branch auto", _session_pid, _session_id) do
@@ -3130,7 +3177,7 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
-  defp maybe_post_review_to_github(_findings, _body, %{pr_number: nil}) do
+  defp maybe_post_review_to_github(_findings, _body, %{pr_number: nil}, _review_opts) do
     IO.puts(
       Formatter.format_info(
         "Local branch review only. Use /review <pr_number> to submit a pinned GitHub review."
@@ -3138,7 +3185,7 @@ defmodule Yoke.CLI.Repl do
     )
   end
 
-  defp maybe_post_review_to_github(accepted_findings, pr_body, ctx) do
+  defp maybe_post_review_to_github(accepted_findings, pr_body, ctx, review_opts) do
     event = Yoke.PRReview.review_event(accepted_findings)
     verdict = Yoke.PRReview.review_verdict(accepted_findings)
     review_label = if event == "COMMENT", do: "#{verdict} (comment only)", else: verdict
@@ -3160,10 +3207,25 @@ defmodule Yoke.CLI.Repl do
       end
 
     if selected_post == submit_option do
-      case Yoke.PRReview.post_context_review(ctx, accepted_findings, pr_body, event) do
+      case Yoke.PRReview.post_context_review(ctx, accepted_findings, pr_body, event, review_opts) do
         {:ok, pr_info} ->
+          post_endorsements = Keyword.get(review_opts, :post_endorsements, true)
+          post_inline_comments = Keyword.get(review_opts, :post_inline_comments, true)
+
+          posted_findings =
+            if post_endorsements,
+              do: accepted_findings,
+              else: Yoke.PRReview.actionable_findings(accepted_findings)
+
           comments_count =
-            Enum.count(accepted_findings, &MapSet.member?(ctx.valid_lines, {&1.file, &1.line}))
+            if post_inline_comments do
+              Enum.count(
+                posted_findings,
+                &(&1.file && &1.line && MapSet.member?(ctx.valid_lines, {&1.file, &1.line}))
+              )
+            else
+              0
+            end
 
           IO.puts(
             Formatter.format_success(

@@ -936,6 +936,156 @@ defmodule Yoke.PRReviewTest do
     end
   end
 
+  describe "/review tuning options" do
+    test "parse_review_args/2 merges config defaults with CLI flags" do
+      tmp_dir =
+        Path.join(System.tmp_dir!(), "review_opts_test_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp_dir)
+
+      on_exit(fn -> File.rm_rf!(tmp_dir) end)
+
+      assert :ok =
+               Yoke.Config.save_config(
+                 %{
+                   "review_post_summary" => true,
+                   "review_poster_name" => "Config Bot",
+                   "review_poster_icon" => "🤖"
+                 },
+                 tmp_dir
+               )
+
+      assert {:ok, "142", opts} =
+               PRReview.parse_review_args(
+                 "142 --no-summary --no-endorsements --robot-instructions --no-inline --poster-name \"Flag Bot\" --poster-icon 🔍",
+                 tmp_dir
+               )
+
+      assert opts[:post_summary] == false
+      assert opts[:post_endorsements] == false
+      assert opts[:robot_instructions] == true
+      assert opts[:post_inline_comments] == false
+      assert opts[:poster_name] == "Flag Bot"
+      assert opts[:poster_icon] == "🔍"
+
+      assert {:ok, "main HEAD", default_opts} = PRReview.parse_review_args("main HEAD", tmp_dir)
+      assert default_opts[:post_summary] == true
+      assert default_opts[:poster_name] == "Config Bot"
+      assert default_opts[:poster_icon] == "🤖"
+
+      assert {:error, msg} = PRReview.parse_review_args("142 --bogus", tmp_dir)
+      assert msg =~ "--bogus"
+    end
+
+    test "post_summary: false omits summary when findings exist, but keeps summary when clean" do
+      issue = review_finding()
+
+      assert PRReview.build_pr_comment_body([issue], "", post_summary: false) == ""
+
+      clean_body = PRReview.build_pr_comment_body([], "", post_summary: false)
+      assert clean_body =~ "No actionable issues found."
+    end
+
+    test "post_endorsements: false drops endorsements without affecting review decision" do
+      issue = review_finding(%{id: 1, title: "Bug", line: 10})
+      endorsement = review_finding(%{id: 2, kind: "endorsement", title: "Great tests", line: 20})
+
+      payload =
+        PRReview.build_atomic_review_payload(
+          [issue, endorsement],
+          "",
+          :derived,
+          nil,
+          post_endorsements: false
+        )
+
+      assert payload["event"] == "REQUEST_CHANGES"
+      assert [%{"line" => 10, "body" => inline_body}] = payload["comments"]
+      assert inline_body =~ "Bug"
+
+      # Endorsement-only with post_endorsements: false posts clean summary
+      clean_body =
+        PRReview.build_pr_comment_body([endorsement], "",
+          post_endorsements: false,
+          post_summary: false
+        )
+
+      assert clean_body =~ "No actionable issues found."
+
+      clean_payload =
+        PRReview.build_atomic_review_payload(
+          [endorsement],
+          clean_body,
+          :derived,
+          nil,
+          post_endorsements: false
+        )
+
+      assert clean_payload["event"] == "COMMENT"
+      assert clean_payload["comments"] == []
+    end
+
+    test "robot_instructions: true includes Recommended Fix Prompt in summary when issues exist" do
+      issue = review_finding(%{title: "Nil deref"})
+      endorsement = review_finding(%{id: 2, kind: "endorsement", title: "Clean code"})
+
+      body =
+        PRReview.build_pr_comment_body([issue, endorsement], "",
+          post_summary: true,
+          robot_instructions: true
+        )
+
+      assert body =~ "### Recommended Fix Prompt"
+      assert body =~ "Nil deref"
+      refute body =~ "Clean code"
+
+      endorsement_only =
+        PRReview.build_pr_comment_body([endorsement], "",
+          post_summary: true,
+          robot_instructions: true
+        )
+
+      refute endorsement_only =~ "Recommended Fix Prompt"
+    end
+
+    test "post_inline_comments: false moves all findings into review body" do
+      issue = review_finding(%{file: "lib/a.ex", line: 5, title: "Missing check"})
+      valid_lines = MapSet.new([{"lib/a.ex", 5}])
+
+      payload =
+        PRReview.build_atomic_review_payload(
+          [issue],
+          "",
+          :derived,
+          valid_lines,
+          post_inline_comments: false
+        )
+
+      assert payload["comments"] == []
+      assert String.starts_with?(payload["body"], "### General Observations & Out-of-Diff Notes")
+      assert payload["body"] =~ "Missing check"
+    end
+
+    test "poster_name and poster_icon customize the review header and survive sanitization" do
+      body_with_icon =
+        PRReview.build_pr_comment_body([], "",
+          poster_name: "Security Bot",
+          poster_icon: "🤖"
+        )
+
+      assert String.starts_with?(body_with_icon, "## 🤖 Review from Security Bot")
+      assert PRReview.Markdown.sanitize_review_body(body_with_icon) == body_with_icon
+
+      body_without_icon =
+        PRReview.build_pr_comment_body([], "",
+          poster_name: "Security Bot",
+          poster_icon: ""
+        )
+
+      assert String.starts_with?(body_without_icon, "## Review from Security Bot")
+    end
+  end
+
   defp review_finding(overrides \\ %{}) do
     Map.merge(
       %{

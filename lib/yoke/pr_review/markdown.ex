@@ -101,11 +101,17 @@ defmodule Yoke.PRReview.Markdown do
   @doc """
   Removes decorative emojis while retaining branding and severity circles.
   """
-  def sanitize_review_body("## 🪢 Review from " <> rest) do
-    "## 🪢 Review from " <> sanitize_review_body(rest)
+  def sanitize_review_body(text) when is_binary(text) do
+    case Regex.run(~r/\A(## [^\s]+ Review from )(.*)$/s, text) do
+      [_, header_prefix, rest] ->
+        header_prefix <> sanitize_review_body_content(rest)
+
+      nil ->
+        sanitize_review_body_content(text)
+    end
   end
 
-  def sanitize_review_body(text) when is_binary(text) do
+  defp sanitize_review_body_content(text) do
     text
     |> String.split(~r/([🔴🟡🔵])/u, include_captures: true)
     |> Enum.map_join(fn

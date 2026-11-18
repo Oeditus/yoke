@@ -624,10 +624,17 @@ defmodule Yoke.CLI.Formatter do
     #{dim()}─────────────────────────────────────────────────────────────────────────────#{reset()}
 
     #{bold()}Commands:#{reset()}
-      #{cyan()}/review [<base> [head] | <pr_num>]#{reset()}
+      #{cyan()}/review [<base> [head] | <pr_num>] [flags]#{reset()}
           Start conversational code review for branch range or GitHub pull request.
           Interactively triage findings with #{bold()}[i] Include#{reset()}, #{bold()}[e] Edit#{reset()}, and #{bold()}[d] Drop#{reset()}.
           Posts atomically via GitHub API with inline diff comments and committable suggestions.
+          Flags (override `.yoke/config.json` defaults for one run):
+            #{dim()}--[no-]endorsements#{reset()}        Post positive observations without affecting verdict (default: yes)
+            #{dim()}--[no-]summary#{reset()}             Post top-level summary comment when findings exist (default: no; always posted when clean)
+            #{dim()}--[no-]robot-instructions#{reset()}  Include Recommended Fix Prompt for AI agents in summary (default: no)
+            #{dim()}--[no-]inline#{reset()}              Post findings as inline diff comments (default: yes)
+            #{dim()}--poster-name <name>#{reset()}       Override header name in summary comment (GitHub actor stays your `gh` token)
+            #{dim()}--poster-icon <icon>#{reset()}       Override header icon in summary comment (default: 🪢)
 
       #{cyan()}/prboard#{reset()} or #{cyan()}/review queue#{reset()}
           Display live Pull Request review queue board:
