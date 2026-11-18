@@ -7,7 +7,10 @@ defmodule Yoke.MCP.Client do
   use GenServer
   require Logger
 
-  defstruct [:name, :port, :cmd, :args, :env, :req_id, :pending_requests, :tools]
+  # Port line size bounds individual fragments, not complete JSON-RPC messages.
+  @port_line_size 65_536
+
+  defstruct [:name, :port, :cmd, :args, :env, :req_id, :pending_requests, :tools, line_buffer: []]
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
@@ -36,8 +39,8 @@ defmodule Yoke.MCP.Client do
     port_opts = [
       :binary,
       :stream,
-      :line,
       :use_stdio,
+      line: @port_line_size,
       args: args
     ]
 
@@ -97,7 +100,30 @@ defmodule Yoke.MCP.Client do
   end
 
   @impl true
-  def handle_info({port, {:data, {:line, line}}}, %{port: port} = state) do
+  def handle_info({port, {:data, {:noeol, fragment}}}, %{port: port} = state) do
+    {:noreply, %{state | line_buffer: [fragment | state.line_buffer]}}
+  end
+
+  def handle_info({port, {:data, {:eol, fragment}}}, %{port: port} = state) do
+    line = [fragment | state.line_buffer] |> Enum.reverse() |> IO.iodata_to_binary()
+    handle_json_rpc(line, %{state | line_buffer: []})
+  end
+
+  @impl true
+  def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
+    Logger.warning("[MCP.Client] MCP server process #{state.name} exited with status #{status}")
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(msg, state) do
+    Logger.debug("[MCP.Client] Unhandled message: #{inspect(msg)}")
+    {:noreply, state}
+  end
+
+  # Helper Functions
+
+  defp handle_json_rpc(line, state) do
     case Yoke.Json.decode(String.trim(line)) do
       {:ok, %{"id" => id, "result" => result}} when not is_nil(id) ->
         case Map.pop(state.pending_requests, id) do
@@ -131,28 +157,19 @@ defmodule Yoke.MCP.Client do
     end
   end
 
-  @impl true
-  def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
-    Logger.warning("[MCP.Client] MCP server process #{state.name} exited with status #{status}")
-    {:noreply, state}
-  end
-
-  @impl true
-  def handle_info(msg, state) do
-    Logger.debug("[MCP.Client] Unhandled message: #{inspect(msg)}")
-    {:noreply, state}
-  end
-
-  # Helper Functions
-
   defp get_next_req_id(state) do
     id = state.req_id
     {id, %{state | req_id: id + 1}}
   end
 
-  defp send_json_rpc(state, method, params, id \\ nil) do
-    id = id || state.req_id
+  defp send_json_rpc(state, method, params, id \\ nil)
 
+  defp send_json_rpc(state, method, params, nil) do
+    {id, state} = get_next_req_id(state)
+    send_json_rpc(state, method, params, id)
+  end
+
+  defp send_json_rpc(state, method, params, id) do
     payload = %{
       "jsonrpc" => "2.0",
       "id" => id,

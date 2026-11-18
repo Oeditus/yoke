@@ -1498,7 +1498,6 @@ defmodule Yoke.CLI.LineEditor do
       case :shell.start_interactive({:noshell, :raw}) do
         :ok -> :ok
         {:error, :already_started} -> :ok
-        _ -> :error
       end
 
     enable_bracketed_paste()
@@ -1514,7 +1513,6 @@ defmodule Yoke.CLI.LineEditor do
     case :shell.start_interactive({:noshell, :cooked}) do
       :ok -> :ok
       {:error, :already_started} -> :ok
-      _ -> :ok
     end
   rescue
     _ -> :ok
@@ -3337,7 +3335,6 @@ defmodule Yoke.CLI.LineEditor do
       {:error, _reason} -> :eof
       char when is_binary(char) -> char
       char when is_list(char) -> IO.iodata_to_binary(char)
-      _ -> ""
     end
   end
 end
