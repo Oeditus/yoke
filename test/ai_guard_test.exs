@@ -22,6 +22,41 @@ defmodule Yoke.AIGuardTest do
       assert verdict.reason =~ "Potential API Token"
     end
 
+    test "does not flag kebab-case identifiers, anchors, or placeholders containing sk-" do
+      benign = [
+        "#7-concurrent-task-engine--parallel-subagents",
+        "docs/task-management-implementation-plan.md",
+        "my-task-sk-something-very-long-identifier",
+        "flask-sqlalchemy-migration-guide",
+        "sk-your-api-key-here-please",
+        "sk-model-configuration-default"
+      ]
+
+      for text <- benign do
+        verdict = AIGuard.guard_llm(text, :input, mode: :observe)
+
+        assert verdict.action == :pass,
+               "Expected '#{text}' to pass, got: #{inspect(verdict.reason)}"
+      end
+    end
+
+    test "flags real-looking API tokens with digits or mixed case" do
+      tokens = [
+        "sk-proj-abc123XYZ456def789GHI012",
+        "sk-ant-api03-abcdef1234567890ABCD",
+        "ghp_1234567890abcdef1234567890abcdef1234",
+        "glpat-1234567890abcdef1234",
+        "xoxb-1234567890-1234567890-abcdefghijklmnop"
+      ]
+
+      for token <- tokens do
+        verdict = AIGuard.guard_llm("token=#{token}", :input, mode: :observe)
+
+        assert verdict.action == :flagged,
+               "Expected '#{token}' to be flagged"
+      end
+    end
+
     test "flags real DeepSeek API key leakage" do
       verdict =
         AIGuard.guard_llm(

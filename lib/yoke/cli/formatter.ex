@@ -173,7 +173,7 @@ defmodule Yoke.CLI.Formatter do
       #{cyan()}/session [list|switch|cleanup]#{reset()} Display metadata, list, switch, or prune sessions
       #{cyan()}/skill <name>#{reset()}            Execute a skill (back-compat alias for /skills <name>)
       #{cyan()}/skills [show|path|edit|new|<name>]#{reset()} List, inspect, scaffold, or execute skills
-      #{cyan()}/spar [soc|adv] <topic>#{reset()} Prompt Socratic or Adversarial sparring session with prior-art sweep
+      #{cyan()}/spar [socratic|adversarial] <topic>#{reset()} Prompt Socratic or Adversarial sparring session with prior-art sweep
       #{cyan()}/stats#{reset()}                  Session analytics dashboard (tokens, cost, tools, jobs)
       #{cyan()}/subagent <prompt>#{reset()}      Spawn a background subagent worker for sub-tasks
       #{cyan()}/sweep <tokens>#{reset()}         Run multi-corpus prior-art search across workflow, reference, lessons, and vault

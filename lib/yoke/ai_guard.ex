@@ -52,7 +52,7 @@ defmodule Yoke.AIGuard do
 
   # Risk patterns for input/prompt injection and credentials
   @secret_patterns [
-    {~r/(?:sk-|ghp_|gho_|glpat-|xox[baprs]-)[A-Za-z0-9_\-]{20,}/,
+    {~r/(?<![A-Za-z0-9_-])(?:sk-(?!(?:[a-z]+-+)+[a-z]+(?![A-Za-z0-9_-]))|ghp_|gho_|glpat-|xox[baprs]-)[A-Za-z0-9_\-]{20,}/,
      "Potential API Token / Private Secret"},
     {~r/-----BEGIN (?:RSA|OPENSSH|EC|PRIVATE KEY)-----/, "Private Key Material"},
     {~r/['"]?DEEPSEEK_API_KEY['"]?\s*[:=]\s*['"]?sk-[A-Za-z0-9_\-]{20,}['"]?/i,
