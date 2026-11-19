@@ -695,7 +695,7 @@ memory updates are also opt-in and happen after fix handling.
 #### Model, Execution & Rules
 | Command | Action |
 | :--- | :--- |
-| `/model [flash|reasoner|coder|chat|r1|openrouter-free|ollama-qwen]` | Switch active model & reasoning/silent mode (`deepseek-flash`, `deepseek-reasoner`, `deepseek-coder`, etc.) |
+| `/model [flash\|reasoner\|coder\|chat\|r1\|openrouter-free\|ollama-qwen]` | Switch active model & reasoning/silent mode (`deepseek-flash`, `deepseek-reasoner`, `deepseek-coder`, etc.) |
 | `/endpoint [url\|default\|openrouter\|opencode\|ollama\|lmstudio]` | Switch API base endpoint URL dynamically |
 | `/mode [local\|remote\|docker]` | Set Hands execution target |
 | `/sandbox [on\|off]` | Restrict file references & tools to the workspace directory |
