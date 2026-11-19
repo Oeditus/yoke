@@ -1,0 +1,127 @@
+name: Action CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'action.yml'
+      - 'scripts/install.sh'
+      - 'scripts/install-dllb.sh'
+      - 'lib/yoke/cli/ci.ex'
+      - '.github/workflows/action-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'action.yml'
+      - 'scripts/install.sh'
+      - 'scripts/install-dllb.sh'
+      - 'lib/yoke/cli/ci.ex'
+      - '.github/workflows/action-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: action-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  static-checks:
+    name: Static checks (actionlint & shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run shellcheck on installer scripts
+        run: shellcheck scripts/install.sh scripts/install-dllb.sh
+
+      - name: Install and run actionlint
+        run: |
+          set -euo pipefail
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
+  contract-tests:
+    name: Action contract tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          elixir-version: '1.20'
+          otp-version: '29'
+
+      - name: Restore Mix dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: deps
+          key: ${{ runner.os }}-${{ runner.arch }}-mix-test-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-mix-test-
+
+      - name: Install dependencies and run contract tests
+        run: |
+          mix deps.get
+          mix test test/action_cache_test.exs test/yoke/ci_cache_test.exs test/yoke/cli_ci_action_contract_test.exs
+
+  integration:
+    name: Action integration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Exercise yoke lint
+        id: lint
+        uses: ./
+        with:
+          command: lint
+          build-from-source: 'true'
+          fail-on: never
+          post: 'false'
+          artifact-name: yoke-lint-${{ matrix.os }}
+
+      - name: Verify lint outputs
+        shell: bash
+        run: |
+          test -f "${{ steps.lint.outputs.report-path }}"
+          echo "findings=${{ steps.lint.outputs.findings-count }} max=${{ steps.lint.outputs.max-severity }}"
+
+      - name: Exercise yoke review (dry-run)
+        if: matrix.os == 'ubuntu-latest'
+        id: review-dry
+        uses: ./
+        with:
+          command: review
+          base: HEAD~1
+          head: HEAD
+          dry-run: 'true'
+          build-from-source: 'true'
+          fail-on: never
+          post: 'false'
+          artifact-name: yoke-review-dry-${{ matrix.os }}
+
+      - name: Exercise yoke audit
+        if: matrix.os == 'ubuntu-latest'
+        id: audit
+        uses: ./
+        with:
+          command: audit
+          build-from-source: 'true'
+          fail-on: never
+          artifact-name: yoke-audit-${{ matrix.os }}
+
+      - name: Exercise yoke rag
+        if: matrix.os == 'ubuntu-latest'
+        uses: ./
+        with:
+          command: rag
+          build-from-source: 'true'
+          fail-on: never
+          upload: 'false'

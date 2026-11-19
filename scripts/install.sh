@@ -30,11 +30,28 @@ need() {
 }
 
 need curl
-need sha256sum
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    fail "required command not found: sha256sum or shasum"
+  fi
+}
 
 download() {
   curl -fsSL --retry 3 --retry-delay 2 --retry-max-time 90 \
     --connect-timeout 10 --max-time 30 "$@"
+}
+
+github_api() {
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    download -H "Authorization: Bearer ${GITHUB_TOKEN}" "$@"
+  else
+    download "$@"
+  fi
 }
 
 case "$(uname -s)" in
@@ -54,10 +71,10 @@ esac
 # fails with a clear message rather than a confusing download error.
 : "$os" "$arch"
 
-if [ -z "$VERSION" ]; then
+if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
   log "Resolving the latest yoke release…"
   VERSION="$(
-    download "https://api.github.com/repos/${REPO}/releases/latest" \
+    github_api "https://api.github.com/repos/${REPO}/releases/latest" \
       | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
       | head -n1
   )" || fail "could not resolve the latest release of ${REPO}"
@@ -76,7 +93,7 @@ log "Verifying checksum…"
 # The published file is `sha256sum` output, i.e. "<hash>  <filename>". Compare
 # only the hash so the filename in the manifest cannot cause a false match.
 expected="$(awk '{print $1}' "${tmp}/${BIN_NAME}.sha256")"
-actual="$(sha256sum "${tmp}/${BIN_NAME}" | awk '{print $1}')"
+actual="$(sha256_file "${tmp}/${BIN_NAME}")"
 
 [ -n "$expected" ] || fail "checksum manifest is empty"
 if [ "$expected" != "$actual" ]; then

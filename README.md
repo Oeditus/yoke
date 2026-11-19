@@ -23,6 +23,7 @@ Derived from **José Valim's architectural framework** for process-isolated AI a
 - [Installation & Setup](#installation--setup)
 - [Getting Started & Customization Guide](#getting-started--customization-guide)
 - [REPL Slash Commands & Shortcuts](#repl-slash-commands--shortcuts)
+- [GitHub Action](#github-action)
 - [Configuration](#configuration)
 - [Documentation](#documentation)
 - [License](#license)
@@ -767,6 +768,90 @@ with `/jobs`. Cancelling a turn does not undo side effects already performed.
 Conversation checkpoints restore messages and provider settings, not
 working-tree files. `/checkpoint` lists them without creating a new one;
 use `/checkpoint <label>` to save a snapshot before an operation.
+
+---
+
+## GitHub Action
+
+`Oeditus/yoke` ships a composite GitHub Action ([`action.yml`](action.yml)) for headless PR reviews, static linting, change descriptions, and audit reporting.
+
+### Quickstart: Pull Request Review
+
+```yaml
+name: Yoke Review
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write # required when post: 'true'
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # required to diff base and head commits
+
+      - uses: Oeditus/yoke@v0
+        with:
+          command: review
+          fail-on: high
+          post: 'true'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+```
+
+### Static Linting (No LLM / No API Key)
+
+```yaml
+- uses: Oeditus/yoke@v0
+  with:
+    command: lint
+    fail-on: high
+    post: 'false'
+```
+
+### Inputs
+
+| Input | Default | Description |
+| :--- | :--- | :--- |
+| `command` | `'review'` | Subcommand to run: `review`, `lint`, `describe`, `run`, `audit`, or `rag` |
+| `base` | `''` | Base revision to review or describe from (defaults to PR base SHA) |
+| `head` | `''` | Head revision to review or describe to (defaults to PR head SHA) |
+| `pr` | `''` | Pull request number (defaults to the triggering PR) |
+| `provider` | `''` | Provider profile name (`deepseek`, `local`, `local-qwen`) |
+| `model` | `''` | Model identifier for `review`, `describe`, or `run` (falls back to `.yoke/config.json`) |
+| `endpoint` | `''` | Chat-completions endpoint URL |
+| `fail-on` | `''` | Severity threshold (`high`, `medium`, `low`, `info`, `never`; defaults to `high` on PRs, `never` on push) |
+| `format` | `''` | Output format: `summary`, `markdown`, or `json` |
+| `max-cost` | `''` | Hard USD budget for `review` or `describe` |
+| `max-diff-bytes` | `''` | Override the review/describe diff cap in bytes (default `300000`) |
+| `dry-run` | `'false'` | Resolve review context and exit without calling the model |
+| `post` | `'true'` | Post inline PR review comments (requires `pull-requests: write`) |
+| `with-ragex` | `'false'` | Enable Ragex code intelligence (`dllb-server` + `.ragex`/`.yoke` caches) |
+| `dllb-version` | `''` | `dllb-server` release tag (defaults to latest; `'skip'` to disable) |
+| `upload` | `'true'` | Upload the JSON report artifact |
+| `artifact-name` | `''` | Uploaded artifact name (defaults to `yoke-<command>`) |
+| `yoke-version` | `''` | `yoke` release tag (defaults to latest, cached daily) |
+| `build-from-source` | `'false'` | Build the escript from the checked-out tree instead of downloading a release |
+| `elixir-version` | `'1.20'` | Elixir version installed via `erlef/setup-beam` |
+| `otp-version` | `'29'` | Erlang/OTP version installed via `erlef/setup-beam` |
+
+### Outputs
+
+| Output | Description |
+| :--- | :--- |
+| `findings-count` | Number of issues found (endorsements excluded) |
+| `max-severity` | Highest issue severity found, or `"none"` |
+| `run-uid` | Stable identifier for the review run |
+| `report-path` | Path to the JSON artifact describing the run |
+
+> [!NOTE]
+> **Fork PRs**: GitHub does not expose repository secrets to `pull_request` workflows triggered from forks, and `GITHUB_TOKEN` is read-only. For fork PRs, run `command: lint` (no secret required) or set `post: 'false'` when credentials are absent.
 
 ---
 

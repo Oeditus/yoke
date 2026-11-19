@@ -52,13 +52,30 @@ need() {
 }
 
 need curl
-need sha256sum
 need tar
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    fail "required command not found: sha256sum or shasum"
+  fi
+}
 
 # Retry transient HTTP failures, but bound both each attempt and total retries.
 download() {
   curl -fsSL --retry 3 --retry-delay 2 --retry-max-time 90 \
     --connect-timeout 10 --max-time 30 "$@"
+}
+
+github_api() {
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    download -H "Authorization: Bearer ${GITHUB_TOKEN}" "$@"
+  else
+    download "$@"
+  fi
 }
 
 case "$(uname -s)" in
@@ -80,10 +97,10 @@ fi
 
 target="${arch}-${os}"
 
-if [ -z "$VERSION" ]; then
+if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
   log "Resolving the latest dllb release…"
   VERSION="$(
-    download "https://api.github.com/repos/${REPO}/releases/latest" \
+    github_api "https://api.github.com/repos/${REPO}/releases/latest" \
       | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
       | head -n1
   )" || fail "could not resolve the latest release of ${REPO}"
@@ -103,7 +120,7 @@ log "Verifying checksum…"
 # SHA256SUMS is `sha256sum` output, i.e. "<hash>  <filename>". Match the
 # archive by name so the manifest cannot be satisfied by a different asset.
 expected="$(awk -v f="$archive" '$2 == f {print $1}' "${tmp}/SHA256SUMS")"
-actual="$(sha256sum "${tmp}/${archive}" | awk '{print $1}')"
+actual="$(sha256_file "${tmp}/${archive}")"
 
 [ -n "$expected" ] || fail "no checksum for ${archive} in SHA256SUMS"
 if [ "$expected" != "$actual" ]; then

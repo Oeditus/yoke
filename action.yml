@@ -12,35 +12,55 @@ inputs:
     required: false
     default: 'review'
   base:
-    description: 'Base revision to review from. Defaults to the PR base SHA.'
+    description: 'Base revision to review or describe from. Defaults to the PR base SHA.'
     required: false
     default: ''
   head:
-    description: 'Head revision to review to. Defaults to the PR head SHA.'
+    description: 'Head revision to review or describe to. Defaults to the PR head SHA.'
     required: false
     default: ''
   pr:
     description: 'Pull request number. Defaults to the PR that triggered the workflow.'
     required: false
     default: ''
-  model:
-    description: 'Model identifier to use for the review.'
+  provider:
+    description: 'Provider profile name (e.g. deepseek, local, local-qwen).'
     required: false
-    default: 'deepseek-flash'
+    default: ''
+  model:
+    description: 'Model identifier to use for review, describe, or run.'
+    required: false
+    default: ''
   endpoint:
     description: 'Chat-completions endpoint URL.'
     required: false
     default: ''
   fail-on:
-    description: 'Severity threshold that fails the job: high, medium, low, info, or never.'
+    description: >
+      Severity threshold that fails the job: high, medium, low, info, or never.
+      Defaults to high on pull_request and never on push.
     required: false
     default: ''
-  config-path:
-    description: 'Path to the yoke config file. Defaults to .yoke/config.json in the repo.'
+  format:
+    description: 'Output format: summary, markdown, or json.'
     required: false
     default: ''
+  max-cost:
+    description: 'Hard USD budget for review or describe.'
+    required: false
+    default: ''
+  max-diff-bytes:
+    description: 'Override the review or describe diff cap in bytes (default 300000).'
+    required: false
+    default: ''
+  dry-run:
+    description: 'Resolve review context and exit without calling the model.'
+    required: false
+    default: 'false'
   post:
-    description: 'Post the review to the pull request as inline comments.'
+    description: >
+      Post the review to the pull request as inline comments. Requires
+      `pull-requests: write` permission on the workflow token.
     required: false
     default: 'true'
   with-ragex:
@@ -59,16 +79,14 @@ inputs:
     description: 'Upload the review artifact at the end of the run.'
     required: false
     default: 'true'
-  api-url:
-    description: 'Optional remote sink URL (Phase 3). Failures never fail the job.'
-    required: false
-    default: ''
-  api-key:
-    description: 'Optional remote sink API key (Phase 3).'
+  artifact-name:
+    description: 'Name of the uploaded artifact. Defaults to yoke-<command>.'
     required: false
     default: ''
   yoke-version:
-    description: 'yoke release tag to install, e.g. v0.21.1. Defaults to the latest release, refreshed daily when cached.'
+    description: >
+      yoke release tag to install, e.g. v0.21.1. Defaults to the latest release,
+      refreshed daily when cached.
     required: false
     default: ''
   build-from-source:
@@ -105,7 +123,7 @@ runs:
   using: 'composite'
   steps:
     - name: Install Elixir and Erlang
-      uses: erlef/setup-beam@v1
+      uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
       with:
         elixir-version: ${{ inputs.elixir-version }}
         otp-version: ${{ inputs.otp-version }}
@@ -115,28 +133,55 @@ runs:
       shell: bash
       env:
         ACTION_PATH: ${{ github.action_path }}
+        INPUT_YOKE_VERSION: ${{ inputs.yoke-version }}
+        INPUT_DLLB_VERSION: ${{ inputs.dllb-version }}
       run: |
         set -euo pipefail
+        sha256_file() {
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$1" | awk '{print $1}'
+          elif command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "$1" | awk '{print $1}'
+          else
+            echo "::error::Neither sha256sum nor shasum is available"
+            exit 1
+          fi
+        }
+
+        day="$(date -u +%F)"
+        yoke_key="${INPUT_YOKE_VERSION:-}"
+        if [ -z "$yoke_key" ] || [ "$yoke_key" = "latest" ]; then
+          yoke_key="latest-$day"
+        fi
+        dllb_key="${INPUT_DLLB_VERSION:-}"
+        if [ -z "$dllb_key" ] || [ "$dllb_key" = "latest" ]; then
+          dllb_key="latest-$day"
+        fi
+
         {
-          echo "day=$(date -u +%F)"
-          echo "yoke-installer=$(sha256sum "$ACTION_PATH/scripts/install.sh" | awk '{print $1}')"
-          echo "dllb-installer=$(sha256sum "$ACTION_PATH/scripts/install-dllb.sh" | awk '{print $1}')"
+          echo "day=$day"
+          echo "yoke-key=$yoke_key"
+          echo "dllb-key=$dllb_key"
+          echo "yoke-installer=$(sha256_file "$ACTION_PATH/scripts/install.sh")"
+          echo "dllb-installer=$(sha256_file "$ACTION_PATH/scripts/install-dllb.sh")"
         } >> "$GITHUB_OUTPUT"
 
     - name: Restore yoke binary
       # Source builds must never be satisfied by a downloaded release cache.
       id: yoke-cache
       if: ${{ inputs.build-from-source != 'true' }}
-      uses: actions/cache@v4
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: ~/.local/bin/yoke
-        key: yoke-binary-v1-${{ runner.os }}-${{ runner.arch }}-otp${{ inputs.otp-version }}-elixir${{ inputs.elixir-version }}-${{ steps.binary-cache.outputs.yoke-installer }}-${{ inputs.yoke-version || format('latest-{0}', steps.binary-cache.outputs.day) }}
+        key: yoke-binary-v1-${{ runner.os }}-${{ runner.arch }}-otp${{ inputs.otp-version }}-elixir${{ inputs.elixir-version }}-${{ steps.binary-cache.outputs.yoke-installer }}-${{ steps.binary-cache.outputs.yoke-key }}
 
     - name: Install yoke
       id: install
       if: ${{ inputs.build-from-source == 'true' || steps.yoke-cache.outputs.cache-hit != 'true' }}
       shell: bash
       env:
+        ACTION_PATH: ${{ github.action_path }}
+        GITHUB_TOKEN: ${{ github.token }}
         YOKE_VERSION: ${{ inputs.yoke-version }}
         BUILD_FROM_SOURCE: ${{ inputs.build-from-source }}
       run: |
@@ -153,7 +198,7 @@ runs:
           mkdir -p "$HOME/.local/bin"
           install -m 0755 yoke_escript "$HOME/.local/bin/yoke"
         else
-          "${{ github.action_path }}/scripts/install.sh"
+          "$ACTION_PATH/scripts/install.sh"
         fi
 
     - name: Add installed binaries to PATH
@@ -162,11 +207,11 @@ runs:
 
     - name: Restore dllb binary
       id: dllb-cache
-      if: ${{ inputs.dllb-version != 'skip' }}
-      uses: actions/cache@v4
+      if: ${{ inputs.with-ragex == 'true' && inputs.dllb-version != 'skip' }}
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: ~/.local/bin/dllb-server
-        key: dllb-binary-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.binary-cache.outputs.dllb-installer }}-${{ inputs.dllb-version || format('latest-{0}', steps.binary-cache.outputs.day) }}
+        key: dllb-binary-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.binary-cache.outputs.dllb-installer }}-${{ steps.binary-cache.outputs.dllb-key }}
 
     # Ragex's per-project store backend spawns a `dllb-server` OS process
     # against `<repo>/.ragex/dllb.redb`. That binary is a Rust executable and
@@ -175,13 +220,15 @@ runs:
     # The installer never fails the job on its own: dllb is an accelerator.
     - name: Install dllb-server
       id: dllb
-      if: ${{ inputs.dllb-version != 'skip' && steps.dllb-cache.outputs.cache-hit != 'true' }}
+      if: ${{ inputs.with-ragex == 'true' && inputs.dllb-version != 'skip' && steps.dllb-cache.outputs.cache-hit != 'true' }}
       shell: bash
       env:
+        ACTION_PATH: ${{ github.action_path }}
+        GITHUB_TOKEN: ${{ github.token }}
         DLLB_VERSION: ${{ inputs.dllb-version }}
       run: |
         set -euo pipefail
-        "${{ github.action_path }}/scripts/install-dllb.sh"
+        "$ACTION_PATH/scripts/install-dllb.sh"
 
     # `.ragex` holds the Ragex knowledge graph (dllb.redb) and `.yoke` holds
     # the repo's config, policy and session checkpoints. Restoring them turns
@@ -189,7 +236,7 @@ runs:
     # they describe, so a stale graph is never reused after a code change.
     - name: Restore Ragex and yoke caches
       if: ${{ inputs.with-ragex == 'true' }}
-      uses: actions/cache@v4
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: |
           .ragex
@@ -235,15 +282,17 @@ runs:
       id: review
       shell: bash
       env:
-        # Model provider credentials come from the caller's secrets.
-        DEEPSEEK_API_KEY: ${{ env.DEEPSEEK_API_KEY }}
         # `gh` is preinstalled on GitHub-hosted runners and reads this.
         GITHUB_TOKEN: ${{ github.token }}
         INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_PROVIDER: ${{ inputs.provider }}
         INPUT_MODEL: ${{ inputs.model }}
         INPUT_ENDPOINT: ${{ inputs.endpoint }}
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
-        INPUT_CONFIG_PATH: ${{ inputs.config-path }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_MAX_COST: ${{ inputs.max-cost }}
+        INPUT_MAX_DIFF_BYTES: ${{ inputs.max-diff-bytes }}
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
         INPUT_POST: ${{ inputs.post }}
         INPUT_WITH_RAGEX: ${{ inputs.with-ragex }}
         REVIEW_PR: ${{ steps.range.outputs.pr }}
@@ -252,20 +301,70 @@ runs:
       run: |
         set -uo pipefail
 
-        args=("$INPUT_COMMAND")
+        case "$INPUT_COMMAND" in
+          review|lint|describe|run|audit|rag) ;;
+          *)
+            echo "::error title=Invalid yoke command::unsupported command '$INPUT_COMMAND' (expected review, lint, describe, run, audit, or rag)"
+            exit 2
+            ;;
+        esac
 
-        [ -n "$REVIEW_BASE" ]        && args+=(--base "$REVIEW_BASE")
-        [ -n "$REVIEW_HEAD" ]        && args+=(--head "$REVIEW_HEAD")
-        [ -n "$REVIEW_PR" ]          && args+=(--pr "$REVIEW_PR")
-        [ -n "$INPUT_MODEL" ]        && args+=(--model "$INPUT_MODEL")
-        [ -n "$INPUT_ENDPOINT" ]     && args+=(--endpoint "$INPUT_ENDPOINT")
-        [ -n "$INPUT_FAIL_ON" ]      && args+=(--fail-on "$INPUT_FAIL_ON")
-        [ -n "$INPUT_CONFIG_PATH" ]  && args+=(--config "$INPUT_CONFIG_PATH")
-        [ "$INPUT_POST" = "true" ]   && args+=(--post)
+        if ! command -v jq >/dev/null 2>&1; then
+          echo "::error title=Missing dependency::jq is required on the runner to parse yoke output"
+          exit 3
+        fi
+
+        args=("$INPUT_COMMAND")
+        expect_report=true
+
+        # Build flags per subcommand so strict OptionParser switches never fail
+        # on flags that only apply to `review` or `describe`.
+        case "$INPUT_COMMAND" in
+          review)
+            [ -n "$REVIEW_BASE" ]          && args+=(--base "$REVIEW_BASE")
+            [ -n "$REVIEW_HEAD" ]          && args+=(--head "$REVIEW_HEAD")
+            [ -n "$REVIEW_PR" ]            && args+=(--pr "$REVIEW_PR")
+            [ -n "$INPUT_PROVIDER" ]       && args+=(--provider "$INPUT_PROVIDER")
+            [ -n "$INPUT_MODEL" ]          && args+=(--model "$INPUT_MODEL")
+            [ -n "$INPUT_ENDPOINT" ]       && args+=(--endpoint "$INPUT_ENDPOINT")
+            [ -n "$INPUT_FAIL_ON" ]        && args+=(--fail-on "$INPUT_FAIL_ON")
+            [ -n "$INPUT_FORMAT" ]         && args+=(--format "$INPUT_FORMAT")
+            [ -n "$INPUT_MAX_COST" ]       && args+=(--max-cost "$INPUT_MAX_COST")
+            [ -n "$INPUT_MAX_DIFF_BYTES" ] && args+=(--max-diff-bytes "$INPUT_MAX_DIFF_BYTES")
+            [ "$INPUT_DRY_RUN" = "true" ]  && args+=(--dry-run)
+            [ "$INPUT_POST" = "true" ]     && args+=(--post)
+            ;;
+          describe)
+            [ -n "$REVIEW_BASE" ]          && args+=(--base "$REVIEW_BASE")
+            [ -n "$REVIEW_HEAD" ]          && args+=(--head "$REVIEW_HEAD")
+            [ -n "$REVIEW_PR" ]            && args+=(--pr "$REVIEW_PR")
+            [ -n "$INPUT_PROVIDER" ]       && args+=(--provider "$INPUT_PROVIDER")
+            [ -n "$INPUT_MODEL" ]          && args+=(--model "$INPUT_MODEL")
+            [ -n "$INPUT_ENDPOINT" ]       && args+=(--endpoint "$INPUT_ENDPOINT")
+            [ -n "$INPUT_FAIL_ON" ]        && args+=(--fail-on "$INPUT_FAIL_ON")
+            [ -n "$INPUT_FORMAT" ]         && args+=(--format "$INPUT_FORMAT")
+            [ -n "$INPUT_MAX_COST" ]       && args+=(--max-cost "$INPUT_MAX_COST")
+            [ -n "$INPUT_MAX_DIFF_BYTES" ] && args+=(--max-diff-bytes "$INPUT_MAX_DIFF_BYTES")
+            ;;
+          lint|audit)
+            [ -n "$INPUT_FAIL_ON" ]        && args+=(--fail-on "$INPUT_FAIL_ON")
+            [ -n "$INPUT_FORMAT" ]         && args+=(--format "$INPUT_FORMAT")
+            ;;
+          run)
+            [ -n "$INPUT_PROVIDER" ]       && args+=(--provider "$INPUT_PROVIDER")
+            [ -n "$INPUT_FAIL_ON" ]        && args+=(--fail-on "$INPUT_FAIL_ON")
+            [ -n "$INPUT_FORMAT" ]         && args+=(--format "$INPUT_FORMAT")
+            ;;
+          rag)
+            [ -n "$INPUT_FAIL_ON" ]        && args+=(--fail-on "$INPUT_FAIL_ON")
+            [ -n "$INPUT_FORMAT" ]         && args+=(--format "$INPUT_FORMAT")
+            expect_report=false
+            ;;
+        esac
 
         export YOKE_WITH_RAGEX="$INPUT_WITH_RAGEX"
 
-        report="${RUNNER_TEMP:-/tmp}/yoke-review.json"
+        report="${RUNNER_TEMP:-/tmp}/yoke-${INPUT_COMMAND}.json"
         args+=(--output "$report")
 
         # `yoke` writes the step summary and annotations itself. Capture the
@@ -277,12 +376,13 @@ runs:
         set -e
 
         {
-          echo "report-path=$report"
           if [ -f "$report" ]; then
+            echo "report-path=$report"
             echo "findings-count=$(jq -r '.summary.findings_count // 0' "$report")"
             echo "max-severity=$(jq -r '.summary.max_severity // "none"' "$report")"
             echo "run-uid=$(jq -r '.run_uid // ""' "$report")"
           else
+            echo "report-path="
             echo "findings-count=0"
             echo "max-severity=none"
             echo "run-uid="
@@ -299,7 +399,7 @@ runs:
           exit "$status"
         fi
 
-        if [ ! -f "$report" ]; then
+        if [ "$expect_report" = "true" ] && [ ! -f "$report" ]; then
           echo "::error title=yoke $INPUT_COMMAND produced no artifact::expected $report"
           exit 3
         fi
@@ -311,9 +411,9 @@ runs:
     # "Input required and not supplied: path", masking the real failure.
     - name: Upload review artifact
       if: ${{ always() && inputs.upload == 'true' && steps.review.outputs.report-path != '' }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
-        name: yoke-review
+        name: ${{ inputs.artifact-name || format('yoke-{0}', inputs.command) }}
         path: ${{ steps.review.outputs.report-path }}
         if-no-files-found: warn
         retention-days: 14

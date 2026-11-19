@@ -168,3 +168,30 @@ jobs:
             ${{ matrix.asset_name }}
             ${{ matrix.asset_name }}.sha256
           generate_release_notes: true
+
+  update-major-tag:
+    name: Update floating major tag
+    needs: build-escript
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Move major version tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Skipping major tag update for non-stable tag: $TAG"
+            exit 0
+          fi
+          major_tag="v${BASH_REMATCH[1]}"
+          echo "Updating $major_tag -> $TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$major_tag" "$TAG"
+          git push -f origin "refs/tags/$major_tag"

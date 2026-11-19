@@ -12,7 +12,7 @@ defmodule Yoke.ActionCacheTest do
           {"Restore dllb binary", "~/.local/bin/dllb-server"}
         ] do
       cache = step(@action, name)
-      assert cache =~ "uses: actions/cache@v4"
+      assert cache =~ ~r/uses: actions\/cache@(v4|[0-9a-f]{40})/
       assert cache =~ "path: #{path}\n"
       assert cache =~ "runner.os"
       assert cache =~ "runner.arch"
@@ -21,14 +21,15 @@ defmodule Yoke.ActionCacheTest do
 
     yoke = step(@action, "Restore yoke binary")
     assert yoke =~ "inputs.build-from-source != 'true'"
-    assert yoke =~ "inputs.yoke-version || format('latest-{0}'"
+    assert yoke =~ "steps.binary-cache.outputs.yoke-key"
     assert yoke =~ "inputs.otp-version"
     assert yoke =~ "inputs.elixir-version"
     assert yoke =~ "steps.binary-cache.outputs.yoke-installer"
 
     dllb = step(@action, "Restore dllb binary")
+    assert dllb =~ "inputs.with-ragex == 'true'"
     assert dllb =~ "inputs.dllb-version != 'skip'"
-    assert dllb =~ "inputs.dllb-version || format('latest-{0}'"
+    assert dllb =~ "steps.binary-cache.outputs.dllb-key"
     assert dllb =~ "steps.binary-cache.outputs.dllb-installer"
   end
 
