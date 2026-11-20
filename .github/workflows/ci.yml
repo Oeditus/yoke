@@ -22,7 +22,7 @@ jobs:
         # Keep the supported OTP matrix independent of native build caches.
         otp: ['29']
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
           elixir-version: ${{matrix.elixir}}
@@ -33,7 +33,7 @@ jobs:
           sudo apt-get install -y libgit2-dev build-essential
 
       - name: Restore dependencies cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: deps
           # The OTP version is part of the key: `exla`'s NIF is compiled
@@ -103,7 +103,7 @@ jobs:
       # builds :test beams and the `mix run` steps look for :dev ones.
       MIX_ENV: test
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
           elixir-version: '1.20'
@@ -114,7 +114,7 @@ jobs:
           sudo apt-get install -y libgit2-dev build-essential
 
       - name: Restore dependencies cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: deps
           # The OTP version is part of the key: `exla`'s NIF is compiled
@@ -210,7 +210,7 @@ jobs:
         elixir: ['1.20']
         otp: ['29']
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
           elixir-version: ${{matrix.elixir}}
@@ -221,7 +221,7 @@ jobs:
           sudo apt-get install -y libgit2-dev build-essential
 
       - name: Restore dependencies cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: deps
           # The OTP version is part of the key: `exla`'s NIF is compiled
@@ -231,7 +231,7 @@ jobs:
           key: ${{ runner.os }}-mix-otp${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: ${{ runner.os }}-mix-otp${{ matrix.otp }}-
       - name: Restore PLT cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: priv/plts
           key: ${{ runner.os }}-plt-${{ hashFiles('**/mix.lock') }}

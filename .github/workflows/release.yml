@@ -17,7 +17,7 @@ jobs:
         elixir: ['1.20']
         otp: ['29']
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
           elixir-version: ${{matrix.elixir}}
@@ -27,7 +27,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgit2-dev build-essential
       - name: Restore dependencies cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: deps
           key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
@@ -52,7 +52,7 @@ jobs:
         elixir: ['1.20']
         otp: ['29']
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
           elixir-version: ${{matrix.elixir}}
@@ -62,13 +62,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgit2-dev build-essential
       - name: Restore dependencies cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: deps
           key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
           restore-keys: ${{ runner.os }}-mix-
       - name: Restore PLT cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: priv/plts
           key: ${{ runner.os }}-plt-${{ hashFiles('**/mix.lock') }}
@@ -100,7 +100,7 @@ jobs:
       # via `MIX_ENV=prod`) keeps those deps and keeps embeddings working.
       MIX_ENV: escript
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
           elixir-version: '1.20'
@@ -114,7 +114,7 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install libgit2
       - name: Restore dependencies cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: deps
           key: ${{ runner.os }}-${{ runner.arch }}-mix-escript-${{ hashFiles('**/mix.lock') }}

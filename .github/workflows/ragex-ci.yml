@@ -15,7 +15,7 @@ jobs:
       EXLA_CPU_ONLY: "true"
       NX_DEFAULT_BACKEND: Nx.BinaryBackend
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # Fetch all history for diff-based analysis
       - uses: erlef/setup-beam@v1
@@ -27,7 +27,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgit2-dev build-essential
       - name: Restore dependencies cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: deps
           key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
@@ -104,7 +104,7 @@ jobs:
       XLA_TARGET: cpu
       EXLA_CPU_ONLY: "true"
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
           elixir-version: "1.20"
@@ -114,7 +114,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgit2-dev build-essential
       - name: Restore dependencies cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: deps
           key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
