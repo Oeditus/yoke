@@ -28,6 +28,7 @@ defmodule Yoke.Brain.SessionHardeningTest do
       SessionSupervisor.start_session(
         session_id: session_id,
         model: "deepseek-flash",
+        mock: true,
         cwd: context.tmp_dir
       )
 
@@ -191,6 +192,43 @@ defmodule Yoke.Brain.SessionHardeningTest do
   end
 
   describe "turn isolation" do
+    test "fresh sessions initialize turn metadata and accept consecutive turns", %{
+      pid: pid,
+      cwd: cwd
+    } do
+      assert %{turn_started_at: nil, turn_phase: :general} = :sys.get_state(pid)
+
+      assert {:ok, _} = Session.send_user_message(pid, "Fix the failing compiler")
+      assert %{turn_started_at: started_at, turn_phase: :debug} = :sys.get_state(pid)
+      assert is_integer(started_at)
+
+      assert {:ok, _} = Session.send_user_message(pid, "Find the module")
+      assert %{turn_count: 2, turn_phase: :explore, active_turn: nil} = :sys.get_state(pid)
+
+      assert [%{"phase" => "debug"}, %{"phase" => "explore"}] =
+               Yoke.SelfImprove.Telemetry.load(cwd)
+    end
+
+    test "resumed sessions initialize transient metadata before accepting a turn", %{
+      pid: pid,
+      session_id: id,
+      cwd: cwd
+    } do
+      assert {:ok, _} = Session.send_user_message(pid, "Fix the failing compiler")
+      assert :ok = SessionSupervisor.stop_session(pid)
+
+      {:ok, resumed} =
+        SessionSupervisor.start_session(session_id: id, cwd: cwd, mock: true)
+
+      on_exit(fn -> SessionSupervisor.stop_session(resumed) end)
+
+      assert %{turn_started_at: nil, turn_phase: :general, turn_count: 1} =
+               :sys.get_state(resumed)
+
+      assert {:ok, _} = Session.send_user_message(resumed, "Find the module")
+      assert %{turn_count: 2, turn_phase: :explore, active_turn: nil} = :sys.get_state(resumed)
+    end
+
     # These pin the invariants that keep the session actor responsive while a
     # turn runs in its own supervised task: a second turn is rejected, and a
     # crashed or cancelled turn always answers its waiting caller. All three

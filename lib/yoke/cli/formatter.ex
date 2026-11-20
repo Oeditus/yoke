@@ -153,6 +153,7 @@ defmodule Yoke.CLI.Formatter do
       #{cyan()}/lessons [add <text>]#{reset()}   View or record operational lessons learned in project/lessons.md
       #{cyan()}/lint [files]#{reset()}           Run the linter and offer to apply its fixes
       #{cyan()}/mcp [list|add|load]#{reset()}    Manage Model Context Protocol (MCP) servers and tools
+      #{cyan()}/memory [diff|promote|reject|consolidate|stats]#{reset()}  Manage self-improvement memory & telemetry
       #{cyan()}/mode [local|remote|docker]#{reset()}  Set Hands execution target
       #{cyan()}/model#{reset()} or #{cyan()}/models#{reset()}        List available API models dynamically or switch model (/model <id>)
       #{cyan()}/nodes#{reset()}                  View distributed Erlang node cluster status

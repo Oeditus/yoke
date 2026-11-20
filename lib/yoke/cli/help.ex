@@ -213,6 +213,15 @@ defmodule Yoke.CLI.Help do
     /review conversation [session_id], /session review [session_id].
     Review the current or specified conversation history.
     """,
+    "memory" => """
+    /memory
+    /memory diff
+    /memory promote <id>
+    /memory reject <id>
+    /memory consolidate
+    /memory stats
+    Inspect self-improvement briefing, review/promote staged proposals, run consolidation, or view telemetry stats.
+    """,
     "rules" => """
     /rules
     /rules add <scope: text>

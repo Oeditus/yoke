@@ -329,6 +329,8 @@ defmodule Yoke.Brain.Session do
       tool_failure_counts: %{},
       snapshots: [],
       turn_count: 0,
+      turn_started_at: nil,
+      turn_phase: :general,
       step_count: 0,
       max_tool_depth:
         opts[:max_tool_depth] || Map.get(Config.load_config(cwd), "max_tool_depth", 1000),
@@ -491,8 +493,14 @@ defmodule Yoke.Brain.Session do
 
     rules_preamble = Yoke.Rules.build_preamble("all", state.cwd)
 
-    final_user_text =
-      if rules_preamble != "", do: rules_preamble <> expanded_text, else: expanded_text
+    episodes_preamble =
+      try do
+        Yoke.SelfImprove.Episodes.build_preamble(expanded_text, cwd: state.cwd)
+      rescue
+        _ -> ""
+      end
+
+    final_user_text = rules_preamble <> episodes_preamble <> expanded_text
 
     SessionStore.append_transcript(state.session_id, "USER_INPUT", final_user_text, state.cwd)
 
@@ -538,7 +546,13 @@ defmodule Yoke.Brain.Session do
 
     # A fresh user turn starts with no approved plan; the plan gate may arm
     # once this turn's tool calls look non-trivial.
-    state = %{state | plan_approved_for_turn: false, intent_continuations: 0}
+    state = %{
+      state
+      | plan_approved_for_turn: false,
+        intent_continuations: 0,
+        turn_started_at: System.monotonic_time(:millisecond),
+        turn_phase: Yoke.SelfImprove.Router.classify_phase(expanded_text)
+    }
 
     state = auto_checkpoint(state, "Pre-turn ##{state.turn_count}")
 
@@ -787,6 +801,7 @@ defmodule Yoke.Brain.Session do
     case state.snapshots do
       [latest | rest] ->
         Logger.info("[Brain.Session] Rolling back state to snapshot: #{latest.label}")
+        Yoke.SelfImprove.Telemetry.mark_last_turn_undone(state.session_id, state.cwd)
 
         provider_opts =
           if is_map(latest[:provider_options]) and map_size(latest.provider_options) > 0 do
@@ -1228,9 +1243,20 @@ defmodule Yoke.Brain.Session do
       end
 
     completed = flush_pending_notices(completed)
+    completed = run_self_improve_post_turn(completed, final_response, state)
 
     GenServer.reply(from, final_response)
     {:noreply, completed}
+  end
+
+  @impl true
+  def handle_info({:critic_nudge, nudge}, state) when is_binary(nudge) do
+    notice = %{
+      "role" => "system",
+      "content" => "[CRITIC NUDGE]\n" <> nudge
+    }
+
+    {:noreply, append_or_buffer_notice(state, notice)}
   end
 
   @impl true
@@ -1341,6 +1367,61 @@ defmodule Yoke.Brain.Session do
       [] -> state
       notices -> %{state | messages: state.messages ++ notices, pending_notices: []}
     end
+  end
+
+  defp run_self_improve_post_turn(completed, final_response, prev_state) do
+    cwd = completed.cwd
+    prev_len = length(prev_state.messages)
+    turn_messages = Enum.drop(completed.messages, prev_len)
+
+    outcome =
+      case final_response do
+        {:error, _} -> :failed
+        _ -> :success
+      end
+
+    duration_ms =
+      case Map.get(prev_state, :turn_started_at) do
+        t when is_integer(t) -> System.monotonic_time(:millisecond) - t
+        _ -> 0
+      end
+
+    tool_names =
+      turn_messages
+      |> Enum.flat_map(fn
+        %{"role" => "assistant", "tool_calls" => tcs} when is_list(tcs) ->
+          Enum.map(tcs, fn tc -> get_in(tc, ["function", "name"]) || tc[:name] || "tool" end)
+
+        _ ->
+          []
+      end)
+
+    Yoke.SelfImprove.Telemetry.record_turn(
+      %{
+        session_id: completed.session_id,
+        turn_id: completed.turn_count,
+        model: completed.model,
+        phase: Map.get(prev_state, :turn_phase, :general),
+        tool_calls_count: length(tool_names),
+        duration_ms: duration_ms,
+        outcome: outcome
+      },
+      cwd
+    )
+
+    Yoke.SelfImprove.Episodes.capture_from_messages(turn_messages, cwd)
+    Yoke.SelfImprove.SkillSynthesizer.observe_sequence(tool_names, cwd)
+
+    if length(tool_names) >= 3 do
+      Yoke.SelfImprove.Critic.assess_async(
+        %{tool_calls: Enum.map(tool_names, &%{name: &1})},
+        session_pid: self()
+      )
+    end
+
+    completed
+  rescue
+    _ -> completed
   end
 
   defp do_export_session(format, state, export_dir) do

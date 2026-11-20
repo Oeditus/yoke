@@ -69,6 +69,7 @@ defmodule Yoke.FormatterTest do
     assert String.contains?(menu, "/commit")
     assert String.contains?(menu, "/guide")
     assert String.contains?(menu, "/mcp")
+    assert String.contains?(menu, "/memory")
     assert String.contains?(menu, "/review")
     assert String.contains?(menu, "/skills")
     assert String.contains?(menu, "/compact")

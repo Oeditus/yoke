@@ -264,8 +264,15 @@ defmodule Yoke.CLI.Repl do
     end
   end
 
-  def handle_input("/exit", _pid, _id), do: :exit
-  def handle_input("/quit", _pid, _id), do: :exit
+  def handle_input("/exit", _pid, _id) do
+    Task.start(fn -> Yoke.SelfImprove.Consolidator.consolidate() end)
+    :exit
+  end
+
+  def handle_input("/quit", _pid, _id) do
+    Task.start(fn -> Yoke.SelfImprove.Consolidator.consolidate() end)
+    :exit
+  end
 
   # Flip-flop into/out of "pure console" mode. Must be matched before the
   # generic `"!" <> cmd` shell shortcut below, since that clause would
@@ -1945,6 +1952,90 @@ defmodule Yoke.CLI.Repl do
     """
 
     IO.puts("\n" <> Formatter.format_markdown(md) <> "\n")
+    :continue
+  end
+
+  def handle_input("/memory consolidate", _session_pid, _session_id) do
+    {:ok, report} = Yoke.SelfImprove.Consolidator.consolidate()
+
+    IO.puts(
+      Formatter.format_success(
+        "Consolidated memory: #{report.promoted_count} promoted, #{report.expired_count} expired, #{report.pruned_episodes} stale episodes pruned."
+      )
+    )
+
+    :continue
+  end
+
+  def handle_input("/memory promote " <> id, _session_pid, _session_id) do
+    case Yoke.SelfImprove.Guardrails.promote(String.trim(id)) do
+      {:ok, item} ->
+        IO.puts(Formatter.format_success("Promoted #{item["id"]} (#{item["kind"]})."))
+
+      {:error, :not_found} ->
+        IO.puts(Formatter.format_error("Staged item '#{id}' not found."))
+    end
+
+    :continue
+  end
+
+  def handle_input("/memory reject " <> id, _session_pid, _session_id) do
+    case Yoke.SelfImprove.Guardrails.reject(String.trim(id)) do
+      {:ok, item} -> IO.puts(Formatter.format_info("Rejected #{item["id"]}."))
+      {:error, :not_found} -> IO.puts(Formatter.format_error("Staged item '#{id}' not found."))
+    end
+
+    :continue
+  end
+
+  def handle_input("/memory diff", _session_pid, _session_id) do
+    staged = Yoke.SelfImprove.Guardrails.list_staged(".", "proposed")
+
+    if staged == [] do
+      IO.puts(Formatter.format_info("No proposed memory items in staging."))
+    else
+      rows =
+        Enum.map_join(staged, "\n", fn item ->
+          "| `#{item["id"]}` | `#{item["kind"]}` | #{item["observations"]}x | #{item["content"]} |"
+        end)
+
+      md = """
+      ### Staged Self-Improvement Proposals (#{length(staged)})
+      | ID | Kind | Observations | Content |
+      |---|---|---|---|
+      #{rows}
+
+      Use `/memory promote <id>` or `/memory reject <id>`.
+      """
+
+      IO.puts("\n" <> Formatter.format_markdown(md) <> "\n")
+    end
+
+    :continue
+  end
+
+  def handle_input("/memory stats", _session_pid, _session_id) do
+    summary = Yoke.SelfImprove.Telemetry.summary()
+    IO.puts(Formatter.format_info("Self-Improvement Telemetry: #{inspect(summary)}"))
+    :continue
+  end
+
+  def handle_input("/memory", _session_pid, _session_id) do
+    briefing = Yoke.SelfImprove.Consolidator.read_briefing()
+    staged_count = length(Yoke.SelfImprove.Guardrails.list_staged(".", "proposed"))
+
+    if briefing do
+      IO.puts("\n" <> Formatter.format_markdown(briefing) <> "\n")
+    else
+      IO.puts(Formatter.format_info("No consolidation briefing yet. Run `/memory consolidate`."))
+    end
+
+    IO.puts(
+      Formatter.format_info(
+        "Staged proposals pending: #{staged_count} (`/memory diff` to inspect)."
+      )
+    )
+
     :continue
   end
 
