@@ -34,6 +34,7 @@ defmodule Yoke.Brain.SessionLmml do
   alias Lmml.Manifest
 
   @manifest_name "manifest.json"
+  @compacted_context_name "compacted_context.json"
   @message_prefix "message."
   @message_suffix ".json"
 
@@ -93,7 +94,27 @@ defmodule Yoke.Brain.SessionLmml do
         """
       end)
 
-    narrative = header <> "\n\n" <> body <> "\n"
+    compacted_section =
+      case Map.get(session_state, :compacted_context) ||
+             Map.get(session_state, "compacted_context") do
+        compacted when is_map(compacted) ->
+          """
+
+
+          ## COMPACTED CONTEXT
+
+          #{Map.get(compacted, "summary", "Rolling local compaction snapshot.")}
+
+          @@@#{@compacted_context_name}
+          #{escape_json(Yoke.Json.encode!(compacted))}
+          @@@
+          """
+
+        _ ->
+          ""
+      end
+
+    narrative = header <> "\n\n" <> body <> compacted_section <> "\n"
 
     case Bundle.new_text("#{session_id}.lmml", narrative) do
       {:ok, _bundle} ->
@@ -169,7 +190,12 @@ defmodule Yoke.Brain.SessionLmml do
           Map.get(manifest, "messages", [])
         end
 
-      {:ok, Map.merge(manifest, %{"messages" => all_messages})}
+      decoded = Map.merge(manifest, %{"messages" => all_messages})
+
+      case decode_compacted_context(bundle) do
+        nil -> {:ok, decoded}
+        compacted -> {:ok, Map.put(decoded, "compacted_context", compacted)}
+      end
     end
   end
 
@@ -243,7 +269,26 @@ defmodule Yoke.Brain.SessionLmml do
                 Map.get(manifest, "messages", [])
               end
 
-            {:ok, Map.merge(manifest, %{"messages" => all_messages})}
+            decoded = Map.merge(manifest, %{"messages" => all_messages})
+
+            compacted =
+              Enum.find_value(matches, fn
+                [_, @compacted_context_name, content] ->
+                  case Yoke.Json.decode(content) do
+                    {:ok, map} when is_map(map) -> map
+                    _ -> nil
+                  end
+
+                _ ->
+                  nil
+              end)
+
+            decoded =
+              if compacted,
+                do: Map.put(decoded, "compacted_context", compacted),
+                else: decoded
+
+            {:ok, decoded}
 
           {:error, err} ->
             {:error, "Failed to decode manifest.json embed: #{inspect(err)}"}
@@ -390,6 +435,19 @@ defmodule Yoke.Brain.SessionLmml do
           {:halt, {:error, {embed.name, reason}}}
       end
     end)
+  end
+
+  defp decode_compacted_context(%Bundle{} = bundle) do
+    case Bundle.embed(bundle, @compacted_context_name) do
+      {:ok, content} ->
+        case Yoke.Json.decode(content) do
+          {:ok, map} when is_map(map) -> map
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
   end
 
   defp embed_message?(%Lmml.Embed{name: name}) do

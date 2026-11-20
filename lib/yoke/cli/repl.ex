@@ -620,19 +620,13 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
-  def handle_input("/audit " <> focus, session_pid, _session_id) do
-    focus_atom =
-      case String.trim(focus) do
-        "code" -> :code
-        "ux" -> :ux
-        _ -> :all
-      end
-
-    run_project_audit(session_pid, focus_atom)
+  def handle_input("/audit " <> args, session_pid, _session_id) do
+    {focus_atom, audit_opts} = parse_audit_args(args)
+    run_project_audit(session_pid, focus_atom, audit_opts)
   end
 
   def handle_input("/audit", session_pid, _session_id) do
-    run_project_audit(session_pid, :all)
+    run_project_audit(session_pid, :all, [])
   end
 
   def handle_input("/audit-thoughts", _session_pid, _session_id) do
@@ -892,10 +886,11 @@ defmodule Yoke.CLI.Repl do
       )
 
       review_fn = fn ->
-        Session.generate_code_review(session_pid, ctx.base, ctx.head,
-          peer_comments: ctx.peer_comments,
-          review_context: ctx
-        )
+        gen_opts =
+          [peer_comments: ctx.peer_comments, review_context: ctx] ++
+            Keyword.take(review_opts, [:elixir_plugins])
+
+        Session.generate_code_review(session_pid, ctx.base, ctx.head, gen_opts)
       end
 
       res =
@@ -3378,8 +3373,22 @@ defmodule Yoke.CLI.Repl do
   # `/audit` — whole-project audit. Deterministic facts are gathered locally
   # (fast, no network), rendered for the user, and then handed to the Brain
   # actor as a grounded prompt so the narrative audit cites real evidence.
-  defp run_project_audit(session_pid, focus) do
-    facts = Yoke.Audit.collect(".")
+  defp parse_audit_args(args) do
+    argv = OptionParser.split(args)
+    {parsed, positional, _invalid} = OptionParser.parse(argv, strict: [elixir_plugins: :boolean])
+
+    focus_atom =
+      case List.first(positional) do
+        "code" -> :code
+        "ux" -> :ux
+        _ -> :all
+      end
+
+    {focus_atom, Keyword.take(parsed, [:elixir_plugins])}
+  end
+
+  defp run_project_audit(session_pid, focus, audit_opts) do
+    facts = Yoke.Audit.collect(".", audit_opts)
 
     IO.puts("\n" <> Yoke.Audit.format_header(facts) <> "\n")
     IO.puts(Formatter.format_markdown(Yoke.Audit.format_facts(facts)) <> "\n")

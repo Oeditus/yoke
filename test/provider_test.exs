@@ -608,6 +608,87 @@ defmodule Yoke.ProviderTest do
     {"http://127.0.0.1:#{port}/v1", listener, pid}
   end
 
+  test "session turn compacts context locally and retries on HTTP 400 context-length error", %{
+    tmp_dir: cwd
+  } do
+    {:ok, listener} =
+      :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true, ip: {127, 0, 0, 1}])
+
+    {:ok, {_, port}} = :inet.sockname(listener)
+    owner = self()
+
+    server =
+      spawn(fn ->
+        # First request: reject with DeepSeek-style context length 400 error.
+        {:ok, sock1} = :gen_tcp.accept(listener, 2_000)
+        req1 = read_request(sock1, "")
+        send(owner, {:http_request, 1, req1})
+
+        err_body =
+          Yoke.Json.encode!(%{
+            "error" => %{
+              "code" => "invalid_request_error",
+              "message" =>
+                "This model's maximum context length is 1048576 tokens. However, you requested 1067233 tokens (1067233 in the messages, 0 in the completion). Please reduce the length of the messages or completion.",
+              "param" => nil,
+              "type" => "invalid_request_error"
+            }
+          })
+
+        :gen_tcp.send(
+          sock1,
+          "HTTP/1.1 400\r\nContent-Type: application/json\r\nContent-Length: #{byte_size(err_body)}\r\nConnection: close\r\n\r\n" <>
+            err_body
+        )
+
+        :gen_tcp.close(sock1)
+
+        # Second request (after local compaction): succeed with 200 OK.
+        {:ok, sock2} = :gen_tcp.accept(listener, 2_000)
+        req2 = read_request(sock2, "")
+        send(owner, {:http_request, 2, req2})
+
+        ok_body =
+          Yoke.Json.encode!(%{
+            "choices" => [
+              %{"message" => %{"role" => "assistant", "content" => "Recovered after compaction"}}
+            ]
+          })
+
+        :gen_tcp.send(
+          sock2,
+          "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: #{byte_size(ok_body)}\r\nConnection: close\r\n\r\n" <>
+            ok_body
+        )
+
+        :gen_tcp.close(sock2)
+      end)
+
+    on_exit(fn ->
+      :gen_tcp.close(listener)
+      Process.exit(server, :normal)
+    end)
+
+    pid =
+      session_with_opts(
+        session_id: "turn-ctx-400-#{System.unique_integer([:positive])}",
+        cwd: cwd,
+        endpoint: "http://127.0.0.1:#{port}/v1",
+        api_key: "test-key",
+        mock: false
+      )
+
+    # Seed oversized history so local compaction has material to shrink.
+    large_prompt = String.duplicate("context-padding ", 1_500)
+
+    assert {:ok, %{content: "Recovered after compaction"}} =
+             Session.send_user_message(pid, large_prompt)
+
+    assert_receive {:http_request, 1, req1}, 1_000
+    assert_receive {:http_request, 2, req2}, 1_000
+    assert byte_size(req2) < byte_size(req1)
+  end
+
   defp http_server_status(status_code, body_term) do
     {:ok, listener} =
       :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true, ip: {127, 0, 0, 1}])

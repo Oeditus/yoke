@@ -98,7 +98,10 @@ defmodule Yoke.Config do
     "review_robot_instructions" => false,
     "review_post_inline_comments" => true,
     "review_poster_name" => nil,
-    "review_poster_icon" => "\u{1FAA2}"
+    "review_poster_icon" => "\u{1FAA2}",
+    # Run Elixir language plugins (oeditus_credo, propwise, credo) on diffs during
+    # code reviews and project audits. Set to false (or pass --no-elixir-plugins) to opt out.
+    "elixir_plugins" => true
   }
 
   @doc "Returns the configured project languages list or nil if auto-detection should be used."

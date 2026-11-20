@@ -126,13 +126,17 @@ defmodule Yoke.CI.Review do
   defp run_review_turn(context, opts, cwd) do
     session_pid = Keyword.get(opts, :session)
 
+    review_turn_opts =
+      [review_context: context]
+      |> maybe_put(:elixir_plugins, Keyword.get(opts, :elixir_plugins))
+
     case session_pid do
       pid when is_pid(pid) ->
-        Session.generate_code_review(pid, context.base, context.head, review_context: context)
+        Session.generate_code_review(pid, context.base, context.head, review_turn_opts)
 
       _ ->
         with {:ok, pid} <- start_session(opts, cwd) do
-          Session.generate_code_review(pid, context.base, context.head, review_context: context)
+          Session.generate_code_review(pid, context.base, context.head, review_turn_opts)
         end
     end
   end

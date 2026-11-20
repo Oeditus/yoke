@@ -109,7 +109,7 @@ defmodule Yoke.MixProject do
   # Opt-in source override for validating changes before a Ragex Hex release.
   defp ragex_dep do
     case System.get_env("LOCAL_RAGEX") do
-      nil -> {:ragex, "~> 0.43"}
+      nil -> {:ragex, "~> 0.44"}
       path -> {:ragex, path: Path.expand(path), override: true}
     end
   end
@@ -130,7 +130,7 @@ defmodule Yoke.MixProject do
       []
     else
       [
-        {:bumblebee, "~> 0.5"},
+        {:bumblebee, "~> 0.7.1 or ~> 0.8.0"},
         {:nx, "~> 1.0", override: true},
         {:exla, "~> 1.0", override: true},
         # EXLA 1.0 uses Decoder.decode; Fine 0.2 requires Decoder.try_decode.

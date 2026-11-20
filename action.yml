@@ -57,6 +57,10 @@ inputs:
     description: 'Resolve review context and exit without calling the model.'
     required: false
     default: 'false'
+  elixir-plugins:
+    description: 'Run Elixir language plugins (oeditus_credo, propwise, credo) on diffs during review.'
+    required: false
+    default: 'true'
   post:
     description: >
       Post the review to the pull request as inline comments. Requires
@@ -293,6 +297,7 @@ runs:
         INPUT_MAX_COST: ${{ inputs.max-cost }}
         INPUT_MAX_DIFF_BYTES: ${{ inputs.max-diff-bytes }}
         INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        INPUT_ELIXIR_PLUGINS: ${{ inputs.elixir-plugins }}
         INPUT_POST: ${{ inputs.post }}
         INPUT_WITH_RAGEX: ${{ inputs.with-ragex }}
         REVIEW_PR: ${{ steps.range.outputs.pr }}
@@ -331,8 +336,9 @@ runs:
             [ -n "$INPUT_FORMAT" ]         && args+=(--format "$INPUT_FORMAT")
             [ -n "$INPUT_MAX_COST" ]       && args+=(--max-cost "$INPUT_MAX_COST")
             [ -n "$INPUT_MAX_DIFF_BYTES" ] && args+=(--max-diff-bytes "$INPUT_MAX_DIFF_BYTES")
-            [ "$INPUT_DRY_RUN" = "true" ]  && args+=(--dry-run)
-            [ "$INPUT_POST" = "true" ]     && args+=(--post)
+            [ "$INPUT_DRY_RUN" = "true" ]        && args+=(--dry-run)
+            [ "$INPUT_ELIXIR_PLUGINS" = "false" ] && args+=(--no-elixir-plugins)
+            [ "$INPUT_POST" = "true" ]           && args+=(--post)
             ;;
           describe)
             [ -n "$REVIEW_BASE" ]          && args+=(--base "$REVIEW_BASE")

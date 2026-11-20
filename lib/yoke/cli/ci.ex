@@ -52,6 +52,7 @@ defmodule Yoke.CLI.CI do
     max_cost: :string,
     max_diff_bytes: :string,
     dry_run: :boolean,
+    elixir_plugins: :boolean,
     help: :boolean
   ]
 
@@ -836,6 +837,7 @@ defmodule Yoke.CLI.CI do
       --endpoint <url>    Endpoint override
       --max-cost <usd>    Hard USD budget for this run
       --max-diff-bytes <n>  Override the review diff cap (default 300000)
+      --no-elixir-plugins   Skip Elixir language plugins (oeditus_credo, propwise, credo) on diff
       --dry-run           Resolve the review context and exit without calling the model
       -h, --help          Show this help
 
@@ -864,7 +866,8 @@ defmodule Yoke.CLI.CI do
       model: opts[:model],
       provider: opts[:provider],
       endpoint: opts[:endpoint],
-      max_diff_bytes: parse_int(opts[:max_diff_bytes])
+      max_diff_bytes: parse_int(opts[:max_diff_bytes]),
+      elixir_plugins: opts[:elixir_plugins]
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
   end

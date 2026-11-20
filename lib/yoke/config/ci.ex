@@ -44,7 +44,8 @@ defmodule Yoke.Config.CI do
     "YOKE_MAX_TOOL_DEPTH" => "max_tool_depth",
     "YOKE_TEMPERATURE" => "temperature",
     "YOKE_LANGUAGES" => "languages",
-    "YOKE_ASSISTANT_NAME" => "assistant_name"
+    "YOKE_ASSISTANT_NAME" => "assistant_name",
+    "YOKE_ELIXIR_PLUGINS" => "elixir_plugins"
   }
 
   # Config keys whose environment values are integers.
@@ -243,7 +244,8 @@ defmodule Yoke.Config.CI do
         "max_cycle_period" => 4,
         "max_tokens" => nil,
         "default_branch" => nil,
-        "languages" => nil
+        "languages" => nil,
+        "elixir_plugins" => true
       }
 
     case File.read(path) do
@@ -263,6 +265,8 @@ defmodule Yoke.Config.CI do
     |> String.split(~r/[,;\s]+/, trim: true)
     |> Enum.reject(&(&1 == ""))
   end
+
+  defp coerce("elixir_plugins", value), do: truthy?(value)
 
   defp coerce(key, value) when key in @integer_keys do
     case Integer.parse(String.trim(value)) do

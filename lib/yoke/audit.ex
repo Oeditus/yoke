@@ -59,13 +59,61 @@ defmodule Yoke.Audit do
       |> glob(profile.source_globs, cwd, profile.ignore_dirs)
       |> Enum.reject(&MapSet.member?(test_set, &1))
 
+    health_facts = health(cwd, profile, source_files, test_files)
+
+    elixir_plugins =
+      if "elixir" in profile.languages do
+        collect_elixir_plugins(cwd, health_facts.base_branch, opts)
+      else
+        nil
+      end
+
     %{
       cwd: Path.expand(cwd),
       shape: shape(profile, source_files, test_files),
       hygiene: hygiene(cwd, profile),
-      health: health(cwd, profile, source_files, test_files),
-      markers: markers(cwd, source_files, test_set)
+      health: health_facts,
+      markers: markers(cwd, source_files, test_set),
+      elixir_plugins: elixir_plugins
     }
+  end
+
+  defp collect_elixir_plugins(cwd, base_branch, opts) do
+    case Keyword.get(opts, :elixir_plugin_report) do
+      %{} = precomputed ->
+        precomputed
+
+      nil ->
+        diff_base = resolve_audit_diff_base(cwd, base_branch)
+
+        {:ok, report} =
+          Yoke.ElixirPlugins.run_on_diff(
+            cwd,
+            Keyword.merge(
+              [base_ref: diff_base],
+              Keyword.take(opts, [:elixir_plugins, :plugins, :runner])
+            )
+          )
+
+        report
+    end
+  end
+
+  # When on a feature branch ahead of `base_branch`, diff against `base_branch`
+  # (which covers both committed branch changes and uncommitted edits). When on
+  # `base_branch` itself or when `base_branch` is nil, diff against `HEAD`.
+  defp resolve_audit_diff_base(_cwd, nil), do: nil
+
+  defp resolve_audit_diff_base(cwd, base_branch) do
+    case System.cmd("git", ["rev-parse", "--abbrev-ref", "HEAD"], cd: cwd, stderr_to_stdout: true) do
+      {branch, 0} ->
+        if String.trim(branch) == base_branch, do: nil, else: base_branch
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
   end
 
   # ---------------------------------------------------------------------
@@ -270,6 +318,12 @@ defmodule Yoke.Audit do
         ""
       end
 
+    plugin_line =
+      case Yoke.ElixirPlugins.format_summary(Map.get(facts, :elixir_plugins)) do
+        "" -> ""
+        summary -> "\n\n**Elixir Language Plugins (diff)**\n- #{summary}"
+      end
+
     """
     ### Project facts
 
@@ -287,7 +341,7 @@ defmodule Yoke.Audit do
     - Quality gates: #{inspect(hygiene.quality_gates)}
 
     **Health**
-    - Git dirty: #{inspect(health.git_dirty?)} • Base branch: #{inspect(health.base_branch)}#{untested_section}
+    - Git dirty: #{inspect(health.git_dirty?)} • Base branch: #{inspect(health.base_branch)}#{untested_section}#{plugin_line}
 
     **Markers (TODO/FIXME/HACK/XXX/OPTIMIZE)**
     #{markers}
@@ -305,6 +359,12 @@ defmodule Yoke.Audit do
   def build_prompt(facts, opts \\ []) do
     focus = Keyword.get(opts, :focus, :all)
 
+    plugin_section =
+      case Yoke.ElixirPlugins.format_for_prompt(Map.get(facts, :elixir_plugins)) do
+        "" -> ""
+        formatted -> "\n#{formatted}\n"
+      end
+
     """
     ### Project audit
 
@@ -313,7 +373,7 @@ defmodule Yoke.Audit do
     anything you want to claim by reading the code yourself.
 
     #{format_facts(facts)}
-
+    #{plugin_section}
     ### Deliverable
 
     Respond with exactly these four sections, in this order.
@@ -335,6 +395,10 @@ defmodule Yoke.Audit do
       section's whole job.
     - Do not propose rewrites. Propose the smallest change that removes the
       problem.
+    - When `propwise` identifies property-based testing candidates in the diff,
+      present them as **actual test improvements** (concrete `ExUnit` /
+      `ExUnitProperties` `property` tests targeting the corresponding
+      `*_test.exs` file) whenever applicable.
     """
   end
 

@@ -386,6 +386,7 @@ defmodule Yoke.Brain.Session do
       # `messages` by the post-turn merge in `handle_info({ref, result}, ...)`.
       pending_notices: [],
       images: %{},
+      compacted_context: nil,
       # Optional hard run budgets (`docs/CI_PLAN.md` Phase 1.3). `nil` in the
       # interactive REPL; a `Yoke.CI.Budget` struct in a CI run, where
       # exceeding any ceiling aborts the turn fail-closed.
@@ -429,7 +430,8 @@ defmodule Yoke.Brain.Session do
             | messages: restored_messages,
               snapshots: restore_snapshots(saved_data["snapshots"] || []),
               turn_count: saved_turn(saved_data["turn_count"], restored_messages),
-              images: saved_data["images"] || saved_data[:images] || %{}
+              images: saved_data["images"] || saved_data[:images] || %{},
+              compacted_context: saved_data["compacted_context"]
           }
 
         _ ->
@@ -1376,7 +1378,7 @@ defmodule Yoke.Brain.Session do
   defp start_review_turn(%{active_turn: active} = state, from, context, opts)
        when is_nil(active) do
     peer_comments = Keyword.get(opts, :peer_comments, context.peer_comments)
-    prompt = Yoke.PRReview.review_prompt(context, peer_comments)
+    prompt = Yoke.PRReview.review_prompt(context, peer_comments, opts)
 
     system = %{
       "role" => "system",
@@ -1582,6 +1584,9 @@ defmodule Yoke.Brain.Session do
 
   defp handle_api_error(state, depth, retries, reason) do
     cond do
+      ContextCompressor.context_length_error?(reason) and retries < 2 ->
+        retry_with_local_compaction(state, depth, retries, reason)
+
       tool_call_sequence_error?(reason) and retries == 0 ->
         Logger.warning(
           "[Brain.Session] Provider rejected tool-call sequence (#{reason}); flattening tool roles and retrying once."
@@ -1603,6 +1608,28 @@ defmodule Yoke.Brain.Session do
 
       true ->
         handle_remote_api_error(state, depth, retries, reason)
+    end
+  end
+
+  defp retry_with_local_compaction(state, depth, retries, reason) do
+    target_tokens =
+      ContextCompressor.target_tokens_from_error(reason, state.messages, attempt: retries)
+
+    Logger.warning(
+      "[Brain.Session] Context length exceeded (#{reason}); compacting context locally " <>
+        "(target ~#{target_tokens} tokens) and retrying (attempt #{retries + 1}/2)."
+    )
+
+    {:ok, compacted_messages, summary} =
+      ContextCompressor.compress_locally(state.messages, target_tokens: target_tokens)
+
+    if compacted_messages == state.messages do
+      {{:error, reason}, %{state | status: :idle}}
+    else
+      Logger.info("[Brain.Session] #{summary}")
+      compacted_state = %{state | messages: compacted_messages}
+      SessionStore.save_session(compacted_state, state.cwd)
+      run_agent_loop(compacted_state, depth, retries + 1)
     end
   end
 
@@ -2038,10 +2065,19 @@ defmodule Yoke.Brain.Session do
 
   defp finish_text_response_turn(state, response) do
     final_msg = %{"role" => "assistant", "content" => response.content}
+    updated_messages = state.messages ++ [final_msg]
+
+    compacted_context =
+      if Map.has_key?(state, :review_context) do
+        Map.get(state, :compacted_context)
+      else
+        ContextCompressor.build_compacted_snapshot(updated_messages)
+      end
 
     final_state = %{
       state
-      | messages: state.messages ++ [final_msg],
+      | messages: updated_messages,
+        compacted_context: compacted_context,
         status: :idle,
         suppress_tools: false,
         intent_continuations: 0

@@ -14,7 +14,9 @@ defmodule Yoke.PRReview do
   alias Yoke.PRReview.ReviewDismissal
 
   @doc "Builds a review request solely from pinned evidence and explicit review guidance."
-  def review_prompt(context, peer_comments \\ []) do
+  def review_prompt(context, peer_comments \\ [], opts \\ []) do
+    plugin_section = elixir_plugins_section(context, opts)
+
     """
     Review the committed diff below. Base: #{context.base} (#{context.base_sha}).
     Head: #{context.head} (#{context.head_sha}). Merge base: #{context.merge_base}.
@@ -37,12 +39,37 @@ defmodule Yoke.PRReview do
     <review_diff>
     #{context.raw_diff}
     </review_diff>
-    #{format_peer_comments_for_prompt(peer_comments)}
+    #{plugin_section}#{format_peer_comments_for_prompt(peer_comments)}
     #{prompt_instructions(cwd: context.cwd)}
     ### Current Project Guidance
     #{Yoke.Config.discover_project_rules(context.cwd)}
     #{Yoke.Rules.build_preamble("cr", context.cwd)}
     """
+  end
+
+  defp elixir_plugins_section(context, opts) do
+    report =
+      case Keyword.get(opts, :elixir_plugin_report) do
+        %{} = precomputed ->
+          precomputed
+
+        nil ->
+          {:ok, res} =
+            Yoke.ElixirPlugins.run_on_diff(context.cwd,
+              base_ref: context.merge_base,
+              head_ref: context.head_sha,
+              changed_files: MapSet.to_list(context.changed_paths),
+              elixir_plugins: Keyword.get(opts, :elixir_plugins),
+              headless: Yoke.Config.CI.ci?()
+            )
+
+          res
+      end
+
+    case Yoke.ElixirPlugins.format_for_prompt(report) do
+      "" -> ""
+      formatted -> "<elixir_plugins>\n#{formatted}\n</elixir_plugins>\n"
+    end
   end
 
   @doc """
@@ -56,6 +83,7 @@ defmodule Yoke.PRReview do
       summary: :boolean,
       robot_instructions: :boolean,
       inline: :boolean,
+      elixir_plugins: :boolean,
       poster_name: :string,
       poster_icon: :string
     ]
@@ -78,6 +106,7 @@ defmodule Yoke.PRReview do
       {:summary, val} -> [post_summary: val]
       {:robot_instructions, val} -> [robot_instructions: val]
       {:inline, val} -> [post_inline_comments: val]
+      {:elixir_plugins, val} -> [elixir_plugins: val]
       {:poster_name, val} -> [poster_name: String.trim(val)]
       {:poster_icon, val} -> [poster_icon: String.trim(val)]
     end)
@@ -160,11 +189,12 @@ defmodule Yoke.PRReview do
     5. It is latent: it only bites if a currently-guaranteed condition changes with no concrete reason to expect that change.
     6. It flags duplication in tests or UI code; reserve DRY comments strictly for business logic.
     7. Another reviewer or existing PR comment already raised it.
-    8. A blocking CI check (compiler, credo, dialyzer, formatter) already flags it.
+    8. A blocking CI check (compiler, credo, dialyzer, formatter) already flags it — **except** verified findings from `<elixir_plugins>` (`oeditus_credo` security/anti-pattern checks and `propwise` property-test candidates), which should be surfaced.
     9. It claims the code contradicts a ticket without quoting the verbatim ticket text.
     10. It flags code as unused when a subsequent part of the system consumes it.
 
     ### 9. Tone & Comment Phrasing Rules:
+    - **Actual test improvements for `propwise`**: Whenever `<elixir_plugins>` includes `propwise` candidates that apply to changed code, present them as actual, concrete test improvements (ready-to-use `ExUnit` / `ExUnitProperties` `property` tests in `fix_suggestion`, tailored to the function's real types, invariants, and corresponding `*_test.exs` file—not as abstract advice).
     - **Technical issues only**: Never raise process, organizational, or interpersonal concerns.
     - **Praise outstanding code**: Highlight outstanding craftsmanship in a separate Endorsements section, using plain text and `kind: "endorsement"`.
     - **No emojis**: Do not use Unicode emojis or GitHub emoji shortcodes in review text, findings, endorsements, or suggested prompts. The application alone adds its branding marker and severity circles.

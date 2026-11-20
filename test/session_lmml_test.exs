@@ -281,6 +281,37 @@ defmodule Yoke.Brain.SessionLmmlTest do
       assert {:ok, decoded} = SessionLmml.decode(narrative)
       assert decoded["messages"] == messages
     end
+
+    test "round-trips compacted_context embed alongside full messages" do
+      compacted = %{
+        "messages" => [%{"role" => "system", "content" => "summary"}],
+        "summary" => "Locally compacted context",
+        "estimated_tokens" => 42,
+        "source_message_count" => 4
+      }
+
+      {:ok, narrative} =
+        SessionLmml.encode(
+          %{
+            session_id: "compacted_snap",
+            model: "deepseek-chat",
+            permission_mode: :ask_confirm,
+            step_count: 1,
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            messages: [%{"role" => "user", "content" => "hello"}],
+            snapshots: [],
+            compacted_context: compacted
+          },
+          "compacted_snap"
+        )
+
+      assert narrative =~ "@@@compacted_context.json"
+      assert :ok = SessionLmml.validate(narrative)
+      assert {:ok, decoded} = SessionLmml.decode(narrative)
+      assert decoded["compacted_context"] == compacted
+      assert decoded["messages"] == [%{"role" => "user", "content" => "hello"}]
+    end
   end
 
   describe "validate/1" do
