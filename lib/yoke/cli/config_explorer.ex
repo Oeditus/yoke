@@ -97,9 +97,21 @@ defmodule Yoke.CLI.ConfigExplorer do
 
             worker =
               spawn_link(fn ->
+                worker_opts =
+                  if tab == :sessions do
+                    state.load_options
+                    |> Keyword.put_new(:sessions_offset, Map.get(state.tree, :sessions_offset, 0))
+                    |> Keyword.put_new(
+                      :sessions_page_size,
+                      Map.get(state.tree, :sessions_page_size, default_sessions_page_size())
+                    )
+                  else
+                    state.load_options
+                  end
+
                 result =
                   try do
-                    {:ok, loader.(tab, state.cwd, state.load_options)}
+                    {:ok, loader.(tab, state.cwd, worker_opts)}
                   rescue
                     error -> {:error, Exception.message(error)}
                   catch
@@ -117,6 +129,59 @@ defmodule Yoke.CLI.ConfigExplorer do
       end)
 
     %{state | load_ref: ref, loader_pid: pid, loading: Map.new(@tabs, &{&1, :loading})}
+  end
+
+  @doc false
+  def load_sessions_page(state, new_offset) do
+    owner = self()
+    ref = state.load_ref || make_ref()
+    loader = Keyword.get(state.load_options, :loader, &load_category/3)
+    page_size = Map.get(state.tree, :sessions_page_size, default_sessions_page_size())
+    offset = max(0, new_offset)
+
+    worker_opts =
+      state.load_options
+      |> Keyword.put(:sessions_offset, offset)
+      |> Keyword.put(:sessions_page_size, page_size)
+
+    spawn(fn ->
+      result =
+        try do
+          {:ok, loader.(:sessions, state.cwd, worker_opts)}
+        rescue
+          error -> {:error, Exception.message(error)}
+        catch
+          kind, reason -> {:error, inspect({kind, reason})}
+        end
+
+      send(owner, {:explorer_load, ref, :sessions, result})
+    end)
+
+    %{
+      state
+      | load_ref: ref,
+        cursor: 0,
+        detail_scroll: 0,
+        status_notice: nil,
+        loading: Map.put(state.loading, :sessions, :loading)
+    }
+  end
+
+  defp sessions_has_prev?(%{tree: tree}), do: Map.get(tree, :sessions_offset, 0) > 0
+
+  defp sessions_has_next?(%{tree: tree}) do
+    Map.get(tree, :sessions_offset, 0) + length(Map.get(tree, :sessions, [])) <
+      Map.get(tree, :sessions_total, 0)
+  end
+
+  defp page_sessions(state, :next) do
+    page_size = Map.get(state.tree, :sessions_page_size, default_sessions_page_size())
+    load_sessions_page(state, Map.get(state.tree, :sessions_offset, 0) + page_size)
+  end
+
+  defp page_sessions(state, :prev) do
+    page_size = Map.get(state.tree, :sessions_page_size, default_sessions_page_size())
+    load_sessions_page(state, max(0, Map.get(state.tree, :sessions_offset, 0) - page_size))
   end
 
   @doc false
@@ -194,12 +259,29 @@ defmodule Yoke.CLI.ConfigExplorer do
   defp load_category(:rules, cwd, _opts), do: %{rules: Rules.load_rules(cwd)}
 
   defp load_category(:sessions, cwd, opts) do
+    page_size = sessions_page_size(opts)
+    requested_offset = max(0, Keyword.get(opts, :sessions_offset, 0))
+    all_files = list_session_files(cwd, Keyword.put(opts, :metadata?, false))
+    total_count = length(all_files)
+
+    offset =
+      cond do
+        total_count == 0 -> 0
+        requested_offset >= total_count -> div(total_count - 1, page_size) * page_size
+        true -> requested_offset
+      end
+
     sessions =
-      cwd
-      |> list_session_files(Keyword.put(opts, :metadata?, false))
+      all_files
+      |> Enum.slice(offset, page_size)
       |> Enum.map(&Map.merge(&1, parse_session_metadata(&1.path)))
 
-    %{sessions: sessions}
+    %{
+      sessions: sessions,
+      sessions_total: total_count,
+      sessions_offset: offset,
+      sessions_page_size: page_size
+    }
   end
 
   defp load_category(:practices, cwd, _opts), do: %{practices: list_practice_files(cwd)}
@@ -209,6 +291,18 @@ defmodule Yoke.CLI.ConfigExplorer do
 
   defp load_category(:analytics, cwd, _opts),
     do: %{analytics: read_bash_analytics(cwd), patterns: list_review_patterns(cwd)}
+
+  defp sessions_page_size(opts) do
+    case Keyword.get(opts, :sessions_page_size) do
+      n when is_integer(n) and n > 0 -> n
+      _ -> default_sessions_page_size()
+    end
+  end
+
+  defp default_sessions_page_size do
+    {_cols, rows} = terminal_dimensions()
+    max(5, rows - 6)
+  end
 
   @doc """
   Lists session files from the workspace `.yoke/sessions` directory and the
@@ -599,6 +693,9 @@ defmodule Yoke.CLI.ConfigExplorer do
       config: %{},
       rules: [],
       sessions: [],
+      sessions_total: 0,
+      sessions_offset: 0,
+      sessions_page_size: sessions_page_size(opts),
       practices: [],
       jobs: [],
       skills: [],
@@ -1192,10 +1289,24 @@ defmodule Yoke.CLI.ConfigExplorer do
 
     # 5. Status Notice Line or Divider
     notice_str =
-      if state.status_notice do
-        " #{Formatter.yellow()}⚡ Notice: #{state.status_notice}#{Formatter.reset()}"
-      else
-        " #{Formatter.dim()}Path: #{state.cwd}/.yoke | Active tab: #{tab_label(state.active_tab)}#{Formatter.reset()}"
+      cond do
+        state.status_notice ->
+          " #{Formatter.yellow()}⚡ Notice: #{state.status_notice}#{Formatter.reset()}"
+
+        state.active_tab == :sessions and state.view_mode == :list and
+            Map.get(state.tree, :sessions_total, 0) > 0 ->
+          total = state.tree.sessions_total
+          offset = Map.get(state.tree, :sessions_offset, 0)
+          page_size = max(1, Map.get(state.tree, :sessions_page_size, viewport_rows))
+          from_idx = offset + 1
+          to_idx = offset + length(state.tree.sessions)
+          page = div(offset, page_size) + 1
+          total_pages = max(1, div(total + page_size - 1, page_size))
+
+          " #{Formatter.dim()}Path: #{state.cwd}/.yoke | Conversations: #{from_idx}-#{to_idx} of #{total} (Page #{page}/#{total_pages})#{Formatter.reset()}"
+
+        true ->
+          " #{Formatter.dim()}Path: #{state.cwd}/.yoke | Active tab: #{tab_label(state.active_tab)}#{Formatter.reset()}"
       end
 
     info_line = format_box_row(notice_str, cols, theme.border)
@@ -1204,7 +1315,13 @@ defmodule Yoke.CLI.ConfigExplorer do
     footer_text =
       case state.view_mode do
         :list ->
-          "[Tab/1-8: Tab | ↑/↓: Select | Enter: Expand/Detail | Space: Toggle | a: Add Rule | d: Delete | r: Refresh | q: Exit]"
+          if state.active_tab == :sessions and
+               Map.get(state.tree, :sessions_total, 0) >
+                 Map.get(state.tree, :sessions_page_size, viewport_rows) do
+            "[Tab/1-8: Tab | ↑/↓: Select | PgUp/PgDn or p/n: Page | Enter: Detail | d: Delete | r: Refresh | q: Exit]"
+          else
+            "[Tab/1-8: Tab | ↑/↓: Select | Enter: Expand/Detail | Space: Toggle | a: Add Rule | d: Delete | r: Refresh | q: Exit]"
+          end
 
         :detail ->
           "[↑/↓/PgUp/PgDn: Scroll Detail | e: Edit | Space: Toggle | Esc/q: Back to List View]"
@@ -2133,10 +2250,36 @@ defmodule Yoke.CLI.ConfigExplorer do
         tui_loop(move_cursor(state, 1), input)
 
       :page_up ->
-        tui_loop(move_cursor(state, -10), input)
+        if state.active_tab == :sessions and state.view_mode == :list and
+             sessions_has_prev?(state) do
+          tui_loop(page_sessions(state, :prev), input)
+        else
+          tui_loop(move_cursor(state, -10), input)
+        end
 
       :page_down ->
-        tui_loop(move_cursor(state, 10), input)
+        if state.active_tab == :sessions and state.view_mode == :list and
+             sessions_has_next?(state) do
+          tui_loop(page_sessions(state, :next), input)
+        else
+          tui_loop(move_cursor(state, 10), input)
+        end
+
+      {:char, ?n} ->
+        if state.active_tab == :sessions and state.view_mode == :list and
+             sessions_has_next?(state) do
+          tui_loop(page_sessions(state, :next), input)
+        else
+          tui_loop(state, input)
+        end
+
+      {:char, ?p} ->
+        if state.active_tab == :sessions and state.view_mode == :list and
+             sessions_has_prev?(state) do
+          tui_loop(page_sessions(state, :prev), input)
+        else
+          tui_loop(state, input)
+        end
 
       :home ->
         tui_loop(%{state | cursor: 0, detail_scroll: 0}, input)

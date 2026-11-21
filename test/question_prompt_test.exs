@@ -404,5 +404,46 @@ defmodule Yoke.CLI.QuestionPromptTest do
         end
       end
     end
+
+    test "renders pager navigation hint in footer when pager options are enabled" do
+      state =
+        QuestionPrompt.new_state(
+          "Select conversation to resume (1-20 of 40):",
+          ["Session 1", "Session 2"],
+          false,
+          -1,
+          false,
+          nil,
+          nil,
+          clear_on_done: true,
+          pager: %{has_prev?: false, has_next?: true}
+        )
+
+      output = capture_io(:user, fn -> QuestionPrompt.render_modal(state) end)
+      assert output =~ "PgUp/PgDn: Page"
+      assert output =~ "Esc: Cancel"
+    end
+
+    test "allow_custom: false and mark_recommended: false omit custom write-in and (Recommended)" do
+      res =
+        capture_io("1\n", fn ->
+          ans =
+            QuestionPrompt.do_ask_single_question(
+              "Select conversation to resume:",
+              ["Session A", "Session B"],
+              false,
+              false,
+              allow_custom: false,
+              mark_recommended: false,
+              clear_on_done: true
+            )
+
+          send(self(), {:ans, ans})
+        end)
+
+      refute res =~ "Write custom response"
+      refute res =~ "(Recommended)"
+      assert_received {:ans, %{selected: ["Session A"]}}
+    end
   end
 end

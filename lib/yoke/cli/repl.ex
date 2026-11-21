@@ -3899,11 +3899,26 @@ defmodule Yoke.CLI.Repl do
             question_title,
             opts,
             false,
-            false
+            false,
+            allow_custom: false,
+            mark_recommended: false,
+            clear_on_done: true,
+            pager: %{has_prev?: has_newer?, has_next?: has_deeper?}
           )
         end)
 
       case ans do
+        %{pager: :next} when has_deeper? ->
+          prompt_resume_page(session_pid, session_id, offset + @resume_page_size, total_count)
+
+        %{pager: :prev} when has_newer? ->
+          prompt_resume_page(
+            session_pid,
+            session_id,
+            max(0, offset - @resume_page_size),
+            total_count
+          )
+
         %{selected: [raw_sel]} when is_binary(raw_sel) ->
           sel =
             raw_sel

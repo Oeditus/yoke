@@ -249,6 +249,70 @@ defmodule Yoke.CLI.ConfigExplorerLoadingTest do
     assert output =~ "auto_update_feature"
   end
 
+  test "sessions tab lazily loads one screen page and supports paging next/prev" do
+    cwd = Path.join(System.tmp_dir!(), "explorer_pager_#{System.unique_integer([:positive])}")
+    directory = Path.join(cwd, ".yoke/sessions")
+    File.mkdir_p!(directory)
+    on_exit(fn -> File.rm_rf!(cwd) end)
+
+    for i <- 1..7 do
+      path = Path.join(directory, "sess_#{String.pad_leading(Integer.to_string(i), 2, "0")}.lmml")
+
+      File.write!(path, """
+      @@@manifest.json
+      {"session_id":"sess_#{i}","model":"deepseek-flash","messages":[{"role":"user","content":"Prompt #{i}"}]}
+      @@@
+
+      # User
+      Prompt #{i}
+      """)
+
+      # Distinct mtime so ordering is deterministic
+      File.touch!(path, {{2026, 11, 1}, {10, 0, i}})
+    end
+
+    state =
+      ConfigExplorer.new_state(cwd, include_global?: false, sessions_page_size: 3)
+      |> ConfigExplorer.switch_tab(2)
+      |> ConfigExplorer.start_loading()
+
+    on_exit(fn -> ConfigExplorer.cancel_loading(state) end)
+    ref = state.load_ref
+
+    assert_receive {:explorer_load, ^ref, :sessions, {:ok, page1}}
+    assert length(page1.sessions) == 3
+    assert page1.sessions_total == 7
+    assert page1.sessions_offset == 0
+    assert Enum.map(page1.sessions, & &1.id) == ["sess_07", "sess_06", "sess_05"]
+
+    state =
+      ConfigExplorer.apply_load_result(state, {:explorer_load, ref, :sessions, {:ok, page1}})
+
+    page1_out =
+      ExUnit.CaptureIO.capture_io(:user, fn ->
+        ConfigExplorer.render_full_screen(state)
+      end)
+
+    assert page1_out =~ "Conversations: 1-3 of 7 (Page 1/3)"
+    assert page1_out =~ "PgUp/PgDn or p/n: Page"
+
+    state = ConfigExplorer.load_sessions_page(state, 3)
+    assert_receive {:explorer_load, ^ref, :sessions, {:ok, page2}}
+    assert length(page2.sessions) == 3
+    assert page2.sessions_offset == 3
+    assert Enum.map(page2.sessions, & &1.id) == ["sess_04", "sess_03", "sess_02"]
+
+    state =
+      ConfigExplorer.apply_load_result(state, {:explorer_load, ref, :sessions, {:ok, page2}})
+
+    page2_out =
+      ExUnit.CaptureIO.capture_io(:user, fn ->
+        ConfigExplorer.render_full_screen(state)
+      end)
+
+    assert page2_out =~ "Conversations: 4-6 of 7 (Page 2/3)"
+  end
+
   defp receive_worker do
     receive do
       {:worker, tab, pid} -> {tab, pid}

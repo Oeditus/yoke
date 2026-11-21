@@ -97,6 +97,8 @@ defmodule Yoke.CLI.QuestionPrompt do
       ) do
     options = if is_list(options) and options != [], do: options, else: ["Yes", "No"]
     filterable = Keyword.get(opts, :filterable, false)
+    allow_custom = Keyword.get(opts, :allow_custom, not filterable)
+    mark_recommended = Keyword.get(opts, :mark_recommended, true)
 
     has_recommended? =
       Enum.any?(options, fn opt ->
@@ -105,7 +107,7 @@ defmodule Yoke.CLI.QuestionPrompt do
 
     options =
       cond do
-        filterable ->
+        filterable or not mark_recommended ->
           options
 
         has_recommended? ->
@@ -125,8 +127,8 @@ defmodule Yoke.CLI.QuestionPrompt do
       write_god_mode_notice(question, selected_opt)
       %{selected: selected}
     else
-      all_options = if filterable, do: options, else: options ++ ["Write custom response…"]
-      custom_idx = if filterable, do: -1, else: length(all_options) - 1
+      all_options = if allow_custom, do: options ++ ["Write custom response…"], else: options
+      custom_idx = if allow_custom, do: length(all_options) - 1, else: -1
       progress = Keyword.get(opts, :progress)
       subagent = Keyword.get(opts, :subagent)
 
@@ -267,6 +269,7 @@ defmodule Yoke.CLI.QuestionPrompt do
       filterable: filterable,
       filter_query: initial_filter,
       clear_on_done: Keyword.get(opts, :clear_on_done, false),
+      pager: Keyword.get(opts, :pager),
       cursor: 0,
       selected: MapSet.new(),
       rendered_lines: 0
@@ -439,6 +442,12 @@ defmodule Yoke.CLI.QuestionPrompt do
       :down ->
         tui_loop(move_down(state))
 
+      key when key in [:left, :page_up] ->
+        maybe_pager_turn(state, :prev)
+
+      key when key in [:right, :page_down] ->
+        maybe_pager_turn(state, :next)
+
       :space ->
         if Map.get(state, :filterable, false) do
           tui_loop(handle_filter_char(state, ?\s))
@@ -471,10 +480,18 @@ defmodule Yoke.CLI.QuestionPrompt do
         end
 
       {:char, char_code} ->
-        if Map.get(state, :filterable, false) do
-          tui_loop(handle_filter_char(state, char_code))
-        else
-          tui_loop(state)
+        cond do
+          Map.get(state, :filterable, false) ->
+            tui_loop(handle_filter_char(state, char_code))
+
+          char_code == ?n and pager_can?(state, :next) ->
+            maybe_pager_turn(state, :next)
+
+          char_code == ?p and pager_can?(state, :prev) ->
+            maybe_pager_turn(state, :prev)
+
+          true ->
+            tui_loop(state)
         end
 
       :ctrl_o ->
@@ -509,6 +526,20 @@ defmodule Yoke.CLI.QuestionPrompt do
 
       _ ->
         tui_loop(state)
+    end
+  end
+
+  defp pager_can?(%{filterable: true}, _dir), do: false
+  defp pager_can?(%{pager: %{has_prev?: true}}, :prev), do: true
+  defp pager_can?(%{pager: %{has_next?: true}}, :next), do: true
+  defp pager_can?(_, _), do: false
+
+  defp maybe_pager_turn(state, dir) do
+    if pager_can?(state, dir) do
+      if Map.get(state, :clear_on_done, false), do: erase_modal(state)
+      %{pager: dir}
+    else
+      tui_loop(state)
     end
   end
 
@@ -640,6 +671,13 @@ defmodule Yoke.CLI.QuestionPrompt do
       cond do
         Map.get(state, :filterable, false) ->
           "[Type to filter | ↑/↓: Select | Enter: Confirm | Esc: Cancel]"
+
+        pager = Map.get(state, :pager) ->
+          if Map.get(pager, :has_prev?, false) or Map.get(pager, :has_next?, false) do
+            "[↑/↓: Select | ←/→ or PgUp/PgDn: Page | Enter: Confirm | Esc: Cancel]"
+          else
+            "[↑/↓: Select | Enter: Confirm | Esc: Cancel]"
+          end
 
         state.is_multi ->
           "[↑/↓ or 1-#{length(state.options)}: Navigate | Space: Toggle | Enter: Confirm]"
@@ -1019,6 +1057,8 @@ defmodule Yoke.CLI.QuestionPrompt do
   defp match_key("\e[B"), do: :down
   defp match_key("\e[C"), do: :right
   defp match_key("\e[D"), do: :left
+  defp match_key("\e[5~"), do: :page_up
+  defp match_key("\e[6~"), do: :page_down
   defp match_key("\eOA"), do: :up
   defp match_key("\eOB"), do: :down
   defp match_key("\eOC"), do: :right
