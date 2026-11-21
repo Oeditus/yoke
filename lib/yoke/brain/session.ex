@@ -1149,19 +1149,13 @@ defmodule Yoke.Brain.Session do
   end
 
   defp export_session_content(:markdown, state, export_path) do
-    case Yoke.Brain.SessionLmml.encode(state, state.session_id) do
-      {:ok, narrative} ->
-        case Yoke.Brain.SessionLmml.to_markdown(narrative) do
-          {:ok, md_content} ->
-            case File.write(export_path, md_content) do
-              :ok -> {:ok, export_path}
-              err -> err
-            end
-
-          _ ->
-            fallback_markdown_export(state, export_path)
-        end
-
+    with {:ok, narrative} <- Yoke.Brain.SessionLmml.encode(state, state.session_id),
+         {:ok, md_content} <- Yoke.Brain.SessionLmml.to_markdown(narrative) do
+      case File.write(export_path, md_content) do
+        :ok -> {:ok, export_path}
+        err -> err
+      end
+    else
       _ ->
         fallback_markdown_export(state, export_path)
     end

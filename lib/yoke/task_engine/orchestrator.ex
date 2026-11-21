@@ -176,8 +176,8 @@ defmodule Yoke.TaskEngine.Orchestrator do
 
     if is_binary(cmd) and long_running_command?(cmd) do
       "This command starts a long-lived process (server, watcher, or REPL). " <>
-        "Re-run it with `async: true` and poll with `job_status`, or use a " <>
-        "one-shot build/test command instead."
+        "Re-run it with `async: true` (it will notify this session automatically " <>
+        "when it finishes), or use a one-shot build/test command instead."
     else
       "Re-run it with `async: true` if it legitimately needs more time."
     end
@@ -360,11 +360,6 @@ defmodule Yoke.TaskEngine.Orchestrator do
   # automatically removes a dead owner's entries, even after :brutal_kill.
   # Bound the wait on a live owner so the model can see the failure and retry.
   @lock_timeout_ms 60_000
-  # Poll interval while contended. Deliberately coarser than the old 10ms
-  # spin: a blocked worker used to wake 100x/second for as long as a human
-  # took to answer an `ask_question` modal, burning a scheduler slot for
-  # nothing.
-  @lock_poll_ms 25
 
   @doc false
   @spec lock_timeout_ms() :: pos_integer()
@@ -391,27 +386,92 @@ defmodule Yoke.TaskEngine.Orchestrator do
 
   defp deadline, do: System.monotonic_time(:millisecond) + @lock_timeout_ms
 
+  # Subscribe to lock-release notifications before attempting registration so no
+  # release between a failed `Registry.register/3` and waiting can be missed,
+  # and monitor the current holder so a crashed owner wakes waiters immediately
+  # without polling.
   defp acquire_lock(resource_key, deadline) do
+    pubsub? = Process.whereis(Yoke.PubSubRegistry) != nil
+
+    if pubsub? do
+      Registry.register(Yoke.PubSubRegistry, {:lock_waiter, resource_key}, :waiting)
+    end
+
+    try do
+      do_acquire_lock(resource_key, deadline)
+    after
+      if pubsub? do
+        Registry.unregister(Yoke.PubSubRegistry, {:lock_waiter, resource_key})
+      end
+
+      flush_lock_released(resource_key)
+    end
+  end
+
+  defp do_acquire_lock(resource_key, deadline) do
     case Registry.register(Yoke.TaskEngine.LockRegistry, resource_key, :locked) do
       {:ok, _owner} ->
         :ok
 
-      {:error, {:already_registered, _pid}} ->
-        if System.monotonic_time(:millisecond) >= deadline do
-          {:error,
-           "Timed out after #{@lock_timeout_ms}ms waiting for lock '#{resource_key}'. " <>
-             "Another tool call is still holding it; retry once it finishes."}
+      {:error, {:already_registered, owner_pid}} ->
+        remaining = deadline - System.monotonic_time(:millisecond)
+
+        if remaining <= 0 do
+          lock_timeout_error(resource_key)
         else
-          Process.sleep(@lock_poll_ms)
-          acquire_lock(resource_key, deadline)
+          ref = Process.monitor(owner_pid)
+
+          case Registry.lookup(Yoke.TaskEngine.LockRegistry, resource_key) do
+            [{^owner_pid, _}] ->
+              receive do
+                {:lock_released, ^resource_key} ->
+                  Process.demonitor(ref, [:flush])
+                  do_acquire_lock(resource_key, deadline)
+
+                {:DOWN, ^ref, :process, ^owner_pid, _reason} ->
+                  do_acquire_lock(resource_key, deadline)
+              after
+                remaining ->
+                  Process.demonitor(ref, [:flush])
+                  lock_timeout_error(resource_key)
+              end
+
+            _ ->
+              Process.demonitor(ref, [:flush])
+              do_acquire_lock(resource_key, deadline)
+          end
         end
     end
   end
 
+  defp lock_timeout_error(resource_key) do
+    {:error,
+     "Timed out after #{@lock_timeout_ms}ms waiting for lock '#{resource_key}'. " <>
+       "Another tool call is still holding it; retry once it finishes."}
+  end
+
   defp release_lock(resource_key) when is_binary(resource_key) do
     Registry.unregister(Yoke.TaskEngine.LockRegistry, resource_key)
+    notify_lock_released(resource_key)
+    :ok
   rescue
     _ -> :ok
+  end
+
+  defp notify_lock_released(resource_key) do
+    if Process.whereis(Yoke.PubSubRegistry) do
+      Registry.dispatch(Yoke.PubSubRegistry, {:lock_waiter, resource_key}, fn entries ->
+        for {pid, _} <- entries, do: send(pid, {:lock_released, resource_key})
+      end)
+    end
+  end
+
+  defp flush_lock_released(resource_key) do
+    receive do
+      {:lock_released, ^resource_key} -> flush_lock_released(resource_key)
+    after
+      0 -> :ok
+    end
   end
 
   defp safe_to_string(nil), do: ""

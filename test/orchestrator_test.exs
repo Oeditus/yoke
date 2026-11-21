@@ -194,6 +194,53 @@ defmodule Yoke.TaskEngine.OrchestratorTest do
       assert File.read!(path) == "ok"
     end
 
+    test "a contended lock is acquired immediately if the holder crashes" do
+      path = Path.join(System.tmp_dir!(), "lock_crash_#{System.unique_integer([:positive])}.txt")
+      key = Orchestrator.get_lock_resource("write_file", %{"path" => path})
+      caller = self()
+      on_exit(fn -> File.rm(path) end)
+
+      holder =
+        spawn(fn ->
+          {:ok, _} = Registry.register(Yoke.TaskEngine.LockRegistry, key, :locked)
+          send(caller, :lock_held)
+          receive do: (:never -> :ok)
+        end)
+
+      on_exit(fn -> if Process.alive?(holder), do: Process.exit(holder, :kill) end)
+      assert_receive :lock_held
+
+      session_state = %{hands: %Yoke.Hands.Executor{mode: :local}}
+
+      worker =
+        Task.async(fn ->
+          Orchestrator.execute_batch(
+            [%{id: "w1", name: "write_file", arguments: %{"path" => path, "content" => "ok"}}],
+            session_state
+          )
+        end)
+
+      assert Task.yield(worker, 50) == nil
+      Process.exit(holder, :kill)
+      assert [{_tc, {:ok, _}}] = Task.await(worker)
+      assert File.read!(path) == "ok"
+    end
+
+    test "concurrent write_file calls to the same path serialize cleanly" do
+      path = Path.join(System.tmp_dir!(), "lock_serial_#{System.unique_integer([:positive])}.txt")
+      on_exit(fn -> File.rm(path) end)
+      session_state = %{hands: %Yoke.Hands.Executor{mode: :local}}
+
+      tool_calls = [
+        %{id: "w1", name: "write_file", arguments: %{"path" => path, "content" => "first"}},
+        %{id: "w2", name: "write_file", arguments: %{"path" => path, "content" => "second"}}
+      ]
+
+      results = Orchestrator.execute_batch(tool_calls, session_state)
+      assert [{_, {:ok, _}}, {_, {:ok, _}}] = results
+      assert File.read!(path) in ["first", "second"]
+    end
+
     test "the configured lock wait is finite and positive" do
       assert is_integer(Orchestrator.lock_timeout_ms())
       assert Orchestrator.lock_timeout_ms() > 0

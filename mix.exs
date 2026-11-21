@@ -75,7 +75,7 @@ defmodule Yoke.MixProject do
       {:req, "~> 0.7"},
       {:marcli, "~> 0.3"},
       md_dep(),
-      {:lmml, "~> 0.2"},
+      {:lmml, "~> 0.3"},
       {:makeup_elixir, ">= 0.0.0", optional: true},
       {:makeup_erlang, ">= 0.0.0", optional: true},
       {:makeup_cure, ">= 0.0.0", optional: true},

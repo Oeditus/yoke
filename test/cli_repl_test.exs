@@ -556,37 +556,80 @@ defmodule Yoke.CLIReplTest do
              Repl.handle_input("/session resume " <> target_id, pid, id)
   end
 
+  @tag tmp_dir: true
+  test "session cleanup preserves unreadable sessions", %{tmp_dir: cwd} do
+    File.cd!(cwd, fn ->
+      File.mkdir_p!(".yoke/sessions")
+      File.write!(".yoke/sessions/unreadable.lmml", "@@@manifest.json\nbroken")
+      File.write!(".yoke/sessions/empty.json", ~s({"session_id":"empty","messages":[]}))
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        output =
+          ExUnit.CaptureIO.capture_io(fn ->
+            assert :continue = Repl.handle_input("/session cleanup", nil, nil)
+          end)
+
+        assert output =~ "Cleaned up 1"
+      end)
+
+      assert File.exists?(".yoke/sessions/unreadable.lmml")
+      refute File.exists?(".yoke/sessions/empty.json")
+    end)
+  end
+
+  @tag tmp_dir: true
   test "handles /resume interactive picker and /session list pagination", %{
     session_pid: pid,
-    session_id: id
+    session_id: id,
+    tmp_dir: tmp_dir
   } do
-    Repl.handle_input("/god on", pid, id)
+    File.cd!(tmp_dir, fn ->
+      File.mkdir_p!(".yoke/sessions")
 
-    on_exit(fn ->
-      Repl.handle_input("/god off", pid, id)
+      for index <- 1..25 do
+        fixture_id = "pagination_#{id}_#{index}"
+
+        File.write!(
+          ".yoke/sessions/#{fixture_id}.json",
+          Yoke.Json.encode!(%{
+            "session_id" => fixture_id,
+            "model" => "deepseek-flash",
+            "messages" => [%{"role" => "user", "content" => "Fixture #{index}"}],
+            "updated_at" => "2026-11-21T12:00:00"
+          })
+        )
+      end
+
+      Repl.handle_input("/god on", pid, id)
+
+      try do
+        case Repl.handle_input("/resume", pid, id) do
+          {:switch_session, target_id, new_pid} ->
+            assert is_binary(target_id)
+            assert is_pid(new_pid)
+            SessionSupervisor.stop_session(new_pid)
+
+          :continue ->
+            :ok
+        end
+
+        case Repl.handle_input("/session switch", pid, id) do
+          {:switch_session, target_id, new_pid} ->
+            assert is_binary(target_id)
+            assert is_pid(new_pid)
+            SessionSupervisor.stop_session(new_pid)
+
+          :continue ->
+            :ok
+        end
+
+        assert :continue = Repl.handle_input("/session list", pid, id)
+        assert :continue = Repl.handle_input("/session list all", pid, id)
+        assert :continue = Repl.handle_input("/session list 5", pid, id)
+      after
+        Repl.handle_input("/god off", pid, id)
+      end
     end)
-
-    case Repl.handle_input("/resume", pid, id) do
-      {:switch_session, target_id, new_pid} ->
-        assert is_binary(target_id)
-        assert is_pid(new_pid)
-
-      :continue ->
-        :ok
-    end
-
-    case Repl.handle_input("/session switch", pid, id) do
-      {:switch_session, target_id, new_pid} ->
-        assert is_binary(target_id)
-        assert is_pid(new_pid)
-
-      :continue ->
-        :ok
-    end
-
-    assert :continue = Repl.handle_input("/session list", pid, id)
-    assert :continue = Repl.handle_input("/session list all", pid, id)
-    assert :continue = Repl.handle_input("/session list 5", pid, id)
   end
 
   test "handles /plan slash commands without writing to the repo config", %{

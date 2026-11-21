@@ -86,6 +86,17 @@ defmodule Yoke.TaskEngine.JobManagerTest do
     refute JobManager.running_jobs() |> Enum.any?(&(&1.id == job_id))
   end
 
+  test "await_all/1 force-kills jobs that outlive the timeout" do
+    assert {:ok, job_id, _log} = JobManager.start_job("sleep 10")
+
+    assert JobManager.running_jobs() |> Enum.any?(&(&1.id == job_id))
+
+    assert :ok = JobManager.await_all(50)
+    refute JobManager.running_jobs() |> Enum.any?(&(&1.id == job_id))
+    assert {:ok, status} = JobManager.get_job_status(job_id)
+    assert status =~ "KILLED"
+  end
+
   test "kill_all_jobs/0 kills all currently running background jobs" do
     assert {:ok, job_1, _} = JobManager.start_job("sleep 10")
     assert {:ok, job_2, _} = JobManager.start_job("sleep 10")

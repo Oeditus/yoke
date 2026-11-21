@@ -41,6 +41,18 @@ defmodule Yoke.Brain.SessionHardeningTest do
   end
 
   describe "D5: export_session/2 reports directory failures" do
+    test "writes rendered Markdown rather than falling back or writing a tuple", %{pid: pid} do
+      assert :ok = Session.record_error(pid, "Markdown export regression")
+      assert {:ok, path} = Session.export_session(pid, :markdown)
+
+      markdown = File.read!(path)
+      assert markdown =~ "# Yoke Conversation:"
+      assert markdown =~ "Markdown export regression"
+      refute markdown =~ "# Session Export:"
+      refute markdown =~ "@@@manifest.json"
+      assert Process.alive?(pid)
+    end
+
     test "returns an error instead of crashing when .yoke cannot be created", %{
       pid: pid,
       cwd: cwd

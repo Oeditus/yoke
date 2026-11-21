@@ -6,8 +6,10 @@ defmodule Yoke.Brain.SessionLmml do
   conversations.
 
   A session is encoded as a *narrative* (the human-readable, ordered view
-  of the conversation) plus two kinds of named *embeds*:
+  of the conversation) plus three kinds of named *embeds*:
 
+    - `@@@listing.json ... @@@` -- compact versioned listing metadata, without
+      messages or snapshots, allowing session listings to skip history parsing.
     - `@@@manifest.json ... @@@` -- the session's metadata and temporal
       snapshots, `Lmml.Manifest`-compatible.
     - `@@@message.N.json ... @@@` -- one inline embed per message, carrying
@@ -70,6 +72,10 @@ defmodule Yoke.Brain.SessionLmml do
     This conversation is stored as an `lmml` narrative (a Markdown-superset
     markup). The authoritative message list and session metadata are carried
     as inline embeds below; the role headings are a human-readable view.
+
+    @@@listing.json
+    #{escape_json(Yoke.Json.encode!(Yoke.Brain.SessionMetadata.from_state(session_state, session_id, manifest["updated_at"])))}
+    @@@
 
     @@@#{@manifest_name}
     #{escape_json(Yoke.Json.encode!(manifest, pretty: true))}
@@ -320,14 +326,14 @@ defmodule Yoke.Brain.SessionLmml do
   def to_markdown(target, opts \\ [])
 
   def to_markdown(%Bundle{} = bundle, opts) do
-    {:ok, Lmml.to_md(bundle, opts)}
+    Lmml.to_md(bundle, opts)
   rescue
     e -> {:error, Exception.message(e)}
   end
 
   def to_markdown(narrative, opts) when is_binary(narrative) do
     case Bundle.new_text("session.lmml", narrative) do
-      {:ok, bundle} -> {:ok, Lmml.to_md(bundle, opts)}
+      {:ok, bundle} -> to_markdown(bundle, opts)
       {:error, reason} -> {:error, reason}
     end
   rescue

@@ -2392,7 +2392,9 @@ defmodule Yoke.CLI.Repl do
 
   def handle_input("/session cleanup", _session_pid, _session_id) do
     metas = Yoke.Brain.SessionStore.list_session_metadata()
-    stale = Enum.filter(metas, fn m -> m.message_count <= 1 end)
+
+    stale =
+      Enum.filter(metas, fn m -> not Map.has_key?(m, :metadata_error) and m.message_count <= 1 end)
 
     removed_count =
       Enum.count(stale, fn m ->

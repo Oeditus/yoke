@@ -266,8 +266,8 @@ defmodule Yoke.TaskEngine.JobManager do
 
   @doc """
   Waits up to `timeout_ms` (default 5000ms) for all currently running jobs to
-  finish on their own, polling every 200ms, then force-kills (via `kill_job/1`)
-  any that are still running once the deadline passes.
+  finish on their own by monitoring their processes, then force-kills (via
+  `kill_job/1`) any that are still running once the deadline passes.
 
   Intended to be called right before the REPL halts (see `Yoke.CLI.Repl`), so
   quitting mid-turn doesn't silently orphan long-lived `mix test`/`mix compile`
@@ -278,22 +278,41 @@ defmodule Yoke.TaskEngine.JobManager do
   def await_all(timeout_ms \\ 5_000) do
     ensure_started()
     deadline = System.monotonic_time(:millisecond) + timeout_ms
-    await_all_loop(deadline)
+
+    refs =
+      running_jobs()
+      |> Enum.reduce(%{}, fn job, acc ->
+        pid = job.monitor_pid || job.worker_pid
+
+        if is_pid(pid) do
+          Map.put(acc, Process.monitor(pid), true)
+        else
+          acc
+        end
+      end)
+
+    await_monitors(refs, deadline)
     running_jobs() |> Enum.each(&kill_job(&1.id))
     :ok
   end
 
-  defp await_all_loop(deadline) do
-    cond do
-      running_jobs() == [] ->
-        :ok
+  defp await_monitors(refs, _deadline) when map_size(refs) == 0, do: :ok
 
-      System.monotonic_time(:millisecond) >= deadline ->
-        :ok
+  defp await_monitors(refs, deadline) do
+    remaining = deadline - System.monotonic_time(:millisecond)
 
-      true ->
-        Process.sleep(200)
-        await_all_loop(deadline)
+    if remaining <= 0 do
+      Enum.each(Map.keys(refs), &Process.demonitor(&1, [:flush]))
+      :ok
+    else
+      receive do
+        {:DOWN, ref, :process, _pid, _reason} when is_map_key(refs, ref) ->
+          await_monitors(Map.delete(refs, ref), deadline)
+      after
+        remaining ->
+          Enum.each(Map.keys(refs), &Process.demonitor(&1, [:flush]))
+          :ok
+      end
     end
   end
 

@@ -335,7 +335,30 @@ defmodule Yoke.Brain.SessionLmmlTest do
 
       {:ok, narrative} = SessionLmml.encode(session_state, "md_test")
       assert {:ok, md} = SessionLmml.to_markdown(narrative)
+      assert is_binary(md)
       assert String.contains?(md, "hello world")
+    end
+
+    test "converts a bundle without nesting the success tuple" do
+      assert {:ok, bundle} = Lmml.Bundle.new_text("markdown.lmml", "# Conversation\n\nHello")
+      assert {:ok, markdown} = SessionLmml.to_markdown(bundle)
+      assert markdown == "# Conversation\n\nHello"
+    end
+
+    test "propagates bundle validation errors without wrapping them in success" do
+      assert {:ok, bundle} =
+               Lmml.Bundle.new_text("invalid.lmml", "See @missing.txt", validate: false)
+
+      assert {:error, reason} = Lmml.to_md(bundle)
+      assert SessionLmml.to_markdown(bundle) == {:error, reason}
+    end
+
+    test "rejects narratives with missing external references" do
+      assert {:error, _reason} = SessionLmml.to_markdown("See @missing.txt")
+    end
+
+    test "rejects unsupported inputs" do
+      assert {:error, "Invalid input for LMML to_markdown"} = SessionLmml.to_markdown(nil)
     end
   end
 end

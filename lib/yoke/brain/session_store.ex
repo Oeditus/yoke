@@ -65,6 +65,13 @@ defmodule Yoke.Brain.SessionStore do
     end
   end
 
+  defp metadata_file_timestamp(path) do
+    case File.stat(path) do
+      {:ok, %{mtime: mtime}} -> NaiveDateTime.from_erl!(mtime)
+      _ -> ~N[1970-01-01 00:00:00]
+    end
+  end
+
   defp format_error(%_struct{} = exception) when is_exception(exception) do
     Exception.format(:error, exception)
   end
@@ -545,7 +552,8 @@ defmodule Yoke.Brain.SessionStore do
     * `:offset` - number of sessions to skip (integer; default `0`)
 
   Candidate session files are first sorted by filesystem modification time (`mtime`)
-  so only the requested page of session files needs to be read and decoded.
+  so only the requested page of session files needs to be read. Listing metadata
+  is extracted without parsing Markdown or restoring conversation checkpoints.
   """
   def list_session_metadata(cwd_or_opts \\ ".", opts \\ []) do
     {cwd, opts} =
@@ -598,7 +606,6 @@ defmodule Yoke.Brain.SessionStore do
 
           candidates_to_read
           |> Enum.map(fn {path, _} -> read_session_metadata(path) end)
-          |> Enum.reject(&is_nil/1)
           |> Enum.sort_by(& &1[:updated_at], {:desc, NaiveDateTime})
 
         _ ->
@@ -632,36 +639,28 @@ defmodule Yoke.Brain.SessionStore do
   end
 
   defp read_session_metadata(file_path) do
-    if String.ends_with?(file_path, ".lmmlz") do
-      case Lmml.Bundle.open(file_path) do
-        {:ok, bundle} ->
-          case SessionLmml.decode(bundle) do
-            {:ok, data} -> build_metadata(data)
-            _ -> nil
-          end
+    case Yoke.Brain.SessionMetadata.read(file_path) do
+      {:ok, data} ->
+        id = data["session_id"] || session_id_from_filename(Path.basename(file_path))
 
-        _ ->
-          nil
-      end
-    else
-      case File.read(file_path) do
-        {:ok, content} -> parse_metadata_content(file_path, content)
-        _ -> nil
-      end
-    end
-  end
+        data
+        |> Map.put("session_id", id)
+        |> build_metadata()
 
-  defp parse_metadata_content(file_path, content) do
-    if String.ends_with?(file_path, ".lmml") do
-      case SessionLmml.decode(content) do
-        {:ok, data} -> build_metadata(data)
-        _ -> nil
-      end
-    else
-      case Yoke.Json.decode(content) do
-        {:ok, map} when is_map(map) -> build_metadata(map)
-        _ -> nil
-      end
+      {:error, reason} ->
+        Logger.warning(
+          "[SessionStore] Cannot read session metadata for '#{Path.basename(file_path)}': #{inspect(reason)}"
+        )
+
+        %{
+          session_id: session_id_from_filename(Path.basename(file_path)),
+          model: "unknown",
+          updated_at: metadata_file_timestamp(file_path),
+          message_count: 0,
+          step_count: 0,
+          title: "Unreadable session",
+          metadata_error: reason
+        }
     end
   end
 
@@ -686,7 +685,7 @@ defmodule Yoke.Brain.SessionStore do
       session_id: map["session_id"],
       model: map["model"],
       updated_at: updated_at,
-      message_count: length(messages),
+      message_count: Map.get(map, "message_count", length(messages)),
       step_count: Map.get(map, "step_count", 0),
       title: title
     }
