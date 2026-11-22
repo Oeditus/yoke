@@ -69,6 +69,21 @@ defmodule Yoke.ConfigTest do
     File.rm_rf!(tmp_dir)
   end
 
+  test "defaults explicit_questions_enabled to true and allows opting out" do
+    tmp_dir =
+      Path.join(System.tmp_dir!(), "config_explicit_q_test_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(tmp_dir)
+    on_exit(fn -> File.rm_rf!(tmp_dir) end)
+
+    assert Config.load_config(tmp_dir)["explicit_questions_enabled"] == true
+    assert Config.explicit_questions_enabled?(tmp_dir) == true
+
+    assert {:ok, _} = Config.put_local("explicit_questions_enabled", false, tmp_dir)
+    assert Config.load_config(tmp_dir)["explicit_questions_enabled"] == false
+    assert Config.explicit_questions_enabled?(tmp_dir) == false
+  end
+
   test "defaults default_branch to nil and allows workspace override" do
     assert Config.load_config()["default_branch"] == nil
     assert Config.default_branch() == nil

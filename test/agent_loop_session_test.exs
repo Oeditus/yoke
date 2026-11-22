@@ -122,9 +122,152 @@ defmodule Yoke.Brain.AgentLoopSessionTest do
            end)
   end
 
+  describe "explicit questions" do
+    test "default_system_prompt includes explicit question guidance unless opted out", %{
+      tmp_dir: dir
+    } do
+      assert Session.default_system_prompt(dir) =~ "Explicit Questions (`ask_question`)"
+
+      refute Session.default_system_prompt(dir, explicit_questions_enabled: false) =~
+               "Explicit Questions (`ask_question`)"
+    end
+
+    test "nudges tool-free response with an unresolved tension to call ask_question", %{
+      tmp_dir: dir
+    } do
+      ask_call =
+        Fixture.tool_choice("ask_question", %{
+          "questions" => [
+            %{
+              "question" => "Should the feature be opt-out?",
+              "options" => ["Yes (opt-out)", "No (opt-in)"]
+            }
+          ]
+        })
+
+      pid =
+        session(
+          dir,
+          [
+            Fixture.choice(
+              "There's one tension I need to settle before writing code: whether this should be opt-in or opt-out."
+            ),
+            ask_call,
+            Fixture.choice("Understood, implementing as opt-out.")
+          ],
+          session_id: "explicit_q_test_#{System.unique_integer([:positive])}"
+        )
+
+      assert {:ok, %{content: "Understood, implementing as opt-out."}} =
+               Session.send_user_message(pid, "Add the feature")
+
+      assert_receive {:review_request, _first}
+      assert_receive {:review_request, second}
+
+      assert Enum.any?(second["messages"], fn msg ->
+               msg["role"] == "user" and
+                 String.starts_with?(
+                   msg["content"] || "",
+                   "SYSTEM NOTICE: Your response contained an implicit question"
+                 )
+             end)
+    end
+
+    test "bounds explicit question nudges to one per turn", %{tmp_dir: dir} do
+      implicit =
+        Fixture.choice(
+          "Tension I need to settle before writing code: should this default to true?"
+        )
+
+      pid =
+        session(
+          dir,
+          [implicit, implicit, implicit],
+          session_id: "explicit_q_bound_#{System.unique_integer([:positive])}"
+        )
+
+      assert {:ok, %{content: content}} = Session.send_user_message(pid, "Implement feature")
+      assert content =~ "Tension I need to settle"
+
+      assert {:ok, messages} = Session.get_messages(pid)
+
+      notices =
+        Enum.filter(messages, fn msg ->
+          msg["role"] == "user" and
+            String.starts_with?(
+              msg["content"] || "",
+              "SYSTEM NOTICE: Your response contained an implicit question"
+            )
+        end)
+
+      assert [_single_notice] = notices
+    end
+
+    test "opting out disables explicit question nudging", %{tmp_dir: dir} do
+      implicit =
+        Fixture.choice(
+          "There's one tension I need to settle before writing code: should this be opt-out?"
+        )
+
+      pid =
+        session(
+          dir,
+          [implicit],
+          session_id: "explicit_q_optout_#{System.unique_integer([:positive])}",
+          explicit_questions_enabled: false
+        )
+
+      assert Session.get_info(pid).explicit_questions_enabled == false
+
+      assert {:ok, %{content: content}} = Session.send_user_message(pid, "Implement feature")
+      assert content =~ "tension I need to settle"
+
+      assert_receive {:review_request, first}
+      refute_receive {:review_request, _second}, 200
+
+      [system_msg | _] = first["messages"]
+      refute system_msg["content"] =~ "Explicit Questions (`ask_question`)"
+    end
+
+    test "set_explicit_questions/2 toggles nudging on a running session", %{tmp_dir: dir} do
+      implicit =
+        Fixture.choice("Before writing code, I need to decide whether to use ETS or GenServer.")
+
+      pid =
+        session(
+          dir,
+          [implicit],
+          session_id: "explicit_q_toggle_#{System.unique_integer([:positive])}"
+        )
+
+      assert Session.get_info(pid).explicit_questions_enabled == true
+      assert {:ok, false} = Session.set_explicit_questions(pid, false)
+      assert Session.get_info(pid).explicit_questions_enabled == false
+
+      assert {:ok, %{content: content}} = Session.send_user_message(pid, "Implement storage")
+      assert content =~ "Before writing code"
+      assert_receive {:review_request, _first}
+      refute_receive {:review_request, _second}, 200
+    end
+
+    test "subagent sessions do not trigger explicit question nudging", %{tmp_dir: dir} do
+      implicit =
+        Fixture.choice(
+          "There's a tension I need to settle before writing code: should this be opt-out?"
+        )
+
+      pid = session(dir, [implicit])
+
+      assert {:ok, %{content: content}} = Session.send_user_message(pid, "Implement feature")
+      assert content =~ "tension I need to settle"
+      assert_receive {:review_request, _first}
+      refute_receive {:review_request, _second}, 200
+    end
+  end
+
   defp call(value), do: Fixture.tool_choice("loop_test_tool", %{"value" => value})
 
-  defp session(dir, responses) do
+  defp session(dir, responses, extra_opts \\ []) do
     {listen, server, endpoint} = Fixture.provider(self(), responses)
 
     on_exit(fn ->
@@ -132,16 +275,21 @@ defmodule Yoke.Brain.AgentLoopSessionTest do
       if Process.alive?(server), do: Process.exit(server, :kill)
     end)
 
-    start_supervised!(
-      {Session,
-       session_id: "sub_loop_test_#{System.unique_integer([:positive])}",
-       cwd: dir,
-       api_key: "",
-       model: "loop-test",
-       endpoint: endpoint,
-       permission_mode: :auto_approve,
-       plan_gate_enabled: false,
-       max_tool_depth: 8}
-    )
+    opts =
+      Keyword.merge(
+        [
+          session_id: "sub_loop_test_#{System.unique_integer([:positive])}",
+          cwd: dir,
+          api_key: "",
+          model: "loop-test",
+          endpoint: endpoint,
+          permission_mode: :auto_approve,
+          plan_gate_enabled: false,
+          max_tool_depth: 8
+        ],
+        extra_opts
+      )
+
+    start_supervised!({Session, opts})
   end
 end

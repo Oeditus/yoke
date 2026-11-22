@@ -68,6 +68,14 @@ defmodule Yoke.Config do
     # Bounded to two consecutive notices per turn. Disable by adding
     # "narrate_continuation_enabled": false to .yoke/config.json.
     "narrate_continuation_enabled" => true,
+    # Explicit questions (opt-out): when enabled, the assistant is instructed to
+    # restate unresolved tensions, ambiguities, design trade-offs, and implicit
+    # questions as explicit questions via `ask_question` instead of stating them
+    # in plain text, and the harness nudges tool-free responses that still contain
+    # implicit questions to invoke `ask_question`. Opt out by setting
+    # "explicit_questions_enabled": false in .yoke/config.json (or via
+    # `/config toggle explicit_questions_enabled`).
+    "explicit_questions_enabled" => true,
     # God mode switcher: when enabled, all questions and confirmations are
     # automatically answered without user interaction. Default: false.
     "god_mode" => false,
@@ -235,6 +243,12 @@ defmodule Yoke.Config do
   @doc "Sets the default branch in Application env."
   def set_default_branch(branch) when is_binary(branch) do
     Application.put_env(:yoke, :default_branch, branch)
+  end
+
+  @doc "Returns true when explicit question enforcement is enabled (default: true, opt-out)."
+  @spec explicit_questions_enabled?(String.t()) :: boolean()
+  def explicit_questions_enabled?(cwd \\ ".") do
+    boolean_opt(load_config(cwd), "explicit_questions_enabled", true)
   end
 
   @doc "Returns the built-in default value for a configuration key."

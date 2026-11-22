@@ -542,6 +542,62 @@ defmodule Yoke.Brain.AgentLoopTest do
     end
   end
 
+  describe "implicit questions" do
+    test "recognizes unresolved tensions, ambiguities, and plain-text user questions" do
+      for content <- [
+            "There's one tension I need to settle before writing code: whether to make it opt-in or opt-out.",
+            "Tension I need to settle before writing code: should subagents inherit this?",
+            "One tension to resolve before writing code is how errors are surfaced.",
+            "Before writing code, I need to decide whether to use ETS or GenServer.",
+            "Before I implement this, we need to clarify how timeouts should behave.",
+            "There is an open question about whether to support legacy JSON.",
+            "I'm not sure whether to keep the old endpoint or deprecate it.",
+            "I'm torn between using a macro and a plain function here.",
+            "It's unclear whether the flag should apply to subagents.",
+            "This depends on whether you want strict mode by default.",
+            "Let me know which option you prefer before I write the code.",
+            "Would you like me to make this opt-out by default?",
+            "Should I update the docs as well?",
+            "Which approach would you prefer?",
+            "Could you clarify whether subagents should inherit this setting?"
+          ] do
+        assert AgentLoop.contains_implicit_question?(content),
+               "missed implicit question: #{inspect(content)}"
+      end
+    end
+
+    test "does not flag completed answers, polite sign-offs, narration, or code blocks" do
+      for content <- [
+            "The method is implemented and tests pass.",
+            "Done! Let me know if you have any questions.",
+            "All tests pass. Let me know if you need anything else.",
+            "I've fixed the bug. Any questions?",
+            "Everything is updated. Anything else I can help with?",
+            "Now I have all the information I need. Let me implement the addArticle() method.",
+            "The function checks whether the file exists before reading it.",
+            "CAP theorem describes the tension between consistency and availability.",
+            "The ask_question tool renders a modal for the user.",
+            "Here is the snippet:\n```elixir\n# open question: should I retry?\n:ok\n```\nAll done."
+          ] do
+        refute AgentLoop.contains_implicit_question?(content),
+               "false positive on non-question response: #{inspect(content)}"
+      end
+    end
+
+    test "ignores empty, non-binary, and very long content" do
+      refute AgentLoop.contains_implicit_question?("")
+      refute AgentLoop.contains_implicit_question?("   ")
+      refute AgentLoop.contains_implicit_question?(nil)
+      refute AgentLoop.contains_implicit_question?(%{"content" => "Should I proceed?"})
+
+      long =
+        String.duplicate("Detailed explanation of the module. ", 300) <>
+          "There is an open question about defaults."
+
+      refute AgentLoop.contains_implicit_question?(long)
+    end
+  end
+
   describe "AgentLoop circuit breaker for non-standard tool failures" do
     test "disables non-standard tool after 3 consecutive failures" do
       state = %{

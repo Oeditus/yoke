@@ -82,6 +82,36 @@ defmodule Yoke.Brain.AgentLoop do
 
   @max_intent_chars 4_000
 
+  # Patterns that detect unresolved tensions, ambiguities, open decisions, or
+  # implicit/plain-text questions in a tool-free assistant response that should
+  # be restated as explicit questions via `ask_question`.
+  #
+  # Deliberately excludes polite closing sign-offs ("Let me know if you have any
+  # questions", "Anything else?", "Let me know if you need anything else") and
+  # fenced code blocks so completed answers and code snippets do not false-positive.
+  @implicit_question_patterns [
+    # Unresolved tensions / ambiguities / decisions to settle (e.g. "tension I need to settle before writing code")
+    ~r/\b(?:tension|trade-?off|ambiguity|decision|question|point|detail|thing)s?\b[^.!?\n]{0,60}\b(?:i|we|to)\s+(?:need\s+to\s+|must\s+|have\s+to\s+|should\s+)?(?:settle|resolve|decide|clarify|confirm|determine|figure\s+out|answer|sort\s+out|nail\s+down|iron\s+out)\b/i,
+    # "Before writing code / before I implement / before proceeding, ... settle/decide/clarify..."
+    ~r/\bbefore\s+(?:(?:i|we)\s+)?(?:writing\s+code|write\s+code|implementing|implement|coding|proceeding|proceed|making\s+(?:any\s+)?changes|editing|starting|start|going\s+further|moving\s+forward)\b[^.!?\n]{0,80}\b(?:settle|resolve|decide|clarify|confirm|determine|know|choose|pick|tension|ambiguity|question|unclear|unsure)\b/i,
+    # First-person need/obligation to settle/decide/clarify a choice
+    ~r/\b(?:i|we)\s+(?:need\s+to|must|have\s+to|should)\s+(?:settle|resolve|decide|clarify|confirm|determine|choose|pick)\s+(?:whether|if|which|how|what|between|on)\b/i,
+    # First-person uncertainty / being torn between options
+    ~r/\b(?:i(?:'m| am)|we(?:'re| are))\s+(?:not\s+sure|unsure|uncertain|torn|undecided)\s+(?:whether|if|which|how|what|about|between)\b/i,
+    # Explicit "open question", "unresolved tension", "remaining ambiguity", etc.
+    ~r/\b(?:open|unresolved|unanswered|remaining|lingering)\s+(?:question|tension|ambiguity|decision)s?\b/i,
+    # "It's unclear whether..." / "Unclear whether..."
+    ~r/\b(?:it(?:'s| is)\s+(?:not\s+clear|unclear)|unclear)\s+(?:whether|if|which|how|what)\b/i,
+    # "Depends on whether/how/what/which you..."
+    ~r/\bdepends?\s+on\s+(?:whether|how|what|which)\s+you\b/i,
+    # "Let me know which/whether/what you prefer/how you'd like..." (excludes "let me know if you have any questions")
+    ~r/\blet\s+me\s+know\s+(?:which|whether|what\s+you\s+(?:prefer|want|think)|how\s+you(?:'d| would)\s+like|if\s+you(?:'d| would)\s+prefer)\b/i,
+    # Direct plain-text questions asking the user for a decision, preference, or clarification
+    ~r/\b(?:would\s+you\s+(?:like\s+me\s+to|prefer)|do\s+you\s+(?:want\s+me\s+to|prefer)|should\s+i|shall\s+i|which\s+(?:option|approach|one|way|behavior|behaviour|default|path)\s+(?:would\s+you|do\s+you|should\s+(?:i|we))|how\s+would\s+you\s+like\s+(?:me\s+to|to|this)|what\s+would\s+you\s+like\s+me\s+to|(?:could|can)\s+you\s+(?:clarify|confirm|tell\s+me\s+(?:whether|which|how|what)))\b[^.!?\n]{0,160}\?/i
+  ]
+
+  @max_implicit_question_chars 8_000
+
   @doc """
   Detects whether the sequence of tool calls in the current turn exhibits a repeating cycle.
 
@@ -167,6 +197,33 @@ defmodule Yoke.Brain.AgentLoop do
   end
 
   def narrates_intent?(_), do: false
+
+  @doc """
+  Detects a tool-free assistant response that states an implicit question,
+  unresolved tension, ambiguity, or plain-text question directed at the user
+  instead of invoking `ask_question`.
+
+  Fenced code blocks are stripped before matching so code snippets containing
+  comments or strings do not trigger false positives. Polite closing sign-offs
+  ("Let me know if you have any questions", "Anything else?") return `false`.
+  """
+  @spec contains_implicit_question?(term()) :: boolean()
+  def contains_implicit_question?(content) when is_binary(content) do
+    text = String.trim(content)
+
+    if text != "" and String.length(text) <= @max_implicit_question_chars do
+      prose = strip_fenced_code_blocks(text)
+      Enum.any?(@implicit_question_patterns, &Regex.match?(&1, prose))
+    else
+      false
+    end
+  end
+
+  def contains_implicit_question?(_), do: false
+
+  defp strip_fenced_code_blocks(text) do
+    Regex.replace(~r/```[\s\S]*?```/, text, " ")
+  end
 
   @doc "Extracts the sequence of assistant tool call signatures within the current turn."
   def extract_turn_tool_steps(messages) when is_list(messages) do

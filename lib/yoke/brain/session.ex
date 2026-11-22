@@ -26,6 +26,11 @@ defmodule Yoke.Brain.Session do
   # `maybe_continue_narrated_intent/2`.
   @max_intent_continuations 2
 
+  # Consecutive nudges allowed for one turn when the model states an implicit
+  # question or unresolved tension in plain text instead of calling
+  # `ask_question`. See `maybe_prompt_explicit_question/2`.
+  @max_explicit_question_nudges 1
+
   @default_system_prompt_body """
   You have access to tools for file operations, bash execution, skills, MCP servers (including Ragex code intelligence), Elixir evaluation, and interactive user questions (ask_question tool).
 
@@ -58,12 +63,30 @@ defmodule Yoke.Brain.Session do
   - If requirements are underspecified, design choices need feedback, or confirmation is helpful, use the `ask_question` tool to present structured choices to the user.
   """
 
+  @explicit_questions_prompt_addon """
+
+  Explicit Questions (`ask_question`):
+  - Whenever you encounter an unresolved tension, ambiguity, open design trade-off, underspecified requirement, or anything that looks like an implicit question (for example: "there is a tension I need to settle before writing code", "I need to decide whether...", "before implementing, it is unclear whether..."), DO NOT leave it as a statement or implicit question in plain text.
+  - Restate every such tension, open decision, or implicit question as a direct, explicit question and ask the user immediately via the `ask_question` tool with concrete selectable options.
+  - Do not end a turn with an unanswered question or unresolved decision in prose when `ask_question` is available -- invoke `ask_question` so the user can answer directly.
+  """
+
   @doc "Returns the default system prompt incorporating the configured assistant name."
-  def default_system_prompt(cwd \\ ".") do
+  def default_system_prompt(cwd \\ ".", opts \\ []) do
     name = Config.assistant_name(cwd)
 
-    "You are #{name}, an expert agentic coding assistant.\n" <>
-      @default_system_prompt_body
+    explicit_questions? =
+      Keyword.get(opts, :explicit_questions_enabled, Config.explicit_questions_enabled?(cwd))
+
+    base =
+      "You are #{name}, an expert agentic coding assistant.\n" <>
+        @default_system_prompt_body
+
+    if explicit_questions? do
+      base <> @explicit_questions_prompt_addon
+    else
+      base
+    end
   end
 
   defp validate_review_response(%{review_context: context}, response) do
@@ -155,6 +178,11 @@ defmodule Yoke.Brain.Session do
   @doc "Sets the DeepSeek model ('deepseek-flash', 'deepseek-v4-pro', 'deepseek-reasoner', etc.)."
   def set_model(pid, model) do
     GenServer.call(pid, {:set_model, model}, :infinity)
+  end
+
+  @doc "Enables or disables explicit question nudging for the active session."
+  def set_explicit_questions(pid, enabled) when is_boolean(enabled) do
+    GenServer.call(pid, {:set_explicit_questions, enabled}, :infinity)
   end
 
   @doc "Sets the API endpoint URL for the session."
@@ -295,10 +323,22 @@ defmodule Yoke.Brain.Session do
   def init(opts) do
     provider_opts = Yoke.Provider.resolve(opts)
     session_id = opts[:session_id] || "default"
-    base_sys_prompt = opts[:system_prompt] || default_system_prompt(opts[:cwd] || ".")
+    cwd = opts[:cwd] || "."
+    cfg = Config.load_config(cwd)
+
+    explicit_questions_enabled =
+      Keyword.get(
+        opts,
+        :explicit_questions_enabled,
+        Map.get(cfg, "explicit_questions_enabled", true)
+      )
+
+    base_sys_prompt =
+      opts[:system_prompt] ||
+        default_system_prompt(cwd, explicit_questions_enabled: explicit_questions_enabled)
 
     # Inject workspace project rules if available (.yokerules, .yoke/rules.md)
-    rules = Config.discover_project_rules(opts[:cwd] || ".")
+    rules = Config.discover_project_rules(cwd)
 
     system_prompt =
       if rules != "" do
@@ -312,7 +352,6 @@ defmodule Yoke.Brain.Session do
 
     tools = PluginLoader.list_tools()
     initial_messages = [%{"role" => "system", "content" => system_prompt}]
-    cwd = opts[:cwd] || "."
 
     state = %{
       session_id: session_id,
@@ -365,8 +404,12 @@ defmodule Yoke.Brain.Session do
         Keyword.get(
           opts,
           :narrate_continuation_enabled,
-          Map.get(Config.load_config(cwd), "narrate_continuation_enabled", true)
+          Map.get(cfg, "narrate_continuation_enabled", true)
         ),
+      # Consecutive "restate implicit question via ask_question" nudges for
+      # the current turn. Reset when a user turn starts and when the turn completes.
+      explicit_question_nudges: 0,
+      explicit_questions_enabled: explicit_questions_enabled,
       # Optional per-request completion-token cap, read from config
       # ("max_tokens") and forwarded to the DeepSeek API on each call.
       # `nil` means "not set" and the field is omitted from requests.
@@ -550,6 +593,7 @@ defmodule Yoke.Brain.Session do
       state
       | plan_approved_for_turn: false,
         intent_continuations: 0,
+        explicit_question_nudges: 0,
         turn_started_at: System.monotonic_time(:millisecond),
         turn_phase: Yoke.SelfImprove.Router.classify_phase(expanded_text)
     }
@@ -734,7 +778,13 @@ defmodule Yoke.Brain.Session do
   def handle_call(:reset, _from, state) do
     system_msg =
       Enum.find(state.messages, fn m -> m["role"] == "system" end) ||
-        %{"role" => "system", "content" => default_system_prompt(state.cwd)}
+        %{
+          "role" => "system",
+          "content" =>
+            default_system_prompt(state.cwd,
+              explicit_questions_enabled: Map.get(state, :explicit_questions_enabled, true)
+            )
+        }
 
     new_messages = [system_msg]
 
@@ -752,6 +802,7 @@ defmodule Yoke.Brain.Session do
         plan_approved_for_turn: false,
         suppress_tools: false,
         intent_continuations: 0,
+        explicit_question_nudges: 0,
         turn_history: []
     }
 
@@ -994,6 +1045,7 @@ defmodule Yoke.Brain.Session do
       status: state.status,
       plan_gate_enabled: state.plan_gate_enabled,
       plan_gate_threshold: state.plan_gate_threshold,
+      explicit_questions_enabled: Map.get(state, :explicit_questions_enabled, true),
       serving_processes: proc_status.total_serving_processes,
       active_task_workers: proc_status.active_task_workers,
       active_sessions: proc_status.active_sessions,
@@ -1026,6 +1078,12 @@ defmodule Yoke.Brain.Session do
   @impl true
   def handle_call({:set_sandbox_mode, enabled}, _from, state) do
     new_state = %{state | sandbox_workspace: enabled}
+    {:reply, {:ok, enabled}, new_state}
+  end
+
+  @impl true
+  def handle_call({:set_explicit_questions, enabled}, _from, state) do
+    new_state = %{state | explicit_questions_enabled: enabled}
     {:reply, {:ok, enabled}, new_state}
   end
 
@@ -2078,11 +2136,81 @@ defmodule Yoke.Brain.Session do
 
     case validate_review_response(state, response) do
       :ok ->
-        maybe_continue_narrated_intent(state, response)
+        maybe_prompt_explicit_question(state, response)
 
       {:error, reason} ->
         {{:error, reason}, %{state | status: :idle, suppress_tools: false}}
     end
+  end
+
+  # When the model states an implicit question, unresolved tension, or open
+  # decision in plain text without calling `ask_question` (for example,
+  # "tension I need to settle before writing code"), nudge it to restate the
+  # implicit question explicitly and invoke `ask_question`.
+  #
+  # Runs before `maybe_continue_narrated_intent/2` so unresolved tensions are
+  # routed to user clarification rather than blind execution. Bounded by
+  # `@max_explicit_question_nudges` per turn, opt-out via
+  # `explicit_questions_enabled`, and disabled for reviews, subagent/workflow
+  # sessions, or when `ask_question` is unavailable.
+  defp maybe_prompt_explicit_question(state, response) do
+    if explicit_question_nudge?(state, response) do
+      count = Map.get(state, :explicit_question_nudges, 0) + 1
+      response_text = response.content || ""
+
+      Logger.warning(
+        "[Brain.Session] Model stated an implicit question or unresolved tension without " <>
+          "calling ask_question (nudge #{count}/#{@max_explicit_question_nudges}). Asking it to use ask_question."
+      )
+
+      notice = %{
+        "role" => "user",
+        "content" =>
+          "SYSTEM NOTICE: Your response contained an implicit question, unresolved tension, " <>
+            "or open decision stated in plain text without calling `ask_question`. " <>
+            "Restate every unresolved tension, ambiguity, or implicit question as an explicit " <>
+            "question and ask the user directly by calling the `ask_question` tool with " <>
+            "concrete selectable options. Do not repeat the prose explanation without invoking `ask_question`."
+      }
+
+      continued_state = %{
+        state
+        | messages:
+            state.messages ++
+              [
+                %{"role" => "assistant", "content" => response_text},
+                notice
+              ],
+          explicit_question_nudges: count
+      }
+
+      run_agent_loop(continued_state, state.max_tool_depth)
+    else
+      maybe_continue_narrated_intent(state, response)
+    end
+  end
+
+  defp explicit_question_nudge?(state, response) do
+    Map.get(state, :explicit_questions_enabled, true) and
+      not Map.has_key?(state, :review_context) and
+      not Map.get(state, :suppress_tools, false) and
+      not subagent_or_workflow_session?(state) and
+      has_tool?(state, "ask_question") and
+      Map.get(state, :explicit_question_nudges, 0) < @max_explicit_question_nudges and
+      AgentLoop.contains_implicit_question?(response.content)
+  end
+
+  defp subagent_or_workflow_session?(state) do
+    session_id = Map.get(state, :session_id, "")
+    String.starts_with?(session_id, "sub_") or String.starts_with?(session_id, "workflow-")
+  end
+
+  defp has_tool?(state, tool_name) do
+    state
+    |> Map.get(:tools, [])
+    |> Enum.any?(fn tool ->
+      (Map.get(tool, :name) || Map.get(tool, "name")) == tool_name
+    end)
   end
 
   # A tool-free assistant message normally ends the turn. It does not when the
@@ -2155,7 +2283,8 @@ defmodule Yoke.Brain.Session do
         compacted_context: compacted_context,
         status: :idle,
         suppress_tools: false,
-        intent_continuations: 0
+        intent_continuations: 0,
+        explicit_question_nudges: 0
     }
 
     unless Map.has_key?(state, :review_context),

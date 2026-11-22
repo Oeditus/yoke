@@ -1622,11 +1622,17 @@ defmodule Yoke.CLI.Repl do
     :continue
   end
 
-  def handle_input("/config toggle " <> key, _session_pid, _session_id) do
+  def handle_input("/config toggle " <> key, session_pid, _session_id) do
     k = String.trim(key)
     cfg = Yoke.Config.load_config()
     current = Map.get(cfg, k, true)
-    persist_local(k, not current, "Toggled config setting '#{k}' to #{not current}")
+    new_val = not current
+    persist_local(k, new_val, "Toggled config setting '#{k}' to #{new_val}")
+
+    if k == "explicit_questions_enabled" and is_pid(session_pid) do
+      Yoke.Brain.Session.set_explicit_questions(session_pid, new_val)
+    end
+
     :continue
   end
 

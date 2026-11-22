@@ -257,7 +257,7 @@ defmodule Yoke.Plugin.DefaultTools do
       %{
         name: "ask_question",
         description:
-          "Ask the user one or more multiple-choice questions or request user feedback/clarification via interactive CLI UI modal.",
+          "Ask the user one or more multiple-choice questions or request user feedback/clarification via interactive CLI UI modal. Use this whenever there is an ambiguity, design trade-off, unresolved tension, or implicit question to settle with the user instead of stating it in plain text.",
         parameters: %{
           type: "object",
           properties: %{
