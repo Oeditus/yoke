@@ -164,7 +164,8 @@ defmodule Yoke.PRReview.Findings do
 
     if is_integer(id) and id > 0 and nullable_file?(file) and line != :invalid and
          nonblank?(title) and nonblank?(description) and severity in @severities and
-         is_binary(fix) and kind in ["issue", "endorsement"] do
+         is_binary(fix) and kind in ["issue", "endorsement"] and
+         not self_retracting?(title, description) do
       {:ok,
        %{
          id: id,
@@ -182,6 +183,34 @@ defmodule Yoke.PRReview.Findings do
   end
 
   defp normalize_finding(_, _), do: :error
+
+  # A finding whose own text retracts it is a false positive by its own
+  # admission, so it is dropped rather than published.
+  #
+  # This is a deterministic guard, not a prompt instruction, because a prompt
+  # rule alone is not enforcement: three of sixteen findings on a real review
+  # published text like "This is fine; withdrawn." and "not a new regression."
+  # The model reasons its way to the right conclusion and then ships the
+  # reasoning instead of the conclusion.
+  #
+  # The patterns are deliberately narrow. They match a retraction as a
+  # *conclusion* ("withdrawn." at the end, "this is fine", "no action needed"),
+  # not the word appearing anywhere in a description. A bare `withdrawn` match
+  # would discard a legitimate finding about code that retracts something —
+  # which is exactly the case the test suite caught.
+  @retraction_patterns [
+    ~r/\bwithdrawn\b\s*\.?\s*$/i,
+    ~r/\bthis finding is withdrawn\b/i,
+    ~r/\bwithdraw(?:ing)? this finding\b/i,
+    ~r/\bthis is fine\b/i,
+    ~r/\bnot a (?:new )?regression\b/i,
+    ~r/\bno action (?:is )?(?:needed|required)\b/i
+  ]
+
+  defp self_retracting?(title, description) do
+    text = to_string(title) <> " " <> to_string(description)
+    Enum.any?(@retraction_patterns, &Regex.match?(&1, text))
+  end
 
   defp finding_kind(finding, severity, fix) do
     case Map.fetch(finding, "kind") do

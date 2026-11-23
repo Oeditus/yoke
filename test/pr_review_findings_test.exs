@@ -306,4 +306,61 @@ defmodule Yoke.PRReview.FindingsTest do
     refute Map.has_key?(parsed, :command)
     assert map_size(parsed) == 8
   end
+
+  describe "self-retracting findings" do
+    # Three of sixteen findings on a real review published text that retracted
+    # itself ("This is fine; withdrawn."). Such a finding is a false positive by
+    # its own admission and must never be posted.
+    test "a finding whose description withdraws it is rejected" do
+      item =
+        finding(%{
+          "title" => "`slice/2` strips only one trailing newline",
+          "description" =>
+            "The previous code also left that `\\r`, so this is not a new regression. Withdrawn."
+        })
+
+      assert {:error, _} = Findings.parse(envelope([item]))
+    end
+
+    test "a finding whose description says it is fine is rejected" do
+      item =
+        finding(%{
+          "title" => "`start_loading/1` result is discarded",
+          "description" =>
+            "The initial render runs before the call, which is expected. This is fine; withdrawn."
+        })
+
+      assert {:error, _} = Findings.parse(envelope([item]))
+    end
+
+    test "a finding withdrawn as unverified is rejected" do
+      item =
+        finding(%{
+          "title" => "`cancel_loading/1` blocks forever",
+          "description" =>
+            "The monitor DOWN will arrive. This finding is withdrawn as unverified."
+        })
+
+      assert {:error, _} = Findings.parse(envelope([item]))
+    end
+
+    test "a legitimate finding is not affected" do
+      assert {:ok, [parsed]} = Findings.parse(envelope([finding()]))
+      assert parsed.title == "Handle failed requests"
+    end
+
+    test "a finding about a retraction bug is not mistaken for a retraction" do
+      # The guard matches a retraction statement, not the word appearing in a
+      # description of code that retracts something.
+      item =
+        finding(%{
+          "title" => "`retract/1` never clears the pending flag",
+          "description" =>
+            "The function marks a review withdrawn but leaves the pending flag set, so the next run re-posts it."
+        })
+
+      assert {:ok, [parsed]} = Findings.parse(envelope([item]))
+      assert parsed.title =~ "retract"
+    end
+  end
 end

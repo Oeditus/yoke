@@ -192,7 +192,12 @@ defmodule Yoke.PRReview do
     8. A blocking CI check (compiler, credo, dialyzer, formatter) already flags it — **except** verified findings from `<elixir_plugins>` (`oeditus_credo` security/anti-pattern checks and `propwise` property-test candidates), which should be surfaced.
     9. It claims the code contradicts a ticket without quoting the verbatim ticket text.
     10. It flags code as unused when a subsequent part of the system consumes it.
-
+    11. **Your own reasoning refutes it.** If, while verifying a finding, you conclude that the
+        concern does not hold ("this is fine", "not a new regression", "withdrawn", "no action
+        needed"), the finding MUST be dropped entirely. Never publish a finding whose text retracts
+        itself: a comment that says "withdrawn" is a false positive that wastes the author's time and
+        trains them to ignore the reviewer. Reason privately; publish only conclusions you still
+        stand behind. If you are unsure, drop it — a missed finding is cheaper than a retracted one.
     ### 9. Tone & Comment Phrasing Rules:
     - **Actual test improvements for `propwise`**: Whenever `<elixir_plugins>` includes `propwise` candidates that apply to changed code, present them as actual, concrete test improvements (ready-to-use `ExUnit` / `ExUnitProperties` `property` tests in `fix_suggestion`, tailored to the function's real types, invariants, and corresponding `*_test.exs` file—not as abstract advice).
     - **Technical issues only**: Never raise process, organizational, or interpersonal concerns.

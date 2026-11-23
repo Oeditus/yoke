@@ -349,27 +349,50 @@ signal is real — both `THUMBS_UP` reactions were on genuine findings — but i
 carry the measurement on its own.
 
 Four consequences for the design:
-
-1. **Line movement is a weak signal and must not be the primary one.** §4.1 originally ranked it
-   first on the grounds that it needs no human action. That ranking was wrong: it is cheap, but it
-   under-counts badly.
-2. **Review-fix commits carry the measurement**, and they are a file-level heuristic, so the upper
-   bound is generous. A finding that merely shares a file with a real fix is credited.
-3. **Thread resolution cannot be relied on for self-serve customers.** If this repository is
-   representative, most teams never click resolve or react. A product whose precision story depends
-   on those affordances would report "not measurable" for most customers. The `yoke fix --apply`
-   path (Phase 4) is therefore not a nice-to-have: it is what generates an unambiguous signal.
-4. **The true number is between 14% and 94%**, and narrowing it needs per-finding evidence rather
-   than per-file inference. Nothing currently available on GitHub provides that at scale.
-
 The honest conclusion: the thesis is plausible rather than proven. The measurement instrument is now
 correct, which is the important part — an instrument that reads 14% when the truth is 94% would have
 killed a viable product, and one that reads 94% when the truth is 40% would have sold a bad one.
-Two consequences for the design:
 
-1. **Line movement is a weak signal and must not be the primary one.** `docs/YAAS.md` §4.1 ranked it
-   first on the grounds that it needs no human action. That ranking was wrong. It is cheap, but it
-   under-counts badly. A review-fix commit, a resolved thread, or an accepted suggestion is far more
+### Calibration: three findings withdraw themselves
+
+Reading all 16 findings by hand found something no signal could have caught. **Three of them retract
+themselves inside their own published text:**
+
+| Finding | Verdict in its own body |
+| :--- | :--- |
+1. **The review spends tokens reasoning its way to a conclusion and then publishes the reasoning.**
+   A comment that says "this is fine; withdrawn" should never have been posted. This is a review
+   quality defect, not a measurement one, and it is the single highest-value fix available: it
+   removes 19% of all output at no cost to recall.
+
+   **Addressed.** Two changes, because a prompt rule alone is not enforcement:
+
+   * `Yoke.PRReview.prompt_instructions/1` gains self-critique rule 11: if your own reasoning refutes
+     a finding, drop it entirely; never publish a finding whose text retracts itself.
+   * `Yoke.PRReview.Findings` rejects such a finding at parse time, so it cannot reach the report,
+     the annotations, or the PR. The patterns match a retraction as a *conclusion* ("withdrawn." at
+     the end, "this is fine", "no action needed"), not the word appearing anywhere in a description —
+     a bare `withdrawn` match discarded a legitimate finding about code that retracts something, and
+     the test suite caught it.
+by roughly 25 points on this sample.
+
+Two consequences, both of which change the roadmap:
+The recommendation that follows: fix the withdrawal defect before building the service. It improves
+the product and the measurement at the same time, and it is a prompt change rather than an
+architectural one.
+
+**Done.** The guard is in place and covered by five tests: three asserting that a self-retracting
+finding is rejected, one asserting a legitimate finding is unaffected, and one asserting a finding
+*about* a retraction bug is not mistaken for a retraction.
+   (§8 of `Yoke.PRReview.prompt_instructions/1`); it is clearly not being applied to the final
+   answer, only to the draft.
+2. **File-level credit is not good enough to price against.** 68.8% is a plausible number for an AI
+   reviewer, but the true figure could still be lower. Any dashboard built on the upper bound would
+   be selling a number the product cannot defend.
+
+The recommendation that follows: fix the withdrawal defect before building the service. It improves
+the product and the measurement at the same time, and it is a prompt change rather than an
+architectural one.
    reliable and should be preferred wherever available.
 2. **The upper bound is file-level and therefore generous.** A finding that merely shares a file with
    a real fix is credited. The true number is somewhere between 14% and 93%, and narrowing that band
