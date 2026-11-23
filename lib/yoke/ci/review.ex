@@ -198,7 +198,8 @@ defmodule Yoke.CI.Review do
 
   defp finish(context, findings, response, opts, cwd) do
     fail_on = CIConfig.fail_on(cwd, Keyword.get(opts, :fail_on))
-    report = Findings.report(findings, fail_on)
+    {kept, suppressed} = apply_baseline(findings, context, opts)
+    report = Findings.report(kept, fail_on)
     identity = identity(context)
 
     summary = StepSummary.render(report, identity: identity)
@@ -210,7 +211,8 @@ defmodule Yoke.CI.Review do
       transcript: Map.get(response, :content),
       model: Keyword.get(opts, :model),
       run_uid: run_uid(),
-      policy: Policy.load(cwd)
+      policy: Policy.load(cwd),
+      suppressed: suppressed
     ]
 
     # Register the in-progress result so the SIGTERM handler can flush it if
@@ -221,7 +223,7 @@ defmodule Yoke.CI.Review do
          {:ok, artifact_path} <- Artifact.emit(report, artifact_opts) do
       Process.delete(:yoke_ci_partial_result)
 
-      with {:ok, posted} <- maybe_post(context, findings, opts, cwd) do
+      with {:ok, posted} <- maybe_post(context, kept, opts, cwd) do
         {:ok,
          %{
            report: report,
@@ -230,9 +232,27 @@ defmodule Yoke.CI.Review do
            annotations: annotations,
            artifact_path: artifact_path,
            identity: identity,
-           posted: posted
+           posted: posted,
+           suppressed: suppressed
          }}
       end
+    end
+  end
+
+  # Baseline suppression (`docs/YAAS.md` §4). Returns `{kept, suppressed}`.
+  #
+  # Fail-open by construction: `Baseline.fetch/3` returns `{:ok, []}` for every
+  # failure path, so an unreachable service suppresses nothing and the review
+  # behaves exactly as it did before the feature existed. `--no-baseline` is
+  # the explicit escape hatch for a repository that wants a full review.
+  defp apply_baseline(findings, context, opts) do
+    if Keyword.get(opts, :baseline, true) do
+      {:ok, entries} =
+        Yoke.Cloud.Baseline.fetch(context.repository, Map.get(context, :head), opts)
+
+      Yoke.Cloud.Baseline.apply_baseline(findings, entries)
+    else
+      {findings, []}
     end
   end
 

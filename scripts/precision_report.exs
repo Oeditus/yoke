@@ -1,0 +1,382 @@
+# Phase 0 exit test for docs/YAAS.md.
+#
+# Computes review precision on a real repository: for every Yoke review comment
+# ever posted, did the reviewed line subsequently change? That single number is
+# what the whole "precision over time" thesis rests on, so it is measured before
+# any backend is built.
+#
+# Run with:
+#
+#     mix run --no-start scripts/precision_report.exs
+#     mix run --no-start scripts/precision_report.exs --limit 50 --repo owner/name
+#
+# Requires the GitHub CLI (`gh`) authenticated against the target repository.
+# This script makes network calls by design: it is an operator tool, not a test.
+#
+# Exit codes:
+#   0  measurement produced
+#   2  usage error
+#   3  the repository or review history could not be read
+
+alias Yoke.Cloud.Outcome
+
+alias Yoke.Json
+
+defmodule PrecisionReport do
+  @moduledoc false
+
+  @default_limit 20
+  @yoke_marker "Review from"
+
+  @doc "Returns the default number of merged PRs to scan."
+  def default_limit, do: @default_limit
+  @doc "Parses argv into options, or returns a usage error."
+  def parse_args(argv) do
+    {opts, extra, invalid} =
+      OptionParser.parse(argv,
+        strict: [repo: :string, limit: :integer, json: :boolean, help: :boolean],
+        aliases: [h: :help, n: :limit]
+      )
+
+    cond do
+      opts[:help] -> {:help, opts}
+      invalid != [] -> {:error, "Unknown or malformed option(s): #{inspect(invalid)}"}
+      extra != [] -> {:error, "Unexpected argument(s): #{inspect(extra)}"}
+      true -> {:ok, opts}
+    end
+  end
+
+  @doc """
+  Resolves the target repository as `{owner, name}`.
+
+  An explicit `--repo` wins; otherwise the origin remote of the current
+  directory is used, so the script runs correctly from a checkout.
+  """
+  def resolve_repo(opts) do
+    case opts[:repo] do
+      nil ->
+        with {:ok, name} <- gh_json(["repo", "view", "--json", "nameWithOwner"]),
+             %{"nameWithOwner" => full} <- name,
+             [owner, repo] <- String.split(full, "/") do
+          {:ok, {owner, repo}}
+        else
+          _ -> {:error, "Cannot determine the repository. Pass --repo <owner/name>."}
+        end
+
+      full ->
+        case String.split(full, "/") do
+          [owner, repo] when owner != "" and repo != "" -> {:ok, {owner, repo}}
+          _ -> {:error, "--repo must be <owner/name>, got #{inspect(full)}."}
+        end
+    end
+  end
+
+  @doc """
+  Fetches merged pull requests that carry a Yoke review, newest first.
+
+  Only merged PRs are considered: an open PR has not finished, so a finding on
+  it cannot yet be called ignored.
+  """
+  def fetch_reviewed_prs({owner, repo}, limit) do
+    query = """
+    query($owner: String!, $name: String!, $limit: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequests(states: MERGED, first: $limit, orderBy: {field: UPDATED_AT, direction: DESC}) {
+          nodes {
+            number
+            url
+            mergeCommit { oid }
+            baseRefName
+            headRefOid
+            reviews(last: 50) { nodes { body author { login } } }
+          }
+        }
+      }
+    }
+    """
+
+    args = [
+      "api",
+      "graphql",
+      "-f",
+      "query=#{query}",
+      "-F",
+      "owner=#{owner}",
+      "-F",
+      "name=#{repo}",
+      "-F",
+      "limit=#{limit}"
+    ]
+
+    with {:ok, decoded} <- gh_json(args) do
+      nodes =
+        get_in(decoded, ["data", "repository", "pullRequests", "nodes"]) || []
+
+      reviewed =
+        nodes
+        |> Enum.filter(&yoke_review?/1)
+        |> Enum.map(fn node ->
+          %{
+            number: node["number"],
+            url: node["url"],
+            merge_commit: get_in(node, ["mergeCommit", "oid"]),
+            base: node["baseRefName"],
+            head_sha: node["headRefOid"]
+          }
+        end)
+        |> Enum.reject(&is_nil(&1.merge_commit))
+
+      {:ok, reviewed}
+    end
+  end
+
+  defp yoke_review?(node) do
+    node
+    |> get_in(["reviews", "nodes"])
+    |> List.wrap()
+    |> Enum.any?(fn review ->
+      body = review["body"] || ""
+      String.contains?(body, @yoke_marker) or String.contains?(body, "<!-- yoke-review")
+    end)
+  end
+
+  @doc """
+  Extracts the findings from a PR's Yoke review comments.
+
+  GitHub's REST review-comment endpoint is what carries the inline `path` and
+  `line` anchors, which is exactly what the classifier needs.
+  """
+  def fetch_findings({owner, repo}, pr_number) do
+    path = "repos/#{owner}/#{repo}/pulls/#{pr_number}/comments?per_page=100"
+
+    with {:ok, comments} when is_list(comments) <- gh_json(["api", path]) do
+      findings =
+        comments
+        |> Enum.filter(&yoke_comment?/1)
+        |> Enum.map(fn comment ->
+          %{
+            file: comment["path"],
+            line: comment["line"] || comment["original_line"],
+            title: first_line(comment["body"]),
+            severity: severity_of(comment["body"])
+          }
+        end)
+        |> Enum.reject(&(is_nil(&1.file) or is_nil(&1.line)))
+
+      {:ok, findings}
+    else
+      {:ok, _} -> {:error, "Unexpected response for PR ##{pr_number} comments."}
+      error -> error
+    end
+  end
+
+  # A Yoke inline comment carries the severity badge the review renderer adds.
+  # Matching on it rather than on the author login keeps the script working for
+  # both the App identity and a user token.
+  defp yoke_comment?(comment) do
+    body = comment["body"] || ""
+    String.contains?(body, "<!-- yoke") or Regex.match?(~r/\b(high|medium|low|info)\b/i, body)
+  end
+
+  defp severity_of(body) when is_binary(body) do
+    case Regex.run(~r/\b(high|medium|low|info)\b/i, body) do
+      [_, severity] -> String.downcase(severity)
+      _ -> "info"
+    end
+  end
+
+  defp severity_of(_), do: "info"
+
+  defp first_line(nil), do: "(no title)"
+
+  defp first_line(body) do
+    body
+    |> String.split("\n")
+    |> Enum.map(&String.trim/1)
+    |> Enum.find("", &(&1 != "" and not String.starts_with?(&1, "<!--")))
+    |> String.slice(0, 120)
+  end
+
+  @doc """
+  Classifies every finding on every reviewed PR.
+
+  Evidence is derived from the PR's own diff: a finding is `:acted_on` when its
+  anchored line is no longer present in the merged change, and `:ignored` when
+  the PR merged with the line untouched. Everything else stays `:pending`,
+  which is excluded from the score rather than counted as a miss.
+  """
+  def classify_all(prs, repo) do
+    Enum.flat_map(prs, fn pr ->
+      case fetch_findings(repo, pr.number) do
+        {:ok, []} ->
+          []
+
+        {:ok, findings} ->
+          case pr_diff(pr) do
+            {:ok, diff} ->
+              lines = diff_right_lines(diff)
+
+              Enum.map(findings, fn finding ->
+                evidence = %{
+                  line_present: MapSet.member?(lines, {finding.file, finding.line}),
+                  file_present: Enum.any?(lines, fn {file, _} -> file == finding.file end),
+                  pr_merged: true
+                }
+
+                finding
+                |> Map.put(:pr, pr.number)
+                |> then(&{&1, Outcome.classify(&1, evidence)})
+              end)
+
+            {:error, reason} ->
+              IO.puts(:stderr, "  PR ##{pr.number}: cannot read diff (#{reason}); skipping")
+              []
+          end
+
+        {:error, reason} ->
+          IO.puts(:stderr, "  PR ##{pr.number}: cannot read comments (#{reason}); skipping")
+          []
+      end
+    end)
+  end
+
+  # Reuses the review pipeline's own diff parser so the script and the product
+  # can never disagree about which lines a diff touches.
+  defp diff_right_lines(diff), do: Yoke.PRReview.parse_diff_right_lines(diff)
+  # Returns the diff a reviewer was looking at: the PR's merge commit against
+  # its base branch. Read from local git because the classifier parses raw hunk
+  # headers and a JSON round-trip would corrupt them.
+  defp pr_diff(%{merge_commit: sha, base: base}) when is_binary(sha) and is_binary(base) do
+    _ =
+      System.cmd("git", ["fetch", "--no-tags", "--quiet", "origin", sha], stderr_to_stdout: true)
+
+    case System.cmd("git", ["diff", "--no-color", "origin/#{base}...#{sha}"],
+           stderr_to_stdout: true
+         ) do
+      {diff, 0} when diff != "" -> {:ok, diff}
+      {_out, 0} -> {:error, :empty_diff}
+      {err, _status} -> {:error, String.trim(err) |> String.slice(0, 120)}
+    end
+  end
+
+  defp pr_diff(_), do: {:error, :no_merge_commit}
+
+  @doc "Renders the measurement as a human-readable report."
+  def render(report, pr_count, opts) do
+    lines = [
+      "",
+      "Review precision report",
+      "=======================",
+      "",
+      "Reviewed PRs scanned: #{pr_count}",
+      "Findings considered:  #{report.total}",
+      "Findings scored:      #{report.scored}",
+      "Findings pending:     #{report.pending}",
+      "",
+      "Outcomes:",
+      "  acted on     #{Map.get(report.by_verdict, :acted_on, 0)}",
+      "  resolved     #{Map.get(report.by_verdict, :resolved, 0)}",
+      "  reacted up   #{Map.get(report.by_verdict, :reacted_up, 0)}",
+      "  ignored      #{Map.get(report.by_verdict, :ignored, 0)}",
+      "  reacted down #{Map.get(report.by_verdict, :reacted_down, 0)}",
+      "  pending      #{Map.get(report.by_verdict, :pending, 0)}",
+      "",
+      "Precision: #{format_precision(report.acted_on_rate)}",
+      ""
+    ]
+
+    if opts[:json] do
+      Json.encode!(
+        %{
+          "pr_count" => pr_count,
+          "total" => report.total,
+          "scored" => report.scored,
+          "pending" => report.pending,
+          "by_verdict" => Map.new(report.by_verdict, fn {k, v} -> {to_string(k), v} end),
+          "precision" => report.acted_on_rate
+        },
+        pretty: true
+      )
+    else
+      Enum.join(lines, "\n")
+    end
+  end
+
+  defp format_precision(nil), do: "not measurable (no scored findings)"
+
+  defp format_precision(rate) when is_float(rate) do
+    "#{Float.round(rate * 100, 1)}%"
+  end
+
+  # ---------------------------------------------------------------------
+  # gh plumbing
+  # ---------------------------------------------------------------------
+
+  defp gh_json(args) do
+    case System.cmd("gh", args, stderr_to_stdout: true) do
+      {out, 0} ->
+        case Json.decode(out) do
+          {:ok, decoded} -> {:ok, decoded}
+          {:error, _} -> {:error, "gh returned non-JSON output"}
+        end
+
+      {err, status} ->
+        {:error, "gh exited #{status}: #{String.trim(err) |> String.slice(0, 200)}"}
+    end
+  end
+end
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+# `mix run` discards the script's return value, so the exit code must be set
+# explicitly; otherwise every failure path silently reports success.
+code =
+  case PrecisionReport.parse_args(System.argv()) do
+    {:help, _opts} ->
+      IO.puts("""
+      precision_report — measure how often Yoke's review findings were acted on
+
+      USAGE:
+        mix run --no-start scripts/precision_report.exs [options]
+
+      OPTIONS:
+            --repo <owner/name>  Repository to measure (default: the origin remote)
+        -n, --limit <n>          Merged PRs to scan (default: #{PrecisionReport.default_limit()})
+            --json               Emit the measurement as JSON
+        -h, --help               Show this help
+
+      Requires an authenticated `gh`. This script reads real pull-request history
+      and therefore makes network calls; it is an operator tool, not a test.
+      """)
+
+      0
+
+    {:error, message} ->
+      IO.puts(:stderr, "error: #{message}")
+      2
+
+    {:ok, opts} ->
+      limit = opts[:limit] || PrecisionReport.default_limit()
+
+      with {:ok, repo} <- PrecisionReport.resolve_repo(opts),
+           {:ok, prs} <- PrecisionReport.fetch_reviewed_prs(repo, limit) do
+        classified = PrecisionReport.classify_all(prs, repo)
+        report = Outcome.report(classified)
+
+        IO.puts(PrecisionReport.render(report, length(prs), opts))
+
+        if report.scored == 0 do
+          IO.puts(:stderr, "warning: no scorable findings; the number above is not evidence.")
+        end
+
+        0
+      else
+        {:error, reason} ->
+          IO.puts(:stderr, "error: #{reason}")
+          3
+      end
+  end
+
+if code != 0, do: System.halt(code)

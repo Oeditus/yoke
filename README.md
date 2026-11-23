@@ -741,6 +741,7 @@ Besides the interactive REPL, `yoke` dispatches a handful of one-shot subcommand
 | `yoke audit` | Emit the AI Guard audit trail as a CI artifact |
 | `yoke fix [options] ["<command>"]` | Replay the last terminal command, analyse the failure, and plan a fix |
 | `yoke rag` | Query the Ragex knowledge graph |
+| `yoke report` | Upload a completed run's artifact to Yoke Cloud (optional, fail-open) |
 
 ### `yoke fix`
 

@@ -30,6 +30,7 @@ defmodule Yoke.CLI.Main do
     "audit" => %{module: Yoke.CLI.CI, fun: :audit, status: :implemented},
     "fix" => %{module: Yoke.CLI.Fix, fun: :fix, status: :implemented},
     "rag" => %{module: Yoke.CLI.CI, fun: :rag, status: :implemented},
+    "report" => %{module: Yoke.CLI.Report, fun: :report, status: :implemented},
     "update" => %{module: Yoke.AutoUpdate, fun: :cli_update, status: :implemented}
   }
 
@@ -479,6 +480,7 @@ defmodule Yoke.CLI.Main do
       yoke review|lint|describe|run   CI code review, linting, description, workflows
       yoke audit                     Emit the AI Guard audit trail as a CI artifact
       yoke rag                       Query the Ragex knowledge graph
+      yoke report --upload           Upload a review artifact to Yoke Cloud
       yoke update                    Check GitHub Releases for updates and install
 
     OPTIONS:

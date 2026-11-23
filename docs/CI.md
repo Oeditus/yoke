@@ -684,6 +684,71 @@ accelerator was unavailable. `--strict` opts into failing instead.
 
 ---
 
+## 10.5 `yoke report`
+
+Uploads a completed run's artifact to a Yoke Cloud endpoint. **Optional**, and
+entirely fail-open: the cloud is a sink, never a dependency.
+
+```
+yoke report --upload [--endpoint <url>] [--token <t>] [--artifact <path>]
+```
+
+| Flag | Meaning |
+| :--- | :--- |
+| `--upload` | Perform the upload. Without it the command only validates the artifact |
+| `--endpoint <url>` | Cloud base URL. Defaults to `YOKE_CLOUD_ENDPOINT` |
+| `--token <t>` | API token. Defaults to `YOKE_CLOUD_TOKEN` |
+| `--artifact <path>` | Artifact to upload (default `$RUNNER_TEMP/yoke-review.json`) |
+
+Exit codes: `0` uploaded or deliberately skipped, `2` usage error, `3` the
+artifact was missing or unreadable.
+
+### 10.5.1 A failed upload never fails the build
+
+A network failure, a rejected token, or an unreachable endpoint prints a
+warning and exits `0`. A review that ran correctly must not go red because a
+dashboard is down — that is the same fail-open principle as §4.2, applied to the
+cloud sink. Only a missing or malformed *artifact* exits `3`, because that is a
+local problem the operator can fix.
+
+### 10.5.2 What is uploaded
+
+The artifact `Yoke.CI.Artifact` already writes: identity (base/head SHAs, PR
+number, repository, branch), the findings, the run metrics, and the transcript.
+The transcript has already passed `Yoke.AIGuard` in `:enforce` mode before it
+reached the artifact, so a secret that trips a pattern is uploaded as a
+redaction record rather than as content.
+
+### 10.5.3 Baseline suppression
+
+With a cloud endpoint configured, `yoke review` also fetches a **baseline**: the
+findings this organisation has consistently ignored on this branch. Those are
+removed before the report is built, so they are not annotated, do not appear in
+the step summary, and do not gate.
+
+Three properties keep this safe:
+
+* **Fail-open.** An unreachable service, a rejected token, or a malformed
+  response yields an empty baseline. The review then reports everything it
+  found, exactly as it did before the feature existed. A dashboard outage
+  never changes what a review says.
+* **Severity-bounded.** A baseline entry may only hide a finding at or below
+  its own severity. A stale `low` entry cannot silence a new `high` finding
+  that happens to share a title.
+* **Auditable.** Suppressed findings are written to the artifact under
+  `suppressed`, each with its location, severity, and the reason. A reviewer
+  that silently drops findings is indistinguishable from one that missed them.
+
+Pass `--no-baseline` to ignore the baseline and report every finding. This is
+the right flag for a first review of a new repository, and for debugging why a
+finding you expected did not appear.
+
+Matching is on `{file, normalised title}` rather than on line number, because
+lines move. Titles are lowercased, stripped of backticks and punctuation, and
+whitespace-collapsed, so cosmetic prompt drift does not defeat the match.
+
+---
+
 ## 11. The Action
 
 `action.yml` is a composite action. Inputs:

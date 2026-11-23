@@ -66,6 +66,7 @@ defmodule Yoke.CI.Artifact do
         "gating_count" => length(report.gating)
       },
       "findings" => Enum.map(report.findings, &normalize_finding/1),
+      "suppressed" => normalize_suppressed(Keyword.get(opts, :suppressed, [])),
       "transcript" => guarded_transcript(Keyword.get(opts, :transcript)),
       "policy" => Keyword.get(opts, :policy, %{})
     }
@@ -117,6 +118,23 @@ defmodule Yoke.CI.Artifact do
   end
 
   defp normalize_identity(_), do: %{}
+
+  # Suppressed findings are recorded, not discarded. A reviewer that silently
+  # drops findings is indistinguishable from one that missed them, so the
+  # artifact must show what was hidden and why (`docs/YAAS.md` §4.3).
+  defp normalize_suppressed(suppressed) when is_list(suppressed) do
+    Enum.map(suppressed, fn finding ->
+      %{
+        "file" => Map.get(finding, :file),
+        "line" => Map.get(finding, :line),
+        "title" => Map.get(finding, :title),
+        "severity" => Map.get(finding, :severity),
+        "reason" => "baseline: previously ignored by this organisation"
+      }
+    end)
+  end
+
+  defp normalize_suppressed(_), do: []
 
   defp normalize_finding(finding) do
     %{
