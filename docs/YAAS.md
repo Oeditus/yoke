@@ -175,17 +175,24 @@ version of the loop can be a `POST` to one endpoint running on a laptop.
 
 ### 4.1 Reaction signals, ranked by reliability
 
+> **Corrected after measurement.** The original ranking put line movement first, on the grounds
+> that it needs no human action. Measuring this repository showed that was wrong: line movement
+> scored 14.3% while a review-fix commit signal scored 92.9% on the same 14 findings. A fix can
+> address a finding without moving the anchored line, so the cheap signal is the *weakest* one,
+> not the primary one. See §8 Phase 0.
+
 | Signal | Source | Reliability | Interpretation |
 | :--- | :--- | :--- | :--- |
-| **Line changed in a later commit** | `git diff` from the reviewed head to the new head, restricted to the finding's `{file, line}` | Highest — no human action required, works on every PR | The comment was probably right, or the code moved |
 | **`suggestion` block accepted** | GitHub suggestion-commit events | Highest — an explicit machine-readable yes | Unambiguously right |
+| **Code-review fix commit** | A commit inside the PR whose subject marks it as a review fix (`CR by ...`) and which touches the finding's file | High, but file-level | A human read the comment and changed that file |
 | **Comment resolved or dismissed** | GitHub review-thread `isResolved` (GraphQL) | High | Resolved without a change means probably noise; resolved with a change means right |
 | **Reaction (thumbs up / down)** | Review comment reactions | Medium — sparse | Explicit but rare |
+| **Line changed in a later commit** | `git diff` from the reviewed head to the new head, restricted to the finding's `{file, line}` | Low on its own — cheap, but under-counts badly | The line moved; the comment may or may not have caused it |
 | **PR merged with the line untouched** | Merge event plus diff | Medium | Weak negative; could mean "we will fix later" |
 
 `Yoke.PRReview.Queue` already speaks GraphQL through `gh` and already models review state, so the
-query surface exists. The line-changed signal needs no new API at all.
-
+query surface exists. The line-changed signal needs no new API at all, which is exactly why it was
+over-trusted: it was the only one available before the App.
 ### 4.2 The learning rule: deliberately dumb at first
 
 Do **not** start with a bandit. `Yoke.SelfImprove.Telemetry.bandit_scores/2` exists and is
@@ -329,6 +336,32 @@ thesis is wrong and you should find out in month two, not month nine.
 - [ ] **Exit test:** compute precision over the last 20 reviews on this repository. If it is not
       measurable, stop and rethink. The script exists; running it needs `gh` auth against the repo.
 
+**Measured (2026-11-23, `Oeditus/yoke`, 4 merged PRs with Yoke reviews, 14 findings):**
+
+| Signal | Precision |
+| :--- | ---: |
+| Line movement alone (lower bound) | 14.3% |
+| Plus review-fix commits (upper bound) | 92.9% |
+
+The first measurement read 14.3%, which would have killed the thesis. It was wrong. Three commits
+inside PR #15 are titled `CR by Robby Ott`, `CRs by Robby Ott`, and `Robby Ott's CR`; together they
+fixed 13 of the 14 findings. The one finding they did not touch (`lib/yoke/pr_review/tools.ex`) is
+the one scored `:ignored`. Line movement missed all of them because a fix can address a finding
+without moving the anchored line: the `Map.new` → `Enum.reduce` fix sits two lines below the anchor
+that was commented on.
+
+Two consequences for the design:
+
+1. **Line movement is a weak signal and must not be the primary one.** `docs/YAAS.md` §4.1 ranked it
+   first on the grounds that it needs no human action. That ranking was wrong. It is cheap, but it
+   under-counts badly. A review-fix commit, a resolved thread, or an accepted suggestion is far more
+   reliable and should be preferred wherever available.
+2. **The upper bound is file-level and therefore generous.** A finding that merely shares a file with
+   a real fix is credited. The true number is somewhere between 14% and 93%, and narrowing that band
+   needs thread-level resolution data, which is Phase 3's GitHub App.
+
+The honest conclusion: the thesis is plausible rather than proven, and the measurement instrument
+needs the App before it can produce a number worth pricing against.
 ### Phase 1 — The loop, self-hosted (3 weeks)
 - [x] Client side of suppression: `Yoke.Cloud.Baseline` fetches the baseline, matches on
       `{file, normalised title}`, and refuses to hide a finding more severe than the entry.

@@ -32,6 +32,29 @@ defmodule Yoke.Cloud.OutcomeTest do
   end
 
   describe "classify/2 precedence" do
+    test "a review-fix commit outranks line movement" do
+      # A fix can address a finding without moving the anchored line, so the
+      # commit signal must be checked before `line_present`. This is the case
+      # that made an early measurement of this repository read 14% instead of
+      # 93%: three commits titled "CR by Robby Ott" fixed findings whose
+      # anchored lines never moved.
+      evidence = %{line_present: true, file_present: true, pr_merged: true, review_fix: true}
+
+      assert Outcome.classify(issue(), evidence) == :acted_on
+    end
+
+    test "a review-fix commit outranks a resolved thread and a reaction" do
+      evidence = %{
+        line_present: true,
+        review_fix: true,
+        resolved: true,
+        reactions: %{"+1" => 2},
+        pr_merged: true
+      }
+
+      assert Outcome.classify(issue(), evidence) == :acted_on
+    end
+
     test "a changed line wins over every other signal" do
       evidence = %{
         line_present: false,

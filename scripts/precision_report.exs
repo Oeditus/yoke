@@ -156,6 +156,9 @@ defmodule PrecisionReport do
         |> Enum.map(fn comment ->
           %{
             file: comment["path"],
+            # `line` is null once the anchored line is no longer in the current
+            # diff, but `original_line` still records where the comment was
+            # posted. Falling back to it is what makes merged PRs measurable.
             line: comment["line"] || comment["original_line"],
             title: first_line(comment["body"]),
             severity: severity_of(comment["body"])
@@ -170,22 +173,30 @@ defmodule PrecisionReport do
     end
   end
 
-  # A Yoke inline comment carries the severity badge the review renderer adds.
-  # Matching on it rather than on the author login keeps the script working for
-  # both the App identity and a user token.
+  # A Yoke inline comment is identified by its severity badge, which the review
+  # renderer emits as a coloured circle. Matching on the badge rather than on
+  # the author login keeps the script working for both the App identity and a
+  # user token, and survives a rename of the bot account.
+  #
+  # The badge is the only reliable marker: the body carries no hidden HTML
+  # comment and no word "high"/"medium"/"low" (the severity is the emoji).
   defp yoke_comment?(comment) do
     body = comment["body"] || ""
-    String.contains?(body, "<!-- yoke") or Regex.match?(~r/\b(high|medium|low|info)\b/i, body)
+    String.contains?(body, "<!-- yoke") or severity_badge(body) != nil
   end
 
-  defp severity_of(body) when is_binary(body) do
-    case Regex.run(~r/\b(high|medium|low|info)\b/i, body) do
-      [_, severity] -> String.downcase(severity)
-      _ -> "info"
-    end
+  # Maps the renderer's severity badge onto a severity name. Order matters:
+  # the red badge is checked first so a body mentioning several tokens cannot
+  # downgrade a high finding.
+  @severity_badges [{"\u{1F534}", "high"}, {"\u{1F7E1}", "medium"}, {"\u{1F535}", "low"}]
+
+  defp severity_badge(body) when is_binary(body) do
+    Enum.find_value(@severity_badges, fn {badge, severity} ->
+      if String.contains?(body, badge), do: severity
+    end)
   end
 
-  defp severity_of(_), do: "info"
+  defp severity_of(body), do: severity_badge(body) || "info"
 
   defp first_line(nil), do: "(no title)"
 
@@ -195,6 +206,52 @@ defmodule PrecisionReport do
     |> Enum.map(&String.trim/1)
     |> Enum.find("", &(&1 != "" and not String.starts_with?(&1, "<!--")))
     |> String.slice(0, 120)
+  end
+
+  # Returns the set of files touched by commits inside the PR whose message
+  # marks them as a code-review fix.
+  #
+  # This exists because line movement alone under-counts: a fix can address a
+  # finding without moving the anchored line, which is exactly what happened on
+  # this repository (a commit titled "CR by Robby Ott" replaced `Map.new` with
+  # `Enum.reduce` two lines below the anchor). Matching on the commit message is
+  # a heuristic, but it is a heuristic in the safe direction: it can only turn
+  # an `:ignored` into an `:acted_on`, never the reverse.
+  defp fix_commits(%{merge_commit: sha}) when is_binary(sha) do
+    case System.cmd("git", ["log", "--format=%H%x00%s", "#{sha}^1..#{sha}"],
+           stderr_to_stdout: true
+         ) do
+      {out, 0} ->
+        out
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&review_fix_message?/1)
+        |> Enum.flat_map(&files_in_commit/1)
+        |> MapSet.new()
+
+      _ ->
+        MapSet.new()
+    end
+  end
+  # A commit subject that marks itself as a code-review fix, e.g.
+  # "CR by Robby Ott", "CRs by Robby Ott", "Robby Ott's CR".
+  #
+  # The match is deliberately narrow: a standalone `CR`/`CRs` token, not a
+  # substring. A loose match on "cr" would sweep in every commit whose message
+  # happens to contain those letters and turn the measurement into noise.
+  @review_fix_regex ~r/(?:^|\s)CRs?(?:\s|$|['’])/u
+
+  defp review_fix_message?(line) do
+    message = line |> String.split("\u0000") |> List.last()
+    Regex.match?(@review_fix_regex, message)
+  end
+
+  defp files_in_commit(line) do
+    sha = line |> String.split("\u0000") |> List.first()
+
+    case System.cmd("git", ["show", "--name-only", "--format=", sha], stderr_to_stdout: true) do
+      {out, 0} -> String.split(out, "\n", trim: true)
+      _ -> []
+    end
   end
 
   @doc """
@@ -215,12 +272,18 @@ defmodule PrecisionReport do
           case pr_diff(pr) do
             {:ok, diff} ->
               lines = diff_right_lines(diff)
+              reviewed_files = fix_commits(pr)
 
               Enum.map(findings, fn finding ->
                 evidence = %{
                   line_present: MapSet.member?(lines, {finding.file, finding.line}),
                   file_present: Enum.any?(lines, fn {file, _} -> file == finding.file end),
-                  pr_merged: true
+                  pr_merged: true,
+                  # A commit inside the PR whose message marks it as a code-review
+                  # fix, touching the finding's file, is much stronger evidence
+                  # than line movement: it means a human read the comment and
+                  # changed that file in response.
+                  review_fix: MapSet.member?(reviewed_files, finding.file)
                 }
 
                 finding
@@ -243,16 +306,19 @@ defmodule PrecisionReport do
   # Reuses the review pipeline's own diff parser so the script and the product
   # can never disagree about which lines a diff touches.
   defp diff_right_lines(diff), do: Yoke.PRReview.parse_diff_right_lines(diff)
-  # Returns the diff a reviewer was looking at: the PR's merge commit against
-  # its base branch. Read from local git because the classifier parses raw hunk
-  # headers and a JSON round-trip would corrupt them.
-  defp pr_diff(%{merge_commit: sha, base: base}) when is_binary(sha) and is_binary(base) do
+
+  # Returns the diff the PR introduced: its merge commit against its FIRST
+  # parent, which is the base branch tip at merge time.
+  #
+  # `origin/<base>...<merge>` is wrong here: a merge commit's merge-base with
+  # the base branch is the base branch itself, so the three-dot diff is always
+  # empty. Read from local git because the classifier parses raw hunk headers
+  # and a JSON round-trip would corrupt them.
+  defp pr_diff(%{merge_commit: sha}) when is_binary(sha) do
     _ =
       System.cmd("git", ["fetch", "--no-tags", "--quiet", "origin", sha], stderr_to_stdout: true)
 
-    case System.cmd("git", ["diff", "--no-color", "origin/#{base}...#{sha}"],
-           stderr_to_stdout: true
-         ) do
+    case System.cmd("git", ["diff", "--no-color", "#{sha}^1", sha], stderr_to_stdout: true) do
       {diff, 0} when diff != "" -> {:ok, diff}
       {_out, 0} -> {:error, :empty_diff}
       {err, _status} -> {:error, String.trim(err) |> String.slice(0, 120)}
@@ -282,6 +348,11 @@ defmodule PrecisionReport do
       "  pending      #{Map.get(report.by_verdict, :pending, 0)}",
       "",
       "Precision: #{format_precision(report.acted_on_rate)}",
+      "",
+      "Note: `acted on` includes findings whose file was touched by a commit",
+      "marked as a code-review fix. That is a file-level signal, so it can",
+      "over-credit a finding that happened to share a file with a real fix.",
+      "Treat this as an upper bound; the lower bound is line movement alone.",
       ""
     ]
 

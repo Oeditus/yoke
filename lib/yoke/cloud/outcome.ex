@@ -42,13 +42,16 @@ defmodule Yoke.Cloud.Outcome do
     * `:resolved` -- the review thread was resolved by a human.
     * `:reactions` -- reaction counts as `%{"+1" => n, "-1" => n}`.
     * `:pr_merged` -- the pull request has been merged.
+    * `:review_fix` -- a commit inside the PR marks itself as a code-review fix
+      and touches the finding's file.
   """
   @type evidence :: %{
           optional(:line_present) => boolean() | nil,
           optional(:file_present) => boolean() | nil,
           optional(:resolved) => boolean(),
           optional(:reactions) => %{optional(String.t()) => non_neg_integer()},
-          optional(:pr_merged) => boolean()
+          optional(:pr_merged) => boolean(),
+          optional(:review_fix) => boolean()
         }
 
   @doc """
@@ -71,6 +74,12 @@ defmodule Yoke.Cloud.Outcome do
   @spec classify(map(), evidence()) :: verdict()
   def classify(finding, evidence \\ %{}) when is_map(finding) do
     cond do
+      # A commit inside the PR that marks itself as a code-review fix and
+      # touches the finding's file is the strongest available signal: a human
+      # read the comment and changed that file in response. It is checked
+      # before line movement because a fix can address a finding without
+      # moving the anchored line.
+      evidence[:review_fix] == true -> :acted_on
       # The finding's anchor no longer exists in the newer head. Either the
       # line was edited or the file was deleted; both mean the reviewer's
       # point landed somewhere.
