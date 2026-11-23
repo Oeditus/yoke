@@ -43,25 +43,45 @@ defmodule Yoke.Cloud.OutcomeTest do
       assert Outcome.classify(issue(), evidence) == :acted_on
     end
 
-    test "a review-fix commit outranks a resolved thread and a reaction" do
+    test "a direct reaction outranks a review-fix commit" do
+      # A thumbs-up is a human judgement about *this comment*; a review-fix
+      # commit only says the file was touched. Checking the inference first
+      # would mask the strong signal and make the tally under-report how often
+      # reviewers explicitly agreed.
       evidence = %{
         line_present: true,
         review_fix: true,
         resolved: true,
-        reactions: %{"+1" => 2},
+        reactions: %{"THUMBS_UP" => 2},
         pr_merged: true
       }
 
-      assert Outcome.classify(issue(), evidence) == :acted_on
+      assert Outcome.classify(issue(), evidence) == :reacted_up
     end
 
-    test "a changed line wins over every other signal" do
+    test "a direct reaction outranks line movement" do
       evidence = %{
         line_present: false,
         resolved: true,
-        reactions: %{"+1" => 3},
+        reactions: %{"THUMBS_UP" => 3},
         pr_merged: true
       }
+
+      assert Outcome.classify(issue(), evidence) == :reacted_up
+    end
+
+    test "GitHub's THUMBS_UP content counts as a positive reaction" do
+      # GraphQL returns `THUMBS_UP`, not `+1`. Matching only `+1` silently
+      # ignored every real reaction on this repository.
+      assert Outcome.classify(issue(), %{reactions: %{"THUMBS_UP" => 1}}) == :reacted_up
+    end
+
+    test "GitHub's THUMBS_DOWN content counts as a negative reaction" do
+      assert Outcome.classify(issue(), %{reactions: %{"THUMBS_DOWN" => 1}}) == :reacted_down
+    end
+
+    test "a changed line wins over a review-fix inference" do
+      evidence = %{line_present: false, review_fix: true, pr_merged: true}
 
       assert Outcome.classify(issue(), evidence) == :acted_on
     end

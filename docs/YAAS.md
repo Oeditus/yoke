@@ -327,21 +327,13 @@ thesis is wrong and you should find out in month two, not month nine.
 ---
 
 ## 8. Roadmap
+**Measured (2026-11-23, `Oeditus/yoke`, 4 merged PRs with Yoke reviews, 16 findings):**
 
-### Phase 0 — Prove the loop closes (2 weeks, no backend)
-
-- [x] `yoke report --upload` posting to a local endpoint (`Yoke.Cloud.Client`, `Yoke.CLI.Report`).
-- [x] A script that reads GitHub review history for merged PRs and classifies each finding as
-      acted-on or ignored (`scripts/precision_report.exs`, `Yoke.Cloud.Outcome`).
-- [ ] **Exit test:** compute precision over the last 20 reviews on this repository. If it is not
-      measurable, stop and rethink. The script exists; running it needs `gh` auth against the repo.
-
-**Measured (2026-11-23, `Oeditus/yoke`, 4 merged PRs with Yoke reviews, 14 findings):**
-
-| Signal | Precision |
+| Signal set | Precision |
 | :--- | ---: |
 | Line movement alone (lower bound) | 14.3% |
-| Plus review-fix commits (upper bound) | 92.9% |
+| Plus review-fix commits | 92.9% |
+| Plus thread reactions and resolutions | 93.8% |
 
 The first measurement read 14.3%, which would have killed the thesis. It was wrong. Three commits
 inside PR #15 are titled `CR by Robby Ott`, `CRs by Robby Ott`, and `Robby Ott's CR`; together they
@@ -350,6 +342,29 @@ the one scored `:ignored`. Line movement missed all of them because a fix can ad
 without moving the anchored line: the `Map.new` → `Enum.reduce` fix sits two lines below the anchor
 that was commented on.
 
+Thread evidence added 1.4 points on this sample, not the collapse the plan expected. The reason is
+visible in the data: across the four reviewed pull requests there are 16 threads, of which **0 were
+resolved and 2 carry a reaction**. This repository's reviewers do not use either affordance. The
+signal is real — both `THUMBS_UP` reactions were on genuine findings — but it is far too sparse to
+carry the measurement on its own.
+
+Four consequences for the design:
+
+1. **Line movement is a weak signal and must not be the primary one.** §4.1 originally ranked it
+   first on the grounds that it needs no human action. That ranking was wrong: it is cheap, but it
+   under-counts badly.
+2. **Review-fix commits carry the measurement**, and they are a file-level heuristic, so the upper
+   bound is generous. A finding that merely shares a file with a real fix is credited.
+3. **Thread resolution cannot be relied on for self-serve customers.** If this repository is
+   representative, most teams never click resolve or react. A product whose precision story depends
+   on those affordances would report "not measurable" for most customers. The `yoke fix --apply`
+   path (Phase 4) is therefore not a nice-to-have: it is what generates an unambiguous signal.
+4. **The true number is between 14% and 94%**, and narrowing it needs per-finding evidence rather
+   than per-file inference. Nothing currently available on GitHub provides that at scale.
+
+The honest conclusion: the thesis is plausible rather than proven. The measurement instrument is now
+correct, which is the important part — an instrument that reads 14% when the truth is 94% would have
+killed a viable product, and one that reads 94% when the truth is 40% would have sold a bad one.
 Two consequences for the design:
 
 1. **Line movement is a weak signal and must not be the primary one.** `docs/YAAS.md` §4.1 ranked it

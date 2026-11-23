@@ -156,10 +156,12 @@ defmodule PrecisionReport do
         |> Enum.map(fn comment ->
           %{
             file: comment["path"],
-            # `line` is null once the anchored line is no longer in the current
-            # diff, but `original_line` still records where the comment was
-            # posted. Falling back to it is what makes merged PRs measurable.
-            line: comment["line"] || comment["original_line"],
+            # `line` moves as the diff is rebased and is null once the anchored
+            # line leaves the current diff; `original_line` is the anchor the
+            # comment was actually posted at. Preferring `line` would mis-key
+            # the finding against the thread evidence, which is anchored at
+            # `original_line`, and the reaction would silently miss.
+            line: comment["original_line"] || comment["line"],
             title: first_line(comment["body"]),
             severity: severity_of(comment["body"])
           }
@@ -190,9 +192,25 @@ defmodule PrecisionReport do
   # downgrade a high finding.
   @severity_badges [{"\u{1F534}", "high"}, {"\u{1F7E1}", "medium"}, {"\u{1F535}", "low"}]
 
+  # Earlier Yoke releases rendered severity as `**[HIGH]**` / `**[MEDIUM]**`
+  # rather than a coloured circle. Both formats exist in real review history,
+  # so the measurement must accept both or it silently drops older findings.
+  @severity_words [{"HIGH", "high"}, {"MEDIUM", "medium"}, {"LOW", "low"}]
+
   defp severity_badge(body) when is_binary(body) do
-    Enum.find_value(@severity_badges, fn {badge, severity} ->
-      if String.contains?(body, badge), do: severity
+    case Enum.find_value(@severity_badges, fn {badge, severity} ->
+           if String.contains?(body, badge), do: severity
+         end) do
+      nil -> severity_word(body)
+      severity -> severity
+    end
+  end
+
+  defp severity_badge(_), do: nil
+
+  defp severity_word(body) do
+    Enum.find_value(@severity_words, fn {word, severity} ->
+      if String.contains?(body, "[#{word}]"), do: severity
     end)
   end
 
@@ -254,6 +272,39 @@ defmodule PrecisionReport do
     end
   end
 
+  # Fetches thread resolution and reaction evidence for a PR.
+  #
+  # Failure is not fatal: a rate-limited or unauthenticated API degrades the
+  # measurement to the weaker signals rather than breaking the report.
+  defp thread_evidence(%{number: number}, {owner, repo}) do
+    # `mix run --no-start` skips the application tree, so Req's Finch pool is
+    # not running and every request would raise. Starting the two apps the
+    # script needs is cheaper than requiring a full application boot.
+    {:ok, _} = Application.ensure_all_started(:req)
+
+    case Yoke.Cloud.GitHub.fetch_threads(owner, repo, number, github_token()) do
+      {:ok, evidence} ->
+        evidence
+
+      {:error, reason} ->
+        IO.puts(:stderr, "  PR ##{number}: no thread evidence (#{reason})")
+        %{}
+    end
+  end
+
+  defp github_token do
+    System.get_env("GITHUB_TOKEN") || System.get_env("GH_TOKEN") || gh_auth_token()
+  end
+
+  # `gh auth token` is the reliable way to pick up the CLI's stored credential
+  # without asking the operator to export it a second time.
+  defp gh_auth_token do
+    case System.cmd("gh", ["auth", "token"], stderr_to_stdout: true) do
+      {token, 0} -> String.trim(token)
+      _ -> nil
+    end
+  end
+
   @doc """
   Classifies every finding on every reviewed PR.
 
@@ -273,24 +324,26 @@ defmodule PrecisionReport do
             {:ok, diff} ->
               lines = diff_right_lines(diff)
               reviewed_files = fix_commits(pr)
+              threads = thread_evidence(pr, repo)
 
               Enum.map(findings, fn finding ->
-                evidence = %{
-                  line_present: MapSet.member?(lines, {finding.file, finding.line}),
-                  file_present: Enum.any?(lines, fn {file, _} -> file == finding.file end),
-                  pr_merged: true,
-                  # A commit inside the PR whose message marks it as a code-review
-                  # fix, touching the finding's file, is much stronger evidence
-                  # than line movement: it means a human read the comment and
-                  # changed that file in response.
-                  review_fix: MapSet.member?(reviewed_files, finding.file)
-                }
+                evidence =
+                  %{
+                    line_present: MapSet.member?(lines, {finding.file, finding.line}),
+                    file_present: Enum.any?(lines, fn {file, _} -> file == finding.file end),
+                    pr_merged: true,
+                    # A commit inside the PR whose message marks it as a code-review
+                    # fix, touching the finding's file, is much stronger evidence
+                    # than line movement: it means a human read the comment and
+                    # changed that file in response.
+                    review_fix: MapSet.member?(reviewed_files, finding.file)
+                  }
+                  |> Map.merge(Yoke.Cloud.GitHub.evidence_for(threads, finding.file, finding.line))
 
                 finding
                 |> Map.put(:pr, pr.number)
                 |> then(&{&1, Outcome.classify(&1, evidence)})
               end)
-
             {:error, reason} ->
               IO.puts(:stderr, "  PR ##{pr.number}: cannot read diff (#{reason}); skipping")
               []

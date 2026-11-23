@@ -74,20 +74,24 @@ defmodule Yoke.Cloud.Outcome do
   @spec classify(map(), evidence()) :: verdict()
   def classify(finding, evidence \\ %{}) when is_map(finding) do
     cond do
+      # A direct human judgement about this comment outranks every inference.
+      # A thumbs-up or a resolved thread says something about *this finding*;
+      # `review_fix` only says a file was touched, and line movement says even
+      # less. Checking the inferences first would mask the strong signals and
+      # make the tally under-report how often reviewers explicitly agreed.
+      positive_reaction?(evidence) -> :reacted_up
+      evidence[:resolved] == true -> :resolved
+      negative_reaction?(evidence) -> :reacted_down
       # A commit inside the PR that marks itself as a code-review fix and
-      # touches the finding's file is the strongest available signal: a human
-      # read the comment and changed that file in response. It is checked
-      # before line movement because a fix can address a finding without
-      # moving the anchored line.
+      # touches the finding's file: a human read the comment and changed that
+      # file in response. Checked before line movement because a fix can
+      # address a finding without moving the anchored line.
       evidence[:review_fix] == true -> :acted_on
       # The finding's anchor no longer exists in the newer head. Either the
       # line was edited or the file was deleted; both mean the reviewer's
       # point landed somewhere.
       evidence[:line_present] == false -> :acted_on
       evidence[:file_present] == false -> :acted_on
-      positive_reaction?(evidence) -> :reacted_up
-      evidence[:resolved] == true -> :resolved
-      negative_reaction?(evidence) -> :reacted_down
       evidence[:pr_merged] == true and evidence[:line_present] == true -> :ignored
       true -> :pending
     end
@@ -189,12 +193,17 @@ defmodule Yoke.Cloud.Outcome do
   # Internals
   # ---------------------------------------------------------------------
 
+  # GitHub's GraphQL API returns reaction content as `THUMBS_UP` / `THUMBS_DOWN`,
+  # while the shorthand `+1` / `-1` is what a hand-written payload or the REST
+  # API uses. Accepting both matters: matching only `+1` silently ignored every
+  # real reaction on this repository, which made the signal look absent when it
+  # was merely unparsed.
   defp positive_reaction?(evidence) do
-    count(evidence, "+1") > 0
+    count(evidence, "+1") + count(evidence, "THUMBS_UP") > 0
   end
 
   defp negative_reaction?(evidence) do
-    count(evidence, "-1") > 0
+    count(evidence, "-1") + count(evidence, "THUMBS_DOWN") > 0
   end
 
   defp count(evidence, key) do
