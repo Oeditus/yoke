@@ -747,6 +747,38 @@ Matching is on `{file, normalised title}` rather than on line number, because
 lines move. Titles are lowercased, stripped of backticks and punctuation, and
 whitespace-collapsed, so cosmetic prompt drift does not defeat the match.
 
+### 10.5.4 How a pattern earns suppression
+
+`Yoke.Cloud.Scoring` derives the baseline from observed outcomes rather than
+from hand-maintained configuration. For each pattern it counts how often
+matching findings were acted on versus ignored, then computes Laplace-smoothed
+precision:
+
+```
+score = (acted_on + 1) / (acted_on + ignored + 2)
+```
+
+| Decision | Requires |
+| :--- | :--- |
+| Promote to a mandatory check | `>= 3` decisive observations and score `>= 0.6` |
+| Suppress | `>= 5` decisive observations and score `<= 0.2` |
+| Observe | Anything else |
+
+Two asymmetries are deliberate:
+
+* **Suppression needs more evidence than promotion.** Hiding a real finding is
+  worse than repeating a noisy one, so the bar is five observations rather than
+  three.
+* **Smoothing prevents single-observation conclusions.** One acted-on finding
+  scores 0.67, which clears the score bar but not the occurrence bar. Without
+  smoothing it would score 1.0 and look conclusive.
+
+`pending` findings and endorsements are excluded from both numerator and
+denominator. An open pull request has not answered the question, and praise is
+not a claim that can be wrong.
+
+Every decision carries the counts that produced it, so the dashboard can explain
+why a finding disappeared instead of silently omitting it.
 ---
 
 ## 11. The Action

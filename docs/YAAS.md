@@ -330,19 +330,18 @@ thesis is wrong and you should find out in month two, not month nine.
       measurable, stop and rethink. The script exists; running it needs `gh` auth against the repo.
 
 ### Phase 1 — The loop, self-hosted (3 weeks)
-
 - [x] Client side of suppression: `Yoke.Cloud.Baseline` fetches the baseline, matches on
       `{file, normalised title}`, and refuses to hide a finding more severe than the entry.
       Wired into `Yoke.CI.Review` with `--no-baseline` as the escape hatch.
 - [x] Suppressed findings recorded in the artifact rather than discarded, so hiding is auditable.
+- [x] The scoring rule as a pure module (`Yoke.Cloud.Scoring`): Laplace-smoothed precision over
+      per-pattern tallies, promote at `>= 3` observations and `>= 0.6`, suppress at `>= 5` and
+      `<= 0.2`. Every decision carries the counts that produced it, because a dashboard must be
+      able to explain why a finding disappeared.
 - [ ] `yoke_cloud` Phoenix app: `runs`, `findings`, `patterns`, `feedback` tables. Postgres + Ecto.
-- [ ] `GET /v1/baselines`, `POST /v1/runs`, `POST /v1/feedback`.
-- [ ] Server-side scoring, so the baseline is derived rather than hand-maintained.
+- [ ] `GET /v1/baselines`, `POST /v1/runs`, `POST /v1/feedback` — thin wrappers over `Scoring`.
 - [ ] **Exit test:** a suppressed pattern demonstrably stops appearing in the next review of the
       same repo.
-### Phase 2 — Dashboard and billing (4 weeks)
-
-- [ ] The four LiveView screens from §5.2.
 - [ ] `mix phx.gen.auth`, orgs, memberships, Argon2-hashed API keys shown once.
 - [ ] Stripe Checkout, Portal, and webhooks; entitlement checks; dunning with read-only grace,
       never data deletion.
