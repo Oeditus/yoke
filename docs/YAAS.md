@@ -254,24 +254,29 @@ LiveView, four screens:
 4. **Policy** — the org-level `.yoke/policy.json` editor, with the same validation rules as
    `Yoke.Interaction.Policy`: unknown keys dropped, not propagated.
 
-### 5.3 The GitHub App (runner tier, 1 week)
-
-Installation flow, short-lived tokens, webhook receiver. **Not for cloud-side runs** — for
-*feedback collection*. The App is how you learn about resolutions, reactions, and merges without
-asking the customer to run a second workflow. That is what makes the loop work with zero extra
-customer effort, and it is why the App belongs early rather than late.
-
 ### 5.4 `yoke fix --from-review` — the executable suggestion list (1 week)
 
 `PRReview.build_fix_prompt/1` already renders findings into an agent prompt, and
-`PRReview.build_pr_comment_body/4` already has a `robot_instructions` mode that embeds it in the PR
-comment. The missing piece is a **machine-readable** export:
+`build_pr_comment_body/4` already has a `robot_instructions` mode that embeds it in the PR comment.
+The missing piece is a command that reads a review artifact and applies the findings locally:
 
 ```bash
-yoke fix --from-review <run-uid> --apply    # local, interactive
-yoke fix --from-review <run-uid> --emit pr  # opens a branch plus PR with the fixes
+yoke fix --from-review --artifact <path> --dry-run   # print the prompt, apply nothing
+yoke fix --from-review --artifact <path>             # apply to the working tree
 ```
 
+This turns comments into a patch. It is the highest-value feature after precision, because it
+converts a review comment into saved developer time — the thing a buyer can put in a slide.
+
+It is also the measurement instrument. Phase 0 showed that GitHub's own affordances are too sparse
+to rely on: 16 threads, 0 resolved, 2 with reactions. An accepted patch is self-evidently correct
+in a way a comment never is, so every `--from-review` run that a developer keeps is an unambiguous
+positive signal.
+
+The guard is `Context.verify_fix_checkout/2` — the same one the interactive path uses. The checkout
+must be the repository root, at the reviewed head, and clean, and it is re-verified immediately
+before the agent is dispatched. Nothing is committed or pushed; the working-tree diff is left for a
+human to inspect.
 This turns comments into a patch. It is the highest-value paid feature after precision, because it
 converts a review comment into saved developer time — the thing a buyer can put in a slide.
 
@@ -428,10 +433,18 @@ needs the App before it can produce a number worth pricing against.
 
 ### Phase 4 — Executable suggestions (2 weeks)
 
-- [ ] `yoke fix --from-review <run-uid> --apply` and `--emit pr`.
-- [ ] Findings carry a machine-readable `patch` field alongside `fix_suggestion`.
-- [ ] **Exit test:** a review produces a branch whose tests pass.
-
+- [x] `yoke fix --from-review --artifact <path>` reads a review artifact, verifies the checkout is the
+      clean reviewed commit, and asks the agent to apply the findings. `--dry-run` prints the prompt
+      and applies nothing. Implemented in `Yoke.CI.FixFromReview` and wired into `Yoke.CLI.Fix`.
+- [x] Reuses `Yoke.PRReview.Context.verify_fix_checkout/2` rather than a parallel guard: two guards
+      that can drift apart are worse than one.
+- [x] Endorsements excluded from fix candidates, findings ordered worst-first so a truncated turn
+      addresses the important ones.
+- [ ] A machine-readable `patch` field on findings, so a fix can be offered as a ready-made diff
+      rather than requiring a model turn.
+- [x] **Exit test:** the checkout guard refuses a dirty tree, a moved head, and an artifact with no
+      identity; a clean tree at the reviewed head is accepted. Covered by four tests against a real
+      git repository.
 ### Phase 5 — Enterprise (only on demand)
 
 - [ ] On-prem container, SSO, audit retention, frozen policy.

@@ -41,7 +41,10 @@ defmodule Yoke.CLI.Fix do
     agent_timeout: :integer,
     help: :boolean,
     session: :string,
-    provider: :string
+    provider: :string,
+    from_review: :boolean,
+    artifact: :string,
+    dry_run: :boolean
   ]
 
   @aliases [h: :help, n: :no_run, a: :apply, p: :previous]
@@ -76,7 +79,7 @@ defmodule Yoke.CLI.Fix do
       true ->
         case Yoke.CLI.Main.validate_provider(opts) do
           :ok ->
-            run(opts, extra)
+            if opts[:from_review], do: run_from_review(opts), else: run(opts, extra)
 
           {:error, message} ->
             IO.puts(Formatter.format_error(message))
@@ -93,10 +96,15 @@ defmodule Yoke.CLI.Fix do
 
     USAGE:
       yoke fix [options] ["<command>"]
+      yoke fix --from-review [--artifact <path>] [--dry-run]
 
     Reads the most recent command from your shell history (zsh, bash or fish),
     re-runs it here, and asks the agent to diagnose the failure and propose a
     concrete fix plan.
+
+    With --from-review it instead reads the artifact `yoke review` wrote, checks
+    that the working tree is the clean reviewed commit, and asks the agent to
+    apply the findings. Nothing is committed or pushed.
 
     OPTIONS:
       -n, --no-run            Do not re-run the command; analyse it statically
@@ -112,6 +120,11 @@ defmodule Yoke.CLI.Fix do
           --agent-timeout <ms> Give up on the analysis turn after this long
                               (default: 600000 = 10 minutes)
           --session <id>      Resume/continue the given Yoke session
+          --from-review       Apply a completed review's findings instead of
+                              replaying a command
+          --artifact <path>   Review artifact to read
+                              (default: $RUNNER_TEMP/yoke-review.json)
+          --dry-run           With --from-review: print the prompt, apply nothing
       -h, --help              Show this help
 
     EXAMPLES:
@@ -119,18 +132,71 @@ defmodule Yoke.CLI.Fix do
       yoke fix --apply               # …and let the agent fix it
       yoke fix "mix test test/foo_test.exs:42"
       yoke fix --no-run              # just plan, do not execute anything
+      yoke fix --from-review --dry-run   # inspect what a review fix would send
 
     EXIT CODES:
-      0  the replayed command succeeded
-      1  the command failed and a fix plan was produced
+      0  the replayed command succeeded, or the review fixes were applied
+      1  the command failed and a fix plan was produced, or --dry-run printed one
       2  usage error
-      3  no command could be determined from history
+      3  no command could be determined from history, the artifact could not be
+         read, or the checkout is not the reviewed head
     """
   end
 
   # ---------------------------------------------------------------------
   # Orchestration
   # ---------------------------------------------------------------------
+
+  # `yoke fix --from-review` (`docs/YAAS.md` §5.4).
+  #
+  # Reads the artifact `yoke review` wrote, verifies the checkout is the clean
+  # reviewed commit, and hands the findings to the agent. The verification is
+  # the same `verify_fix_checkout/2` guard the interactive path uses: applying
+  # fixes to a tree that has moved would silently edit the wrong code.
+  defp run_from_review(opts) do
+    artifact = opts[:artifact] || default_artifact()
+
+    case Yoke.CI.FixFromReview.load(artifact) do
+      {:ok, %{findings: [], identity: _identity}} ->
+        Yoke.CI.FixFromReview.warn_empty()
+        0
+
+      {:ok, %{findings: findings, identity: identity}} ->
+        IO.puts(Formatter.format_info(Yoke.CI.FixFromReview.summary(findings)))
+        Yoke.CI.FixFromReview.print_findings(findings)
+
+        case Yoke.CI.FixFromReview.verify_checkout(identity, File.cwd!()) do
+          :ok ->
+            prompt = Yoke.CI.FixFromReview.build_prompt(findings)
+
+            if opts[:dry_run] do
+              IO.puts(Formatter.format_info("Dry run: the following prompt would be sent.\n"))
+              IO.puts(prompt)
+              1
+            else
+              dispatch_to_agent(prompt, opts)
+            end
+
+          {:error, reason} ->
+            IO.puts(Formatter.format_error(reason))
+            3
+        end
+
+      {:error, reason} ->
+        IO.puts(Formatter.format_error(reason))
+        3
+    end
+  end
+
+  defp default_artifact do
+    base =
+      case System.get_env("RUNNER_TEMP") do
+        path when is_binary(path) and path != "" -> path
+        _ -> System.tmp_dir!()
+      end
+
+    Path.join(base, "yoke-review.json")
+  end
 
   defp run(opts, extra) do
     case resolve_command(opts, extra) do
