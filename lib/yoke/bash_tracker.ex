@@ -118,6 +118,12 @@ defmodule Yoke.BashTracker do
       category: :git,
       reason: "Use dedicated git tools where applicable"
     },
+    "mix metacredo" => %{
+      analog: "mcp_ragex_metacredo_analyze / run_linter metacredo",
+      category: :analysis,
+      reason:
+        "Use mcp_ragex_metacredo_analyze or run_linter metacredo for in-process cross-language static analysis"
+    },
     "wc" => %{
       analog: "mcp_ragex_analyze_file / read_file",
       category: :analysis,

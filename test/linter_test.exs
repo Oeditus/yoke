@@ -9,6 +9,7 @@ defmodule Yoke.LinterTest do
       tools = Linter.list_tools()
       names = Enum.map(tools, & &1.name)
 
+      assert "metacredo" in names
       assert "oeditus_credo" in names
       assert "propwise" in names
       assert "credo" in names
@@ -18,6 +19,7 @@ defmodule Yoke.LinterTest do
       assert "checkstyle" in names
       assert "cargo" in names
       assert "clippy" in names
+      assert "go" in names
       assert "all" in names
     end
   end
@@ -48,6 +50,29 @@ defmodule Yoke.LinterTest do
 
         assert {:error, err2} = Linter.run("clippy", tmp_dir)
         assert err2 =~ "No Cargo.toml found"
+
+        assert {:error, err3} = Linter.run("go", tmp_dir)
+        assert err3 =~ "No go.mod found"
+      after
+        File.rm_rf!(tmp_dir)
+      end
+    end
+
+    test "runs metacredo in-process on a temporary project directory" do
+      tmp_dir =
+        Path.join(System.tmp_dir!(), "yoke_metacredo_#{System.unique_integer([:positive])}")
+
+      lib_dir = Path.join(tmp_dir, "lib")
+      File.mkdir_p!(lib_dir)
+
+      File.write!(
+        Path.join(lib_dir, "sample.ex"),
+        "defmodule Sample do\n  @moduledoc \"Sample.\"\n  def ok, do: :ok\nend\n"
+      )
+
+      try do
+        assert {:ok, out} = Linter.run("metacredo", tmp_dir)
+        assert out =~ "MetaCredo:"
       after
         File.rm_rf!(tmp_dir)
       end

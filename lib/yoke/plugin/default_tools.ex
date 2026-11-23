@@ -2,6 +2,8 @@ defmodule Yoke.Plugin.DefaultTools do
   @moduledoc false
   @behaviour Yoke.Plugin.Behaviour
 
+  alias Metastatic.Adapters.Go.Subprocess, as: GoSubprocess
+
   @grep_ignored_dirs ~w(node_modules _build deps .git .elixir_ls .yoke .ragex .cache dist)
   @grep_binary_exts ~w(.beam .png .jpg .jpeg .gif .ico .svg .woff .woff2 .ttf .eot .zip .tar .gz .redb .dump .so .dylib .exe .dll)
 
@@ -371,14 +373,14 @@ defmodule Yoke.Plugin.DefaultTools do
       %{
         name: "run_linter",
         description:
-          "Run linters and static analysis tools against whole project, diff, or CR targets. Supports Elixir (credo, oeditus_credo, dialyzer, propwise), Java (javac to compile main and test sources via ./mvnw or ./gradlew, mvn, checkstyle), and Rust (cargo for cargo check, clippy for cargo clippy).",
+          "Run linters and static analysis tools against whole project, diff, or CR targets. Supports cross-language MetaCredo (metacredo), Elixir (credo, oeditus_credo, dialyzer, propwise), Java (javac to compile main and test sources via ./mvnw or ./gradlew, mvn, checkstyle), Rust (cargo for cargo check, clippy for cargo clippy), and Go (go for go vet).",
         parameters: %{
           type: "object",
           properties: %{
             args: %{
               type: "string",
               description:
-                "Linter command arguments (e.g. 'javac', 'cargo', 'clippy', 'credo', 'checkstyle', 'propwise cr main', 'oeditus_credo diff', 'all cr main')."
+                "Linter command arguments (e.g. 'metacredo', 'metacredo diff', 'go', 'javac', 'cargo', 'clippy', 'credo', 'checkstyle', 'propwise cr main', 'oeditus_credo diff', 'all cr main')."
             }
           },
           required: ["args"]
@@ -513,6 +515,8 @@ defmodule Yoke.Plugin.DefaultTools do
   def write_file(%{"path" => path, "content" => content}) do
     with :ok <- validate_java_write(path, content),
          :ok <- validate_rust_write(path, content),
+         :ok <- validate_go_write(path, content),
+         :ok <- validate_js_ts_write(path, content),
          :ok <- path |> Path.dirname() |> File.mkdir_p(),
          :ok <- File.write(path, content) do
       {:ok, "Successfully wrote #{byte_size(content)} bytes to #{path}"}
@@ -1198,6 +1202,60 @@ defmodule Yoke.Plugin.DefaultTools do
 
         {:error, reason} when is_binary(reason) ->
           {:error, "Rust syntax error for '#{path}': #{reason}"}
+      end
+    else
+      :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp validate_go_write(path, content) do
+    if Path.extname(path) == ".go" and
+         Code.ensure_loaded?(Metastatic.Adapters.Go) and
+         Code.ensure_loaded?(GoSubprocess) and
+         GoSubprocess.available?() do
+      case Metastatic.Adapters.Go.parse(content) do
+        {:ok, _ast} ->
+          :ok
+
+        {:error, reason} when is_binary(reason) ->
+          {:error, "Go syntax error for '#{path}': #{reason}"}
+      end
+    else
+      :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp validate_js_ts_write(path, content) do
+    ext = Path.extname(path)
+
+    {adapter, label} =
+      cond do
+        ext in [".js", ".mjs", ".cjs", ".jsx"] -> {Metastatic.Adapters.JavaScript, "JavaScript"}
+        ext in [".ts", ".tsx"] -> {Metastatic.Adapters.TypeScript, "TypeScript"}
+        true -> {nil, nil}
+      end
+
+    if adapter != nil and
+         System.find_executable("node") != nil and
+         Code.ensure_loaded?(adapter) do
+      case adapter.parse(content) do
+        {:ok, _ast} ->
+          :ok
+
+        {:error, reason} when is_binary(reason) ->
+          if String.starts_with?(reason, "JavaScript parser unavailable:") or
+               String.contains?(reason, "Failed to install") do
+            :ok
+          else
+            {:error, "#{label} syntax error for '#{path}': #{reason}"}
+          end
+
+        _ ->
+          :ok
       end
     else
       :ok

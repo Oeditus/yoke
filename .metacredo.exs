@@ -8,11 +8,11 @@
       no_db: false,
       no_user: false,
       files: %{
-        included: ["lib/", "src/", "web/"],
+        included: ["lib/", "apps/", "src/", "web/", "app/", "assets/js/", "cmd/", "pkg/", "internal/"],
         excluded: [
-          ~r"/_build/",
-          ~r"/deps/",
-          ~r"/node_modules/"
+          ~r"(^|/)_build/",
+          ~r"(^|/)deps/",
+          ~r"(^|/)node_modules/"
         ]
       },
       checks: %{

@@ -9,6 +9,13 @@ defmodule Yoke.Linter do
   def list_tools do
     [
       %{
+        name: "metacredo",
+        aliases: ["meta_credo", "meta-credo"],
+        description:
+          "Cross-language static analysis via MetaCredo (~70 security, warning, design, readability, and refactoring checks across Elixir, Go, JS/TS, Rust, Python, Ruby, etc.)",
+        docs: "https://hexdocs.pm/metacredo"
+      },
+      %{
         name: "oeditus_credo",
         aliases: ["oeditus-credo", "oeditus"],
         description:
@@ -63,6 +70,12 @@ defmodule Yoke.Linter do
         aliases: ["cargo_clippy"],
         description: "Rust linter and idiomatic style checks (via cargo clippy --all-targets)",
         docs: "https://doc.rust-lang.org/clippy/"
+      },
+      %{
+        name: "go",
+        aliases: ["go_vet", "golang"],
+        description: "Go static analysis and vet checks (via go vet ./...)",
+        docs: "https://pkg.go.dev/cmd/vet"
       },
       %{
         name: "all",
@@ -130,6 +143,7 @@ defmodule Yoke.Linter do
 
   defp canonicalize_tool(tool) do
     case String.downcase(tool) do
+      t when t in ["metacredo", "meta_credo", "meta-credo"] -> "metacredo"
       t when t in ["oeditus_credo", "oeditus-credo", "oeditus"] -> "oeditus_credo"
       "propwise" -> "propwise"
       "credo" -> "credo"
@@ -139,6 +153,7 @@ defmodule Yoke.Linter do
       "checkstyle" -> "checkstyle"
       t when t in ["cargo", "cargo_check", "rust"] -> "cargo"
       t when t in ["clippy", "cargo_clippy"] -> "clippy"
+      t when t in ["go", "go_vet", "golang"] -> "go"
       "all" -> :all
       "help" -> :unknown
       "list" -> :unknown
@@ -157,6 +172,10 @@ defmodule Yoke.Linter do
         not File.exists?(Path.join(cwd, "mix.exs")) and
             File.exists?(Path.join(cwd, "Cargo.toml")) ->
           ["cargo", "clippy"]
+
+        not File.exists?(Path.join(cwd, "mix.exs")) and
+            File.exists?(Path.join(cwd, "go.mod")) ->
+          ["go"]
 
         true ->
           ["oeditus_credo", "propwise", "credo"]
@@ -191,6 +210,14 @@ defmodule Yoke.Linter do
 
   defp run_single_tool("clippy", rest, cwd) do
     exec_cargo(["clippy", "--all-targets" | filter_target_args(rest)], cwd)
+  end
+
+  defp run_single_tool("go", rest, cwd) do
+    exec_go(["vet", "./..." | filter_target_args(rest)], cwd)
+  end
+
+  defp run_single_tool("metacredo", rest, cwd) do
+    exec_metacredo(rest, cwd)
   end
 
   defp run_single_tool(tool, rest, cwd) do
@@ -386,17 +413,183 @@ defmodule Yoke.Linter do
     e -> {:error, "Failed to run cargo: #{Exception.message(e)}"}
   end
 
+  defp exec_go(args, cwd) do
+    cond do
+      not File.exists?(Path.join(cwd, "go.mod")) ->
+        {:error, "No go.mod found in #{cwd}."}
+
+      not is_binary(System.find_executable("go")) ->
+        {:error, "go executable not found on PATH."}
+
+      true ->
+        case System.cmd("go", args, cd: cwd, stderr_to_stdout: true) do
+          {output, 0} ->
+            if String.trim(output) == "",
+              do: {:ok, "go vet succeeded (0 issues)."},
+              else: {:ok, output}
+
+          {output, _code} ->
+            {:error, output}
+        end
+    end
+  rescue
+    e -> {:error, "Failed to run go: #{Exception.message(e)}"}
+  end
+
+  defp exec_metacredo(rest, cwd) do
+    if Code.ensure_loaded?(Ragex.Analysis.MetaCredo) do
+      params = build_metacredo_params(rest, cwd)
+
+      case Ragex.Analysis.MetaCredo.run(params) do
+        {:ok, report} ->
+          {:ok, format_metacredo_report(report)}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:error, "Ragex.Analysis.MetaCredo is not available in this build."}
+    end
+  rescue
+    e -> {:error, "Failed to run MetaCredo: #{Exception.message(e)}"}
+  end
+
+  defp build_metacredo_params(rest, cwd) do
+    {mode, target_args} = parse_mode(rest)
+    {flags, positional} = parse_metacredo_flags(target_args)
+    expanded_cwd = Path.expand(cwd)
+
+    base_params =
+      case mode do
+        :project ->
+          metacredo_project_params(expanded_cwd, positional)
+
+        :diff ->
+          target_ref = Enum.at(positional, 0)
+
+          %{"path" => expanded_cwd, "diff" => true, "format" => "detailed"}
+          |> maybe_put_param("base", target_ref)
+
+        :cr ->
+          base_ref = Enum.at(positional, 0) || Yoke.Git.default_base_branch(cwd)
+          head_ref = Enum.at(positional, 1) || "HEAD"
+
+          %{
+            "path" => expanded_cwd,
+            "diff" => true,
+            "base" => base_ref,
+            "head" => head_ref,
+            "diff_lines" => true,
+            "format" => "detailed"
+          }
+
+        :custom_args ->
+          metacredo_project_params(expanded_cwd, positional)
+      end
+
+    base_params
+    |> maybe_put_metacredo_config(expanded_cwd)
+    |> Map.merge(flags)
+  end
+
+  defp metacredo_project_params(expanded_cwd, []) do
+    if expanded_cwd == File.cwd!() do
+      %{"path" => expanded_cwd, "format" => "detailed"}
+    else
+      roots =
+        MetaCredo.Config.default_included_paths()
+        |> Enum.map(&Path.join(expanded_cwd, &1))
+        |> Enum.filter(&File.exists?/1)
+
+      files = if roots == [], do: [expanded_cwd], else: roots
+      %{"path" => expanded_cwd, "files" => files, "format" => "detailed"}
+    end
+  end
+
+  defp metacredo_project_params(expanded_cwd, [single]) do
+    %{"path" => Path.expand(single, expanded_cwd), "format" => "detailed"}
+  end
+
+  defp metacredo_project_params(expanded_cwd, files) do
+    %{"path" => expanded_cwd, "files" => files, "format" => "detailed"}
+  end
+
+  defp maybe_put_metacredo_config(params, expanded_cwd) do
+    cfg = Path.join(expanded_cwd, ".metacredo.exs")
+
+    if File.regular?(cfg),
+      do: Map.put(params, "config", cfg),
+      else: params
+  end
+
+  defp parse_metacredo_flags(args), do: parse_metacredo_flags(args, %{}, [])
+
+  defp parse_metacredo_flags([], flags, pos), do: {flags, Enum.reverse(pos)}
+
+  defp parse_metacredo_flags(["--strict" | rest], flags, pos),
+    do: parse_metacredo_flags(rest, Map.put(flags, "strict", true), pos)
+
+  defp parse_metacredo_flags(["--diff-lines" | rest], flags, pos),
+    do: parse_metacredo_flags(rest, Map.put(flags, "diff_lines", true), pos)
+
+  defp parse_metacredo_flags(["--no-db" | rest], flags, pos),
+    do: parse_metacredo_flags(rest, Map.put(flags, "no_db", true), pos)
+
+  defp parse_metacredo_flags(["--no-user" | rest], flags, pos),
+    do: parse_metacredo_flags(rest, Map.put(flags, "no_user", true), pos)
+
+  defp parse_metacredo_flags(["--min-confidence", val | rest], flags, pos),
+    do: parse_metacredo_flags(rest, Map.put(flags, "min_confidence", val), pos)
+
+  defp parse_metacredo_flags(["--only", val | rest], flags, pos),
+    do: parse_metacredo_flags(rest, Map.put(flags, "only", val), pos)
+
+  defp parse_metacredo_flags(["--ignore", val | rest], flags, pos),
+    do: parse_metacredo_flags(rest, Map.put(flags, "ignore", val), pos)
+
+  defp parse_metacredo_flags([other | rest], flags, pos),
+    do: parse_metacredo_flags(rest, flags, [other | pos])
+
+  defp maybe_put_param(map, _key, nil), do: map
+  defp maybe_put_param(map, _key, ""), do: map
+  defp maybe_put_param(map, key, val), do: Map.put(map, key, val)
+
+  defp format_metacredo_report(%{partial: true}) do
+    "MetaCredo: No changed source files found in diff (partial result)."
+  end
+
+  defp format_metacredo_report(%{total: 0, files_analyzed: files_count}) do
+    "MetaCredo: No issues found across #{files_count} file(s)."
+  end
+
+  defp format_metacredo_report(%{total: total, files_analyzed: files_count, issues: issues}) do
+    header = "MetaCredo: #{total} issue(s) across #{files_count} file(s):"
+
+    lines =
+      Enum.map(issues, fn issue ->
+        file = issue.file || "unknown"
+        line = issue.line || 1
+        col = if issue.column, do: ":#{issue.column}", else: ""
+        sev = issue.severity |> to_string() |> String.upcase()
+        "#{file}:#{line}#{col} [#{sev}] #{issue.check}: #{issue.message}"
+      end)
+
+    Enum.join([header | lines], "\n")
+  end
+
   def help_text do
     """
     Usage: /linter [fix] <tool> [project | diff [ref] | cr [base] [head] | <args>]
 
     Available External Tools:
+      • metacredo (aliases: meta_credo, meta-credo) - Cross-language static analysis across Elixir, Go, JS/TS, Rust, Python, Ruby, etc. (https://hexdocs.pm/metacredo)
       • oeditus_credo (aliases: oeditus, oeditus-credo) - CWE security checks & Phoenix anti-patterns (https://oeditus_credo.hexdocs.pm)
       • propwise - Property-based testing candidate detector (https://propwise.hexdocs.pm)
       • credo - Standard Credo static analyzer
       • dialyzer - Dialyxir static type checker
       • javac / mvn / checkstyle - Java compilation and style checks
       • cargo / clippy - Rust type-checking (`cargo check`) and linting (`cargo clippy`)
+      • go (aliases: go_vet, golang) - Go static analysis (`go vet ./...`)
       • all - Run all tools sequentially
 
     Examples:
