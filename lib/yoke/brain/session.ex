@@ -1672,19 +1672,32 @@ defmodule Yoke.Brain.Session do
       if Map.get(state, :suppress_tools, false) do
         []
       else
-        state.tools
+        disabled = Map.get(state, :temporarily_disabled_tools, [])
+
+        if disabled == [] do
+          state.tools
+        else
+          Enum.reject(state.tools, fn t ->
+            (Map.get(t, :name) || Map.get(t, "name")) in disabled
+          end)
+        end
       end
 
     case DeepSeekAPI.chat_completion(sanitized_messages, effective_tools, opts) do
       {:ok, %{finish_reason: reason} = response}
       when reason in ["length", "content_filter"] and is_map_key(state, :review_context) ->
-        handle_text_response_turn(state, response)
+        handle_text_response_turn(Map.delete(state, :temporarily_disabled_tools), response)
 
       {:ok, %{tool_calls: tool_calls} = response} when is_list(tool_calls) and tool_calls != [] ->
-        handle_tool_calls_turn(state, response, tool_calls, depth)
+        handle_tool_calls_turn(
+          Map.delete(state, :temporarily_disabled_tools),
+          response,
+          tool_calls,
+          depth
+        )
 
       {:ok, response} ->
-        handle_text_response_turn(state, response)
+        handle_text_response_turn(Map.delete(state, :temporarily_disabled_tools), response)
 
       {:error, reason} ->
         handle_api_error(state, depth, retries, reason)
@@ -1702,12 +1715,21 @@ defmodule Yoke.Brain.Session do
     "Selected provider has no API credentials configured"
   ]
 
+  @full_write_tools ~w(write_file write_to_file create_file save_file)
+  @alternative_edit_tools ~w(replace_file mcp_ragex_edit_file mcp_ragex_edit_files)
+
   defp non_retriable_api_error?(reason) when is_binary(reason) do
     Enum.any?(@non_retriable_markers, &String.contains?(reason, &1)) or
       Regex.match?(~r/HTTP (?:status )?40[134]\b/, reason)
   end
 
   defp non_retriable_api_error?(_), do: false
+
+  defp invalid_tool_arguments_error?(reason) when is_binary(reason) do
+    String.starts_with?(reason, "Invalid tool arguments for ")
+  end
+
+  defp invalid_tool_arguments_error?(_), do: false
 
   defp tool_call_sequence_error?(reason) when is_binary(reason) do
     String.contains?(reason, "tool_calls") or String.contains?(reason, "tool_call_id")
@@ -1719,6 +1741,9 @@ defmodule Yoke.Brain.Session do
     cond do
       ContextCompressor.context_length_error?(reason) and retries < 2 ->
         retry_with_local_compaction(state, depth, retries, reason)
+
+      invalid_tool_arguments_error?(reason) ->
+        handle_invalid_tool_arguments_error(state, depth, retries, reason)
 
       tool_call_sequence_error?(reason) and retries == 0 ->
         Logger.warning(
@@ -1733,15 +1758,137 @@ defmodule Yoke.Brain.Session do
         run_agent_loop(repaired_state, depth, retries + 1)
 
       non_retriable_api_error?(reason) ->
-        {{:error, reason}, %{state | status: :idle}}
+        {{:error, reason}, %{Map.delete(state, :temporarily_disabled_tools) | status: :idle}}
 
       Yoke.Provider.location(state.endpoint) == "LOCAL" ->
         {{:error, "Local provider request failed (no remote fallback): #{reason}"},
-         %{state | status: :idle}}
+         %{Map.delete(state, :temporarily_disabled_tools) | status: :idle}}
 
       true ->
         handle_remote_api_error(state, depth, retries, reason)
     end
+  end
+
+  defp handle_invalid_tool_arguments_error(state, depth, retries, reason) do
+    {tool_name, failure_kind} = parse_invalid_tool_arguments_error(reason)
+    max_recovery_retries = 2
+
+    if retries < max_recovery_retries do
+      {updated_state, notice, log_action} =
+        build_invalid_tool_args_recovery(state, tool_name, failure_kind, retries, reason)
+
+      Logger.warning(
+        "[Brain.Session] #{reason} #{log_action} (attempt #{retries + 1}/#{max_recovery_retries})..."
+      )
+
+      repaired_state = %{
+        updated_state
+        | messages: updated_state.messages ++ [%{"role" => "user", "content" => notice}]
+      }
+
+      run_agent_loop(repaired_state, depth, retries + 1)
+    else
+      clean_state = Map.delete(state, :temporarily_disabled_tools)
+      user_msg = format_invalid_tool_args_exhausted_message(tool_name, failure_kind, reason)
+
+      cond do
+        is_map_key(clean_state, :review_context) ->
+          {{:error, "Review provider request failed: #{user_msg}"},
+           %{clean_state | status: :idle}}
+
+        top_level_session?(clean_state.session_id) and
+            Yoke.Provider.location(clean_state.endpoint) != "LOCAL" ->
+          prompt_user_on_error(clean_state, depth, user_msg)
+
+        true ->
+          {{:error, user_msg}, %{clean_state | status: :idle}}
+      end
+    end
+  end
+
+  defp parse_invalid_tool_arguments_error(reason) do
+    tool_name =
+      case Regex.run(~r/^Invalid tool arguments for ([^:]+):/, reason) do
+        [_, name] -> String.trim(name)
+        _ -> "tool"
+      end
+
+    failure_kind =
+      cond do
+        String.contains?(reason, ["truncated", "finish_reason=length"]) -> :truncated
+        String.contains?(reason, "malformed JSON") -> :malformed_json
+        true -> :non_object
+      end
+
+    {tool_name, failure_kind}
+  end
+
+  defp build_invalid_tool_args_recovery(state, tool_name, failure_kind, 0, reason) do
+    if tool_name in @full_write_tools do
+      notice =
+        if failure_kind == :truncated do
+          "SYSTEM NOTICE: Your previous `#{tool_name}` tool call failed because the output was truncated before the JSON arguments completed. " <>
+            "Do NOT repeat a large `#{tool_name}` call. Instead: (1) for existing files, use `replace_file` for smaller targeted edits; " <>
+            "(2) for large new files, write a small minimal skeleton with `#{tool_name}` first and add sections incrementally with `replace_file`, or split the work into smaller files."
+        else
+          "SYSTEM NOTICE: Your previous `#{tool_name}` tool call failed because its JSON arguments were invalid (#{reason}). " <>
+            "Do NOT repeat the malformed payload. Prefer smaller targeted edits with `replace_file`, or ensure the `#{tool_name}` arguments are a valid, properly escaped JSON object."
+        end
+
+      {state, notice, "Steering model to retry with smaller targeted edits"}
+    else
+      notice =
+        if failure_kind == :truncated do
+          "SYSTEM NOTICE: Your previous `#{tool_name}` tool call failed because the output was truncated before the JSON arguments completed. " <>
+            "Break the operation into smaller tool calls with less content per call."
+        else
+          "SYSTEM NOTICE: Your previous `#{tool_name}` tool call failed because its arguments were not a valid JSON object (#{reason}). " <>
+            "Retry with a smaller, properly escaped JSON object matching the tool schema, or use an alternative tool."
+        end
+
+      {state, notice, "Steering model to retry with valid, smaller tool arguments"}
+    end
+  end
+
+  defp build_invalid_tool_args_recovery(state, tool_name, _failure_kind, _retry, _reason) do
+    alt_tools =
+      state.tools
+      |> Enum.map(fn t -> Map.get(t, :name) || Map.get(t, "name") end)
+      |> Enum.filter(&(&1 in @alternative_edit_tools))
+
+    if tool_name in @full_write_tools and alt_tools != [] do
+      disabled =
+        state
+        |> Map.get(:temporarily_disabled_tools, [])
+        |> Kernel.++([tool_name])
+        |> Enum.uniq()
+
+      alt_list = Enum.map_join(alt_tools, ", ", &"`#{&1}`")
+
+      notice =
+        "SYSTEM NOTICE: `#{tool_name}` repeatedly produced invalid or truncated JSON arguments and has been temporarily disabled for this step. " <>
+          "Use an alternative editing tool instead (#{alt_list}) with small incremental edits, or explain the remaining changes in text."
+
+      {Map.put(state, :temporarily_disabled_tools, disabled), notice,
+       "Temporarily disabling `#{tool_name}` and retrying with alternative tools (#{Enum.join(alt_tools, ", ")})"}
+    else
+      notice =
+        "SYSTEM NOTICE: Your `#{tool_name}` tool call failed again with invalid or truncated JSON arguments. " <>
+          "Do NOT repeat the same large or malformed `#{tool_name}` call. Either issue a much smaller, simpler tool call or reply directly in text with the concrete changes or next step."
+
+      {state, notice, "Asking model to simplify its approach without large tool payloads"}
+    end
+  end
+
+  defp format_invalid_tool_args_exhausted_message(tool_name, :truncated, reason) do
+    "The model repeatedly produced truncated JSON arguments for `#{tool_name}` (#{reason}). " <>
+      "This usually happens when a single file write exceeds the model's output token limit. " <>
+      "Try asking for smaller incremental edits (using `replace_file`), increasing `max_tokens` in `.yoke/config.json`, or switching models with `/model`."
+  end
+
+  defp format_invalid_tool_args_exhausted_message(tool_name, _kind, reason) do
+    "The model repeatedly produced invalid JSON arguments for `#{tool_name}` (#{reason}). " <>
+      "Try asking for smaller targeted edits (using `replace_file`) or switching models with `/model`."
   end
 
   defp retry_with_local_compaction(state, depth, retries, reason) do

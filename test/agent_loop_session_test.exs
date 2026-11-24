@@ -265,6 +265,120 @@ defmodule Yoke.Brain.AgentLoopSessionTest do
     end
   end
 
+  describe "invalid/truncated tool argument recovery" do
+    test "steers model to use smaller targeted edits on truncated write_file and succeeds", %{
+      tmp_dir: dir
+    } do
+      pid =
+        session(dir, [
+          truncated_tool_choice("write_file", "{\"path\": \"big.ex\", \"content\": \"defmodule"),
+          Fixture.choice("Applied the change using smaller incremental edits.")
+        ])
+
+      assert {:ok, %{content: "Applied the change using smaller incremental edits."}} =
+               Session.send_user_message(pid, "Update big.ex")
+
+      assert_receive {:review_request, _first}
+      assert_receive {:review_request, second}
+
+      assert Enum.any?(second["messages"], fn msg ->
+               msg["role"] == "user" and
+                 String.contains?(
+                   msg["content"] || "",
+                   "SYSTEM NOTICE: Your previous `write_file`"
+                 ) and
+                 String.contains?(msg["content"] || "", "replace_file")
+             end)
+    end
+
+    test "temporarily disables write_file on second failure, uses alternative tools, and restores write_file",
+         %{tmp_dir: dir} do
+      target = Path.join(dir, "sample.ex")
+      File.write!(target, "old_value\n")
+
+      truncated =
+        truncated_tool_choice("write_file", "{\"path\": \"sample.ex\", \"content\": \"new")
+
+      pid =
+        session(dir, [
+          truncated,
+          truncated,
+          Fixture.tool_choice("replace_file", %{
+            "path" => target,
+            "target" => "old_value",
+            "replacement" => "new_value"
+          }),
+          Fixture.choice("Replaced the target using replace_file.")
+        ])
+
+      assert {:ok, %{content: "Replaced the target using replace_file."}} =
+               Session.send_user_message(pid, "Update sample.ex")
+
+      assert_receive {:review_request, first}
+      assert_receive {:review_request, second}
+      assert_receive {:review_request, third}
+      assert_receive {:review_request, fourth}
+
+      tool_names = fn req ->
+        Enum.map(req["tools"] || [], &get_in(&1, ["function", "name"]))
+      end
+
+      assert "write_file" in tool_names.(first)
+      assert "write_file" in tool_names.(second)
+      refute "write_file" in tool_names.(third)
+      assert "replace_file" in tool_names.(third)
+      # Restored automatically after a successful response
+      assert "write_file" in tool_names.(fourth)
+
+      assert File.read!(target) == "new_value\n"
+    end
+
+    test "returns a meaningful actionable error after bounded recovery retries are exhausted", %{
+      tmp_dir: dir
+    } do
+      truncated =
+        truncated_tool_choice("write_file", "{\"path\": \"big.ex\", \"content\": \"defmodule")
+
+      pid = session(dir, [truncated, truncated, truncated])
+
+      assert {:error, reason} = Session.send_user_message(pid, "Write big.ex")
+      assert reason =~ "repeatedly produced truncated JSON arguments for `write_file`"
+      assert reason =~ "replace_file"
+      assert reason =~ "max_tokens"
+      assert reason =~ "/model"
+
+      assert_receive {:review_request, _attempt_1}
+      assert_receive {:review_request, _attempt_2}
+      assert_receive {:review_request, _attempt_3}
+      refute_receive {:review_request, _extra}, 200
+    end
+  end
+
+  defp truncated_tool_choice(name, raw_args) do
+    %{
+      "choices" => [
+        %{
+          "message" => %{
+            "role" => "assistant",
+            "content" => "",
+            "tool_calls" => [
+              %{
+                "id" => "tool-trunc-1",
+                "type" => "function",
+                "function" => %{
+                  "name" => name,
+                  "arguments" => raw_args
+                }
+              }
+            ]
+          },
+          "finish_reason" => "length"
+        }
+      ],
+      "usage" => %{"prompt_tokens" => 50, "completion_tokens" => 4096}
+    }
+  end
+
   defp call(value), do: Fixture.tool_choice("loop_test_tool", %{"value" => value})
 
   defp session(dir, responses, extra_opts \\ []) do

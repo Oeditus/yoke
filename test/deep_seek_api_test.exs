@@ -5,32 +5,99 @@ defmodule Yoke.DeepSeekAPITest do
   alias Yoke.Client.DeepSeekAPI
 
   describe "tool argument parsing" do
-    test "preserves encoded and already decoded argument objects" do
+    test "preserves encoded, double-encoded, and already decoded argument objects" do
       args = %{"files" => [%{"path" => "sample.ex", "content" => "  value\n"}]}
+      encoded = Yoke.Json.encode!(args)
+      double_encoded = Yoke.Json.encode!(encoded)
 
-      for raw <- [Yoke.Json.encode!(args), args] do
+      for raw <- [encoded, double_encoded, args] do
         assert {:ok, %{tool_calls: [%{arguments: ^args}]}} = tool_response(raw)
       end
     end
 
-    test "rejects malformed or non-object arguments rather than fabricating empty edits" do
-      for raw <- ["{\"files\":", "[]", "null", "true", "1", nil, []] do
+    test "rejects non-object arguments with their JSON type rather than fabricating empty edits" do
+      for {raw, expected_type} <- [
+            {"[]", "array"},
+            {"null", "null"},
+            {"true", "boolean"},
+            {"1", "number"},
+            {"\"plain string\"", "string"},
+            {nil, "null"},
+            {[], "array"}
+          ] do
         assert {:error, message} = tool_response(raw)
 
         assert message ==
-                 "Invalid tool arguments for mcp_ragex_edit_files: expected a JSON object."
+                 "Invalid tool arguments for mcp_ragex_edit_files: expected a JSON object, got #{expected_type}."
+      end
+    end
+
+    test "reports output token truncation when finish_reason is length" do
+      truncated = "{\"path\": \"secret.ex\", \"content\": \"TOP_SECRET_VALUE"
+
+      assert {:error, message} =
+               tool_response(truncated,
+                 tool_name: "write_file",
+                 finish_reason: "length",
+                 usage: %{"prompt_tokens" => 100, "completion_tokens" => 4096}
+               )
+
+      assert message =~ "Invalid tool arguments for write_file:"
+      assert message =~ "finish_reason=length"
+      assert message =~ "4096 completion tokens"
+      assert message =~ "replace_file"
+      refute message =~ "TOP_SECRET_VALUE"
+    end
+
+    test "reports truncated JSON even when finish_reason is not length" do
+      assert {:error, message} = tool_response("{\"secret_key\":")
+
+      assert message =~ "Invalid tool arguments for mcp_ragex_edit_files:"
+      assert message =~ "truncated before completion"
+      refute message =~ "secret_key"
+    end
+
+    test "preserves valid escaped newlines, tabs, quotes, and backslashes in tool content" do
+      raw = ~S({"content": "line one\nline two\t\"quoted\"\\path"})
+      expected = %{"content" => "line one\nline two\t\"quoted\"\\path"}
+
+      assert {:ok, %{tool_calls: [%{arguments: ^expected}]}} =
+               tool_response(raw, tool_name: "write_file")
+    end
+
+    test "reports malformed JSON syntax without echoing private argument content" do
+      for raw <- [
+            "{\"content\": \"SECRET\nUNESCAPED\"}",
+            ~S({"content": "SECRET\qINVALID"}),
+            ~S({"content": "SECRET",})
+          ] do
+        assert {:error, message} = tool_response(raw, tool_name: "write_file")
+
+        assert message =~ "Invalid tool arguments for write_file: malformed JSON"
+        assert message =~ "invalid syntax at byte"
+        refute message =~ "SECRET"
       end
     end
   end
 
-  defp tool_response(raw) do
+  defp tool_response(raw, opts \\ []) do
     {:ok, _} = Application.ensure_all_started(:req)
-    response = Yoke.Test.ReviewFixture.tool_choice("mcp_ragex_edit_files", %{})
+    tool_name = Keyword.get(opts, :tool_name, "mcp_ragex_edit_files")
+    finish_reason = Keyword.get(opts, :finish_reason, "tool_calls")
+    usage = Keyword.get(opts, :usage)
+
+    response = Yoke.Test.ReviewFixture.tool_choice(tool_name, %{})
 
     response =
       update_in(response["choices"], fn [choice] ->
-        [put_in(choice, ["message", "tool_calls", Access.at(0), "function", "arguments"], raw)]
+        [
+          choice
+          |> put_in(["message", "tool_calls", Access.at(0), "function", "arguments"], raw)
+          |> Map.put("finish_reason", finish_reason)
+        ]
       end)
+
+    response = if usage, do: Map.put(response, "usage", usage), else: response
 
     {listen, server, endpoint} = Yoke.Test.ReviewFixture.provider(self(), [response])
 

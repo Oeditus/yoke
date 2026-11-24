@@ -545,6 +545,7 @@ defmodule Yoke.Client.DeepSeekAPI do
   defp parse_choice(%{"message" => msg} = choice, usage) do
     raw_content = Map.get(msg, "content")
     tool_calls = Map.get(msg, "tool_calls") || []
+    finish_reason = Map.get(choice, "finish_reason")
 
     {content, thinking_from_tags} = extract_thinking_tags(raw_content)
 
@@ -553,7 +554,7 @@ defmodule Yoke.Client.DeepSeekAPI do
         Map.get(msg, "reasoning") ||
         thinking_from_tags
 
-    with {:ok, parsed_tool_calls} <- parse_tool_calls(tool_calls) do
+    with {:ok, parsed_tool_calls} <- parse_tool_calls(tool_calls, finish_reason, usage) do
       usage_map = %{
         prompt_tokens: Map.get(usage, "prompt_tokens", 0),
         completion_tokens: Map.get(usage, "completion_tokens", 0),
@@ -565,30 +566,29 @@ defmodule Yoke.Client.DeepSeekAPI do
          role: "assistant",
          content: content,
          reasoning_content: reasoning_content,
-         finish_reason: Map.get(choice, "finish_reason"),
+         finish_reason: finish_reason,
          tool_calls: parsed_tool_calls,
          usage: usage_map
        }}
     end
   end
 
-  defp parse_tool_calls(tool_calls) do
+  defp parse_tool_calls(tool_calls, finish_reason, usage) do
     Enum.reduce_while(tool_calls, {:ok, []}, fn tc, {:ok, calls} ->
       fn_data = Map.get(tc, "function", %{})
+      tool_name = Map.get(fn_data, "name")
       raw = Map.get(fn_data, "arguments", "{}")
-      decoded = if is_binary(raw), do: Yoke.Json.decode(raw), else: {:ok, raw}
 
-      case decoded do
-        {:ok, args} when is_map(args) ->
-          call = %{id: Map.get(tc, "id"), name: Map.get(fn_data, "name"), arguments: args}
+      case decode_tool_arguments(raw) do
+        {:ok, args} ->
+          call = %{id: Map.get(tc, "id"), name: tool_name, arguments: args}
           {:cont, {:ok, [call | calls]}}
 
-        _ ->
+        {:error, reason} ->
           # Never erase malformed edit requests into identical empty calls.
           # Do not echo argument content: it may contain private file data.
           {:halt,
-           {:error,
-            "Invalid tool arguments for #{Map.get(fn_data, "name")}: expected a JSON object."}}
+           {:error, format_invalid_tool_args_error(tool_name, reason, finish_reason, usage)}}
       end
     end)
     |> case do
@@ -596,6 +596,82 @@ defmodule Yoke.Client.DeepSeekAPI do
       error -> error
     end
   end
+
+  defp decode_tool_arguments(raw) when is_map(raw), do: {:ok, raw}
+
+  defp decode_tool_arguments(raw) when is_binary(raw) do
+    case Yoke.Json.decode(raw) do
+      {:ok, args} when is_map(args) ->
+        {:ok, args}
+
+      {:ok, inner} when is_binary(inner) ->
+        # Some OpenAI-compatible providers double-encode the arguments JSON string.
+        case Yoke.Json.decode(inner) do
+          {:ok, args} when is_map(args) -> {:ok, args}
+          _ -> {:error, {:non_object, "string"}}
+        end
+
+      {:ok, other} ->
+        {:error, {:non_object, json_value_type(other)}}
+
+      {:error, decode_err} ->
+        {:error, {:json_decode, decode_err, byte_size(raw)}}
+    end
+  end
+
+  defp decode_tool_arguments(other), do: {:error, {:non_object, json_value_type(other)}}
+
+  defp format_invalid_tool_args_error(tool_name, {:json_decode, _err, bytes}, "length", usage) do
+    tokens = Map.get(usage || %{}, "completion_tokens")
+
+    token_detail =
+      if is_integer(tokens) and tokens > 0, do: ", #{tokens} completion tokens", else: ""
+
+    "Invalid tool arguments for #{tool_name}: response was truncated at the model's max output token limit " <>
+      "(finish_reason=length#{token_detail}, #{bytes} bytes received). " <>
+      "Break the edit into smaller steps, use replace_file for targeted changes, or increase max_tokens."
+  end
+
+  defp format_invalid_tool_args_error(
+         tool_name,
+         {:json_decode, {:unexpected_end, _offset}, bytes},
+         _finish_reason,
+         _usage
+       ) do
+    "Invalid tool arguments for #{tool_name}: JSON arguments were truncated before completion " <>
+      "(#{bytes} bytes received). Break the edit into smaller steps or use replace_file for targeted changes."
+  end
+
+  defp format_invalid_tool_args_error(
+         tool_name,
+         {:json_decode, decode_err, bytes},
+         _finish_reason,
+         _usage
+       ) do
+    "Invalid tool arguments for #{tool_name}: malformed JSON " <>
+      "(#{format_json_decode_error(decode_err)}, #{bytes} bytes received)."
+  end
+
+  defp format_invalid_tool_args_error(
+         tool_name,
+         {:non_object, type_name},
+         _finish_reason,
+         _usage
+       ) do
+    "Invalid tool arguments for #{tool_name}: expected a JSON object, got #{type_name}."
+  end
+
+  defp format_json_decode_error({:invalid_byte, offset, _byte}),
+    do: "invalid syntax at byte #{offset}"
+
+  defp format_json_decode_error({:unexpected_sequence, offset, _bytes}),
+    do: "invalid syntax at byte #{offset}"
+
+  defp json_value_type(nil), do: "null"
+  defp json_value_type(v) when is_list(v), do: "array"
+  defp json_value_type(v) when is_boolean(v), do: "boolean"
+  defp json_value_type(v) when is_number(v), do: "number"
+  defp json_value_type(_), do: "non-object"
 
   @doc "Normalizes an LLM API endpoint URL to ensure valid full chat completions path."
   def normalize_endpoint(endpoint) when is_binary(endpoint) do
