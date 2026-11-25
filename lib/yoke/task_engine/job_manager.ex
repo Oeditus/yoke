@@ -325,13 +325,14 @@ defmodule Yoke.TaskEngine.JobManager do
     cargo_bin = Path.join(user_home, ".cargo/bin")
     local_bin = Path.join(user_home, ".local/bin")
 
-    current_path = System.get_env("PATH") || "/usr/bin:/bin"
+    current_path = Yoke.Hands.Environment.clean_path()
+    current_entries = String.split(current_path, ":", trim: true)
 
     extra_paths =
       [asdf_shims, asdf_bin, cargo_bin, local_bin]
-      |> Enum.filter(&File.dir?/1)
+      |> Enum.filter(&(File.dir?(&1) and &1 not in current_entries))
 
-    updated_path = Enum.join(extra_paths ++ [current_path], ":")
+    updated_path = Enum.join(current_entries ++ extra_paths, ":")
 
     extra_env = %{
       "PATH" => updated_path,

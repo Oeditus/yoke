@@ -39,6 +39,9 @@ while [[ -L "${SOURCE}" ]]; do
 done
 SCRIPT_DIR="$(cd "$(dirname "${SOURCE}")" && pwd)"
 TARGET_ENV="${YOKE_ENV:-prod}"
+# Preserve the caller's PATH before the OTP release / erlexec prepends its
+# embedded ERTS and release bin directories to PATH.
+export YOKE_ORIG_PATH="${YOKE_ORIG_PATH:-${PATH:-}}"
 export YOKE_PROJECT_DIR="${YOKE_PROJECT_DIR:-$(pwd)}"
 export YOKE_REPO_DIR="${YOKE_REPO_DIR:-${SCRIPT_DIR}}"
 

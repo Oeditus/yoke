@@ -57,7 +57,7 @@ defmodule Yoke.Hands.EnvironmentTest do
     assert env_map["NO_COLOR"] == "1"
     assert env_map["LANG"] == "C.UTF-8"
     assert env_map["CUSTOM_VAR"] == "123"
-    assert env_map["PATH"] == System.get_env("PATH")
+    assert env_map["PATH"] == Environment.clean_path(System.get_env())
     assert env_map["TMPDIR"] == System.tmp_dir!()
     assert env_map["LC_ALL"] == "C.UTF-8"
 
@@ -144,6 +144,101 @@ defmodule Yoke.Hands.EnvironmentTest do
 
     assert_receive {:job_completed, ^job_id, ^command, {:exited, 0}, _log_tail}, 5_000
     assert File.read!(log_file) == expected_probe_output()
+  end
+
+  test "clean_path/1 prefers YOKE_ORIG_PATH when captured by launcher" do
+    env = %{
+      "YOKE_ORIG_PATH" => "/opt/homebrew/opt/erlang/bin:/usr/local/bin:/usr/bin:/bin",
+      "PATH" =>
+        "/home/user/.yoke/source/_build/prod/rel/yoke/erts-17.1.1/bin:" <>
+          "/home/user/.yoke/source/_build/prod/rel/yoke/bin:/usr/bin:/bin",
+      "RELEASE_ROOT" => "/home/user/.yoke/source/_build/prod/rel/yoke",
+      "BINDIR" => "/home/user/.yoke/source/_build/prod/rel/yoke/erts-17.1.1/bin",
+      "ROOTDIR" => "/home/user/.yoke/source/_build/prod/rel/yoke"
+    }
+
+    assert Environment.clean_path(env) ==
+             "/opt/homebrew/opt/erlang/bin:/usr/local/bin:/usr/bin:/bin"
+  end
+
+  test "clean_path/1 strips embedded release and ERTS bin entries when YOKE_ORIG_PATH is absent" do
+    release_root = "/home/user/.yoke/source/_build/prod/rel/yoke"
+
+    env = %{
+      "PATH" =>
+        "#{release_root}/erts-17.1.1/bin:#{release_root}/bin:" <>
+          "/opt/homebrew/opt/erlang/bin:/usr/local/bin:/usr/bin:/bin",
+      "RELEASE_ROOT" => release_root,
+      "BINDIR" => "#{release_root}/erts-17.1.1/bin",
+      "ROOTDIR" => release_root
+    }
+
+    assert Environment.clean_path(env) ==
+             "/opt/homebrew/opt/erlang/bin:/usr/local/bin:/usr/bin:/bin"
+  end
+
+  test "clean_path/1 strips only BINDIR when not running inside an OTP release" do
+    env = %{
+      "PATH" =>
+        "/opt/homebrew/Cellar/erlang/27.3/lib/erlang/erts-15.2/bin:" <>
+          "/opt/homebrew/Cellar/erlang/27.3/lib/erlang/bin:/usr/local/bin:/usr/bin:/bin",
+      "BINDIR" => "/opt/homebrew/Cellar/erlang/27.3/lib/erlang/erts-15.2/bin",
+      "ROOTDIR" => "/opt/homebrew/Cellar/erlang/27.3/lib/erlang"
+    }
+
+    assert Environment.clean_path(env) ==
+             "/opt/homebrew/Cellar/erlang/27.3/lib/erlang/bin:/usr/local/bin:/usr/bin:/bin"
+  end
+
+  test "sanitize_runtime_env/0 restores PATH and deletes OTP release env vars idempotently" do
+    release_root = "/tmp/yoke-fake-release"
+
+    keys = ~w(
+      PATH YOKE_ORIG_PATH ROOTDIR BINDIR EMU PROGNAME ERL_ROOTDIR
+      RELEASE_ROOT RELEASE_NAME RELEASE_VSN RELEASE_BOOT_SCRIPT RELEASE_COOKIE
+    )
+
+    saved = Map.new(keys, &{&1, System.get_env(&1)})
+
+    on_exit(fn ->
+      Enum.each(saved, fn
+        {k, nil} -> System.delete_env(k)
+        {k, v} -> System.put_env(k, v)
+      end)
+    end)
+
+    System.put_env(%{
+      "PATH" => "#{release_root}/erts-17.1.1/bin:#{release_root}/bin:/usr/local/bin:/usr/bin",
+      "YOKE_ORIG_PATH" => "/opt/homebrew/opt/erlang/bin:/usr/local/bin:/usr/bin",
+      "ROOTDIR" => release_root,
+      "BINDIR" => "#{release_root}/erts-17.1.1/bin",
+      "EMU" => "beam",
+      "PROGNAME" => "erl",
+      "ERL_ROOTDIR" => release_root,
+      "RELEASE_ROOT" => release_root,
+      "RELEASE_NAME" => "yoke",
+      "RELEASE_VSN" => "0.29.0",
+      "RELEASE_BOOT_SCRIPT" => "start",
+      "RELEASE_COOKIE" => "secret-cookie"
+    })
+
+    assert :ok = Environment.sanitize_runtime_env()
+    assert System.get_env("PATH") == "/opt/homebrew/opt/erlang/bin:/usr/local/bin:/usr/bin"
+    assert System.get_env("YOKE_ORIG_PATH") == nil
+    assert System.get_env("ROOTDIR") == nil
+    assert System.get_env("BINDIR") == nil
+    assert System.get_env("EMU") == nil
+    assert System.get_env("PROGNAME") == nil
+    assert System.get_env("ERL_ROOTDIR") == nil
+    assert System.get_env("RELEASE_ROOT") == nil
+    assert System.get_env("RELEASE_NAME") == nil
+    assert System.get_env("RELEASE_VSN") == nil
+    assert System.get_env("RELEASE_BOOT_SCRIPT") == nil
+    assert System.get_env("RELEASE_COOKIE") == nil
+
+    # Idempotent on repeated calls
+    assert :ok = Environment.sanitize_runtime_env()
+    assert System.get_env("PATH") == "/opt/homebrew/opt/erlang/bin:/usr/local/bin:/usr/bin"
   end
 
   defp subprocess_probe do

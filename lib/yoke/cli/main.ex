@@ -60,6 +60,7 @@ defmodule Yoke.CLI.Main do
     # output. Installing here -- the first statement of the escript's entry
     # point -- is what actually silences them. Idempotent.
     Yoke.CLI.LogFormatter.install()
+    Yoke.Hands.Environment.sanitize_runtime_env()
     Yoke.CLI.MdexNif.prepare()
     Yoke.CLI.FileSystemMac.prepare()
 
