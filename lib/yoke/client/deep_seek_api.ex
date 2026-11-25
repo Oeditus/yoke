@@ -52,7 +52,10 @@ defmodule Yoke.Client.DeepSeekAPI do
               session_id: nil,
               # Reasoning / thinking control for hybrid models
               thinking: nil,
-              reasoning_effort: nil
+              reasoning_effort: nil,
+              # Cumulative attempt/time budget shared with the harness retry
+              # layer. `nil` means "build the default budget".
+              retry_budget: nil
   end
 
   @doc "Rejects review requests that would silently use offline canned responses."
@@ -200,6 +203,10 @@ defmodule Yoke.Client.DeepSeekAPI do
   @doc "Builds a structured ClientConfig struct from keyword options."
   # credo:disable-for-lines:109
   def build_config(opts) when is_list(opts) do
+    # Capture the retry budget before `Provider.resolve/1` normalizes the
+    # options: the budget is a client concern, not a provider setting, so it
+    # would otherwise be dropped.
+    retry_budget_opt = Keyword.get(opts, :retry_budget)
     opts = Yoke.Provider.resolve(opts)
 
     mock_default =
@@ -290,8 +297,49 @@ defmodule Yoke.Client.DeepSeekAPI do
       mock: mock_default,
       session_id: session_id,
       thinking: if(local_endpoint?(normalized_endpoint), do: nil, else: thinking),
-      reasoning_effort: if(local_endpoint?(normalized_endpoint), do: nil, else: reasoning_effort)
+      reasoning_effort: if(local_endpoint?(normalized_endpoint), do: nil, else: reasoning_effort),
+      retry_budget: retry_budget(retry_budget_opt, cfg)
     }
+  end
+
+  # The retry budget is cumulative across the HTTP client and the harness turn
+  # retry, so it is resolved from (in order) an explicit session option, the
+  # workspace/global config file, and finally the compiled defaults. A budget
+  # object handed down from the harness is reused as-is so the two layers
+  # share one attempt counter and one clock.
+  defp retry_budget(%Yoke.Client.RetryBudget{} = budget, _cfg), do: budget
+
+  defp retry_budget(budget_opts, cfg) do
+    opts = if is_list(budget_opts), do: budget_opts, else: []
+
+    Yoke.Client.RetryBudget.new(
+      max_attempts: config_positive_int(opts, cfg, :max_attempts, "api_retry_max_attempts"),
+      total_timeout_ms:
+        config_positive_int(opts, cfg, :total_timeout_ms, "api_retry_total_timeout_ms"),
+      max_backoff_ms:
+        config_non_negative_int(opts, cfg, :max_backoff_ms, "api_retry_max_backoff_ms"),
+      identical_failure_limit:
+        config_positive_int(
+          opts,
+          cfg,
+          :identical_failure_limit,
+          "api_retry_identical_failure_limit"
+        )
+    )
+  end
+
+  defp config_positive_int(opts, cfg, opt_key, config_key) do
+    case Keyword.get(opts, opt_key) do
+      value when is_integer(value) and value > 0 -> value
+      _ -> Map.get(cfg, config_key)
+    end
+  end
+
+  defp config_non_negative_int(opts, cfg, opt_key, config_key) do
+    case Keyword.get(opts, opt_key) do
+      value when is_integer(value) and value >= 0 -> value
+      _ -> Map.get(cfg, config_key)
+    end
   end
 
   @doc """
@@ -421,7 +469,9 @@ defmodule Yoke.Client.DeepSeekAPI do
       receive_timeout: receive_timeout_ms()
     ]
 
-    post_with_retry(config.endpoint, req_opts)
+    diagnostics = Yoke.Client.RequestDiagnostics.build(body, formatted_tools)
+
+    post_with_retry(config.endpoint, req_opts, diagnostics, config.retry_budget)
   end
 
   # HTTP statuses worth another attempt: rate limiting and server-side
@@ -430,15 +480,37 @@ defmodule Yoke.Client.DeepSeekAPI do
   # error the user needs to act on.
   @transient_statuses [429, 500, 502, 503, 504]
 
-  defp post_with_retry(endpoint, req_opts, attempts_left \\ 3, backoff_ms \\ 500) do
+  # One provider request. The attempt budget is shared with the harness-level
+  # retry in `Yoke.Brain.Session`, so the two layers cannot multiply into a
+  # dozen silent attempts (issue #22). `budget` is threaded through the loop
+  # and returned to the caller on every terminal path so the harness can keep
+  # counting against the same budget.
+  defp post_with_retry(endpoint, req_opts, diagnostics, budget) do
+    case Yoke.Client.RetryBudget.begin_attempt(budget) do
+      {:error, reason} ->
+        {:error, with_diagnostics(reason, diagnostics)}
+
+      {:ok, budget} ->
+        attempt(endpoint, req_opts, diagnostics, budget)
+    end
+  end
+
+  defp attempt(endpoint, req_opts, diagnostics, budget) do
     case Req.post(endpoint, req_opts) do
       {:ok, %Req.Response{status: 200, body: %{"choices" => [choice | _]} = resp_body}} ->
         usage = Map.get(resp_body, "usage", %{})
         parse_choice(choice, usage)
 
-      {:ok, %Req.Response{status: status}}
-      when status in @transient_statuses and attempts_left > 1 ->
-        retry(endpoint, req_opts, attempts_left, backoff_ms, "Transient HTTP #{status} error")
+      {:ok, %Req.Response{status: status}} when status in @transient_statuses ->
+        retry_or_halt(
+          endpoint,
+          req_opts,
+          diagnostics,
+          budget,
+          {:status, status},
+          "HTTP #{status}",
+          "Transient HTTP #{status} error"
+        )
 
       {:ok, %Req.Response{status: 401, body: err_body}} ->
         {:error, authentication_error(endpoint, err_body)}
@@ -461,50 +533,114 @@ defmodule Yoke.Client.DeepSeekAPI do
       # failure mode `receive_timeout` exists to catch. Treat it as transient
       # so it goes through the same bounded retry path as a 503, rather than
       # surfacing as an opaque `%Req.TransportError{}`.
-      {:error, %Req.TransportError{reason: :timeout} = reason} when attempts_left > 1 ->
-        retry(
+      {:error, %Req.TransportError{reason: :timeout} = reason} ->
+        retry_or_halt(
           endpoint,
           req_opts,
-          attempts_left,
-          backoff_ms,
+          diagnostics,
+          budget,
+          :timeout,
+          :timeout,
           "Request timed out (#{inspect(reason)})"
         )
 
-      {:error, %Req.TransportError{reason: :timeout}} ->
-        {:error,
-         "HTTP request timed out after #{receive_timeout_ms()}ms. The provider accepted the " <>
-           "connection but never responded; retry, or use a different endpoint."}
-
-      {:error, reason} when attempts_left > 1 ->
-        retry(endpoint, req_opts, attempts_left, backoff_ms, "Transport error #{inspect(reason)}")
+      # A connection closed mid-request is the failure issue #22 documents.
+      # Its detail is the transport reason, so repeated identical closures trip
+      # the circuit breaker instead of burning the whole budget.
+      {:error, %Req.TransportError{reason: reason} = error} ->
+        retry_or_halt(
+          endpoint,
+          req_opts,
+          diagnostics,
+          budget,
+          :transport,
+          reason,
+          "Transport error #{inspect(error)}"
+        )
 
       {:error, reason} ->
-        {:error, "HTTP request failed: #{inspect(reason)}"}
+        retry_or_halt(
+          endpoint,
+          req_opts,
+          diagnostics,
+          budget,
+          :transport,
+          reason,
+          "Transport error #{inspect(reason)}"
+        )
     end
   rescue
     e ->
-      if attempts_left > 1 do
-        retry(
-          endpoint,
-          req_opts,
-          attempts_left,
-          backoff_ms,
-          "Exception (#{Exception.message(e)})"
+      retry_or_halt(
+        endpoint,
+        req_opts,
+        diagnostics,
+        budget,
+        :exception,
+        Exception.message(e),
+        "Exception (#{Exception.message(e)})"
+      )
+  end
+
+  defp retry_or_halt(
+         endpoint,
+         req_opts,
+         diagnostics,
+         budget,
+         classification,
+         detail,
+         description
+       ) do
+    case Yoke.Client.RetryBudget.record_failure(budget, classification, detail) do
+      {:halt, final_budget, halt_reason} ->
+        {:error,
+         with_diagnostics(
+           terminal_message(classification, description),
+           diagnostics,
+           final_budget,
+           halt_reason
+         )}
+
+      {:retry, next_budget, delay_ms} ->
+        Logger.warning(
+          "[DeepSeekAPI] #{description}. Retrying in #{delay_ms}ms " <>
+            "(attempt #{next_budget.attempts + 1}/#{next_budget.max_attempts}, " <>
+            "#{Yoke.Client.RetryBudget.elapsed_ms(next_budget)}ms elapsed). " <>
+            "Request size: #{Yoke.Client.RequestDiagnostics.describe(diagnostics)}"
         )
-      else
-        {:error, "API request failed with exception: #{Exception.message(e)}"}
+
+        Process.sleep(delay_ms)
+        post_with_retry(endpoint, req_opts, diagnostics, next_budget)
+    end
+  end
+
+  # A timeout is worth naming precisely: the provider accepted the connection
+  # and never responded, which is a different user action from a refused
+  # connection. Every other transient failure keeps the transport wording.
+  defp terminal_message(:timeout, _description) do
+    "HTTP request timed out after #{receive_timeout_ms()}ms. The provider accepted the " <>
+      "connection but never responded; retry, or use a different endpoint."
+  end
+
+  defp terminal_message(_classification, description), do: "HTTP request failed: #{description}"
+
+  # The byte counts belong in the error the user actually sees: the whole point
+  # of the diagnostics is to correlate a transport failure with payload size.
+  defp with_diagnostics(message, diagnostics, budget \\ nil, halt_reason \\ nil) do
+    suffix =
+      case budget do
+        nil -> ""
+        %{attempts: attempts} -> " after #{attempts} #{pluralize(attempts, "attempt")}"
       end
+
+    halt = if halt_reason, do: " (#{halt_reason})", else: ""
+
+    "#{message}#{halt}#{suffix}. Request size: " <>
+      Yoke.Client.RequestDiagnostics.describe(diagnostics)
   end
 
-  defp retry(endpoint, req_opts, attempts_left, backoff_ms, description) do
-    Logger.warning(
-      "[DeepSeekAPI] #{description}. Retrying in #{backoff_ms}ms... (#{attempts_left - 1} attempts left)"
-    )
-
-    Process.sleep(backoff_ms)
-    post_with_retry(endpoint, req_opts, attempts_left - 1, backoff_ms * 2)
-  end
-
+  defp pluralize(1, word), do: word
+  defp pluralize(_count, word), do: word <> "s"
   # A 401 is deterministic: the same credentials will be rejected the same way,
   # so the message has to say what to change. Loopback servers that demand a
   # bearer token get a different hint than a remote provider, because their

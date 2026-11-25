@@ -303,6 +303,17 @@ When connecting to authenticated loopback endpoints, Yoke includes the bearer to
 
 Only rate limiting (`429`) and server-side unavailability (`500`, `502`, `503`, `504`) are retried.
 
+Retries are bounded by one cumulative budget shared by the HTTP client and the agent harness, so a single turn cannot multiply into a long silent retry loop. The budget counts total attempts, enforces a wall-clock deadline, caps exponential backoff, and stops early after repeated identical failures:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `api_retry_max_attempts` | `6` | Total provider attempts per turn |
+| `api_retry_total_timeout_ms` | `120000` | Cumulative wall-clock limit for those attempts |
+| `api_retry_max_backoff_ms` | `8000` | Ceiling on the delay between attempts |
+| `api_retry_identical_failure_limit` | `2` | Stop after this many identical consecutive failures |
+
+When the budget is exhausted, the error names the attempt count, elapsed time, and the request's byte size (total payload, message count, largest message, and tool-definition bytes), so a transport failure can be correlated with payload size. `/cost` reports the current turn's retry consumption. Set any key in `~/.yoke/config.json` or `.yoke/config.json` to tune the limits.
+
 Reproduce real client tool-call/result round trips with overlapping 32-item
 CUDA embedding batches:
 

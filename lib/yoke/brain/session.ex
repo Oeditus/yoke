@@ -414,6 +414,11 @@ defmodule Yoke.Brain.Session do
       # ("max_tokens") and forwarded to the DeepSeek API on each call.
       # `nil` means "not set" and the field is omitted from requests.
       max_tokens: opts[:max_tokens] || Map.get(Config.load_config(cwd), "max_tokens"),
+      # Cumulative provider retry budget for the current turn (issue #22).
+      # Shared with the HTTP client so both retry layers count against one
+      # attempt limit and one wall-clock deadline. `nil` means "start a fresh
+      # budget on the next model call".
+      retry_budget: nil,
       total_prompt_tokens: 0,
       total_completion_tokens: 0,
       estimated_cost_usd: 0.0,
@@ -588,12 +593,15 @@ defmodule Yoke.Brain.Session do
     }
 
     # A fresh user turn starts with no approved plan; the plan gate may arm
-    # once this turn's tool calls look non-trivial.
+    # once this turn's tool calls look non-trivial. It also starts a fresh
+    # provider retry budget, so a previous turn's exhausted attempts do not
+    # count against this one.
     state = %{
       state
       | plan_approved_for_turn: false,
         intent_continuations: 0,
         explicit_question_nudges: 0,
+        retry_budget: nil,
         turn_started_at: System.monotonic_time(:millisecond),
         turn_phase: Yoke.SelfImprove.Router.classify_phase(expanded_text)
     }
@@ -1014,6 +1022,9 @@ defmodule Yoke.Brain.Session do
       total_tokens: total,
       context_tokens: current_context_tokens(state),
       estimated_cost_usd: Float.round(total_cost, 6),
+      # Provider retry budget for the current turn (issue #22): how many
+      # attempts have been spent and how much of the time limit remains.
+      retry_budget: retry_budget_stats(state),
       serving_processes: proc_status.total_serving_processes,
       active_task_workers: proc_status.active_task_workers,
       serving_report: Yoke.report_serving_processes()
@@ -1666,6 +1677,13 @@ defmodule Yoke.Brain.Session do
         opts
       end
 
+    # One cumulative attempt/time budget per turn, shared with the HTTP client
+    # so the two retry layers cannot multiply into a dozen silent attempts
+    # (issue #22). A turn that keeps failing reuses the same budget, so its
+    # attempt counter and clock never restart.
+    budget = turn_retry_budget(state)
+    opts = Keyword.put(opts, :retry_budget, budget)
+
     sanitized_messages = sanitize_messages(state.messages)
 
     effective_tools =
@@ -1701,6 +1719,16 @@ defmodule Yoke.Brain.Session do
 
       {:error, reason} ->
         handle_api_error(state, depth, retries, reason)
+    end
+  end
+
+  # The per-turn retry budget lives in the session state so every attempt of
+  # the same turn -- including retries triggered by the harness -- counts
+  # against one limit. A new user turn starts a fresh budget.
+  defp turn_retry_budget(state) do
+    case Map.get(state, :retry_budget) do
+      %Yoke.Client.RetryBudget{} = budget -> budget
+      _ -> Yoke.Client.RetryBudget.new()
     end
   end
 
@@ -1922,32 +1950,45 @@ defmodule Yoke.Brain.Session do
     if non_retriable_api_error?(reason) do
       {{:error, reason}, %{state | status: :idle}}
     else
-      max_retries = 3
+      # The harness no longer keeps its own retry counter. It shares one
+      # cumulative budget with the HTTP client (issue #22), so a turn reports
+      # a single attempt count and a single elapsed time instead of two
+      # unrelated progress sequences.
+      budget = turn_retry_budget(state)
 
-      if retries < max_retries do
-        backoff_ms = (retries + 1) * 500
+      case Yoke.Client.RetryBudget.record_failure(budget, :harness, reason) do
+        {:retry, next_budget, backoff_ms} ->
+          Logger.warning(
+            "[Brain.Session] DeepSeek API or tool error: #{reason}. Harness retrying turn in " <>
+              "#{backoff_ms}ms (#{Yoke.Client.RetryBudget.summary(next_budget)})..."
+          )
 
-        Logger.warning(
-          "[Brain.Session] DeepSeek API or tool error: #{reason}. Harness retrying turn in #{backoff_ms}ms (attempt #{retries + 1}/#{max_retries})..."
-        )
+          Process.sleep(backoff_ms)
 
-        Process.sleep(backoff_ms)
+          repaired_messages =
+            if retries == 0 do
+              sanitize_messages(state.messages)
+            else
+              convert_all_tool_roles_to_user_messages(state.messages)
+            end
 
-        repaired_messages =
-          if retries == 0 do
-            sanitize_messages(state.messages)
+          repaired_state = %{state | messages: repaired_messages, retry_budget: next_budget}
+          run_agent_loop(repaired_state, depth, retries + 1)
+
+        {:halt, halted_budget, halt_reason} ->
+          Logger.warning(
+            "[Brain.Session] Provider retry budget exhausted: #{halt_reason}. " <>
+              "Total: #{Yoke.Client.RetryBudget.summary(halted_budget)}."
+          )
+
+          exhausted_state = %{state | retry_budget: halted_budget}
+
+          if top_level_session?(state.session_id) do
+            prompt_user_on_error(exhausted_state, depth, reason)
           else
-            convert_all_tool_roles_to_user_messages(state.messages)
+            {{:error, "Error communicating with DeepSeek API: #{reason} (#{halt_reason})"},
+             %{exhausted_state | status: :idle}}
           end
-
-        repaired_state = %{state | messages: repaired_messages}
-        run_agent_loop(repaired_state, depth, retries + 1)
-      else
-        if top_level_session?(state.session_id) do
-          prompt_user_on_error(state, depth, reason)
-        else
-          {{:error, "Error communicating with DeepSeek API: #{reason}"}, %{state | status: :idle}}
-        end
       end
     end
   end
@@ -2624,6 +2665,24 @@ defmodule Yoke.Brain.Session do
   defp current_context_tokens(state) do
     payload = Yoke.Json.encode!(%{"messages" => state.messages, "tools" => state.tools})
     div(String.length(payload) + 3, 4)
+  end
+
+  # Reports the current turn's provider retry consumption without exposing
+  # payload contents. `nil` before the first model call of a turn.
+  defp retry_budget_stats(state) do
+    case Map.get(state, :retry_budget) do
+      %Yoke.Client.RetryBudget{} = budget ->
+        %{
+          attempts: budget.attempts,
+          max_attempts: budget.max_attempts,
+          elapsed_ms: Yoke.Client.RetryBudget.elapsed_ms(budget),
+          total_timeout_ms: budget.total_timeout_ms,
+          summary: Yoke.Client.RetryBudget.summary(budget)
+        }
+
+      _ ->
+        nil
+    end
   end
 
   defp estimate_cost(state, prompt_tokens, completion_tokens) do

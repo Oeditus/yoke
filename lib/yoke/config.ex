@@ -35,6 +35,19 @@ defmodule Yoke.Config do
     # parameter and let the provider apply its own default. Override globally
     # in ~/.yoke/config.json (or per workspace in .yoke/config.json).
     "max_tokens" => nil,
+    # Cumulative provider retry budget (issue #22). The HTTP client and the
+    # agent harness used to retry independently, so one user turn could issue
+    # up to 12 attempts while reporting two unrelated counters. These settings
+    # bound a single turn across both layers:
+    # - api_retry_max_attempts: total provider attempts per turn (default 6)
+    # - api_retry_total_timeout_ms: cumulative wall-clock limit (default 120s)
+    # - api_retry_max_backoff_ms: ceiling on exponential backoff (default 8s)
+    # - api_retry_identical_failure_limit: stop after N identical consecutive
+    #   failures instead of burning the rest of the budget (default 2)
+    "api_retry_max_attempts" => 6,
+    "api_retry_total_timeout_ms" => 120_000,
+    "api_retry_max_backoff_ms" => 8_000,
+    "api_retry_identical_failure_limit" => 2,
     # Model pricing, expressed as USD per 1,000,000 tokens, used to compute
     # the estimated session cost shown by the status bar gauge, /cost, and
     # /stats. Defaults to DeepSeek's published V3 rates (prompt $0.14/1M,

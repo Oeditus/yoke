@@ -415,4 +415,252 @@ defmodule Yoke.DeepSeekAPITest do
       assert String.valid?(hd(sanitized["nested"]))
     end
   end
+
+  describe "cumulative retry budget" do
+    # Issue #22: the HTTP client and the harness each retried independently,
+    # so one turn could issue up to 12 attempts while reporting two unrelated
+    # counters. These tests pin the client side of the shared budget.
+    test "stops after the identical-failure breaker instead of burning the budget" do
+      # A server that accepts and immediately closes the connection reproduces
+      # `%Req.TransportError{reason: :closed}` from the issue.
+      {endpoint, close_server} = closing_server()
+      on_exit(close_server)
+
+      assert {:error, message} =
+               DeepSeekAPI.chat_completion(
+                 [%{"role" => "user", "content" => "hi"}],
+                 [],
+                 endpoint: endpoint,
+                 api_key: "not-needed",
+                 mock: false,
+                 retry_budget: [max_attempts: 6, identical_failure_limit: 2]
+               )
+
+      assert message =~ "identical failures"
+      assert message =~ "2 attempts"
+      # The diagnostics the issue asked for are in the error the user sees.
+      assert message =~ "Request size: payload"
+      assert message =~ "tools 0"
+    end
+
+    test "reports the attempt count and payload size when the attempt limit is hit" do
+      # Alternating statuses keep the identical-failure breaker quiet so the
+      # attempt bound is what stops the loop.
+      {endpoint, close_server} = alternating_status_server([503, 500, 503, 500])
+      on_exit(close_server)
+
+      assert {:error, message} =
+               DeepSeekAPI.chat_completion(
+                 [%{"role" => "user", "content" => "hi"}],
+                 [],
+                 endpoint: endpoint,
+                 api_key: "not-needed",
+                 mock: false,
+                 retry_budget: [
+                   max_attempts: 3,
+                   identical_failure_limit: 99,
+                   max_backoff_ms: 1
+                 ]
+               )
+
+      assert message =~ "attempt limit"
+      assert message =~ "3 attempts"
+      assert message =~ "Request size: payload"
+    end
+
+    test "honours a budget already started by the harness" do
+      {endpoint, close_server} = closing_server()
+      on_exit(close_server)
+
+      # The harness spent one attempt already, so the client gets one more.
+      spent = %{Yoke.Client.RetryBudget.new(max_attempts: 2) | attempts: 1}
+
+      assert {:error, message} =
+               DeepSeekAPI.chat_completion(
+                 [%{"role" => "user", "content" => "hi"}],
+                 [],
+                 endpoint: endpoint,
+                 api_key: "not-needed",
+                 mock: false,
+                 retry_budget: spent
+               )
+
+      assert message =~ "2 attempts"
+    end
+
+    test "a client-side rejection is not retried and carries no retry summary" do
+      {endpoint, close_server} = http_server_status(400, %{"error" => "bad model"})
+      on_exit(close_server)
+
+      assert {:error, message} =
+               DeepSeekAPI.chat_completion(
+                 [%{"role" => "user", "content" => "hi"}],
+                 [],
+                 endpoint: endpoint,
+                 api_key: "not-needed",
+                 mock: false
+               )
+
+      assert message =~ "Request rejected (HTTP 400)"
+      assert message =~ "retrying will not help"
+    end
+
+    test "retries a transient status and then succeeds" do
+      {endpoint, close_server} = flaky_server(503, Yoke.Test.ReviewFixture.choice("recovered"))
+      on_exit(close_server)
+
+      assert {:ok, %{content: "recovered"}} =
+               DeepSeekAPI.chat_completion(
+                 [%{"role" => "user", "content" => "hi"}],
+                 [],
+                 endpoint: endpoint,
+                 api_key: "not-needed",
+                 mock: false,
+                 retry_budget: [max_attempts: 3, max_backoff_ms: 1]
+               )
+    end
+
+    test "build_config/1 resolves the budget from explicit options" do
+      cfg = DeepSeekAPI.build_config(retry_budget: [max_attempts: 9])
+      assert cfg.retry_budget.max_attempts == 9
+    end
+
+    test "build_config/1 always produces a bounded budget" do
+      cfg = DeepSeekAPI.build_config([])
+      assert %Yoke.Client.RetryBudget{} = cfg.retry_budget
+      assert cfg.retry_budget.max_attempts > 0
+      assert cfg.retry_budget.total_timeout_ms > 0
+    end
+  end
+
+  # A listener that accepts a connection and closes it without responding,
+  # reproducing the `%Req.TransportError{reason: :closed}` failure issue #22
+  # documents. It keeps accepting so every retry attempt is refused.
+  defp closing_server do
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, {_, port}} = :inet.sockname(listen)
+    acceptor = spawn(fn -> close_loop(listen) end)
+
+    cleanup = fn ->
+      :gen_tcp.close(listen)
+      if Process.alive?(acceptor), do: Process.exit(acceptor, :kill)
+    end
+
+    {"http://127.0.0.1:#{port}/v1/chat/completions", cleanup}
+  end
+
+  defp close_loop(listen) do
+    case :gen_tcp.accept(listen, 5_000) do
+      {:ok, socket} ->
+        :gen_tcp.close(socket)
+        close_loop(listen)
+
+      {:error, _} ->
+        :ok
+    end
+  end
+
+  # Serves a different transient status for each successive request, so the
+  # identical-failure breaker does not fire and the attempt bound is what
+  # stops the retry loop.
+  defp alternating_status_server(statuses) do
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, {_, port}} = :inet.sockname(listen)
+
+    server = spawn(fn -> alternating_loop(listen, statuses) end)
+
+    cleanup = fn ->
+      :gen_tcp.close(listen)
+      if Process.alive?(server), do: Process.exit(server, :kill)
+    end
+
+    {"http://127.0.0.1:#{port}/v1/chat/completions", cleanup}
+  end
+
+  defp alternating_loop(listen, [status | rest]) do
+    case :gen_tcp.accept(listen, 5_000) do
+      {:ok, socket} ->
+        _request = read_request(socket, "")
+        send_json(socket, status, %{"error" => "transient"})
+        alternating_loop(listen, rest)
+
+      {:error, _} ->
+        :ok
+    end
+  end
+
+  defp alternating_loop(_listen, []), do: :ok
+
+  # Serves `status_code` for the first request and `success_body` afterwards.
+  defp flaky_server(status_code, success_body) do
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, {_, port}} = :inet.sockname(listen)
+
+    server =
+      spawn(fn ->
+        {:ok, socket} = :gen_tcp.accept(listen, 5_000)
+        _request = read_request(socket, "")
+        send_json(socket, status_code, %{"error" => "try again"})
+
+        {:ok, socket} = :gen_tcp.accept(listen, 5_000)
+        _request = read_request(socket, "")
+        send_json(socket, 200, success_body)
+      end)
+
+    cleanup = fn ->
+      :gen_tcp.close(listen)
+      if Process.alive?(server), do: Process.exit(server, :kill)
+    end
+
+    {"http://127.0.0.1:#{port}/v1/chat/completions", cleanup}
+  end
+
+  defp http_server_status(status_code, body_term) do
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, {_, port}} = :inet.sockname(listen)
+
+    server =
+      spawn(fn ->
+        {:ok, socket} = :gen_tcp.accept(listen, 5_000)
+        _request = read_request(socket, "")
+        send_json(socket, status_code, body_term)
+      end)
+
+    cleanup = fn ->
+      :gen_tcp.close(listen)
+      if Process.alive?(server), do: Process.exit(server, :kill)
+    end
+
+    {"http://127.0.0.1:#{port}/v1/chat/completions", cleanup}
+  end
+
+  defp send_json(socket, status, body_term) do
+    body = Yoke.Json.encode!(body_term)
+
+    :gen_tcp.send(
+      socket,
+      "HTTP/1.1 #{status} OK\r\nContent-Type: application/json\r\n" <>
+        "Content-Length: #{byte_size(body)}\r\nConnection: close\r\n\r\n" <> body
+    )
+
+    :gen_tcp.close(socket)
+  end
+
+  defp read_request(socket, buffer) do
+    case String.split(buffer, "\r\n\r\n", parts: 2) do
+      [headers, body] ->
+        [_, length] = Regex.run(~r/content-length: (\d+)/i, headers)
+
+        if byte_size(body) >= String.to_integer(length) do
+          buffer
+        else
+          {:ok, more} = :gen_tcp.recv(socket, 0, 5_000)
+          read_request(socket, buffer <> more)
+        end
+
+      _ ->
+        {:ok, more} = :gen_tcp.recv(socket, 0, 5_000)
+        read_request(socket, buffer <> more)
+    end
+  end
 end

@@ -1033,12 +1033,21 @@ defmodule Yoke.CLI.Repl do
     stats = Session.get_token_stats(session_pid)
     prompt_tokens = stats[:tracked_prompt_tokens] || stats[:estimated_prompt_tokens] || 0
 
+    retry_line =
+      case Map.get(stats, :retry_budget) do
+        %{summary: summary} ->
+          "\n- **Provider Retry Budget**: `#{summary}`"
+
+        _ ->
+          ""
+      end
+
     md = """
     ### Session Token & Cost Statistics
     - **Estimated Context Tokens**: `#{prompt_tokens}`
     - **Completion Tokens**: `#{stats.tracked_completion_tokens}`
     - **Total Session Tokens**: `#{stats.total_tokens}`
-    - **Estimated Cost (USD)**: `$#{:erlang.float_to_binary(stats.estimated_cost_usd, [{:decimals, 6}])}`
+    - **Estimated Cost (USD)**: `$#{:erlang.float_to_binary(stats.estimated_cost_usd, [{:decimals, 6}])}`#{retry_line}
     """
 
     IO.puts("\n" <> Formatter.format_markdown(md) <> "\n")
