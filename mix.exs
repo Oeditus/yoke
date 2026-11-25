@@ -8,7 +8,7 @@ defmodule Yoke.MixProject do
   def project do
     [
       app: :yoke,
-      version: "0.29.0",
+      version: "0.31.0",
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
