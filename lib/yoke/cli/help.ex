@@ -46,7 +46,13 @@ defmodule Yoke.CLI.Help do
     Example: /alias add changes /diff
     Example: /alias show finish
     """,
-    "audit" => "/audit [code|ux]\nAudit the project; omit the focus to audit both code and UX.",
+    "audit" => """
+    /audit [code|ux] [--root <dir>]
+    Audit the project; omit the focus to audit both code and UX.
+    When the given directory holds no project root, the single nested project
+    below it is audited instead; --root selects a directory explicitly.
+    Example: /audit --root app
+    """,
     "audit-thoughts" => "/audit-thoughts\nValidate pipeline item frontmatter and dependencies.",
     "backlog" => "/backlog\nDisplay the idea pipeline map and regenerate its indexes.",
     "bash" => """

@@ -3483,7 +3483,9 @@ defmodule Yoke.CLI.Repl do
   # actor as a grounded prompt so the narrative audit cites real evidence.
   defp parse_audit_args(args) do
     argv = OptionParser.split(args)
-    {parsed, positional, _invalid} = OptionParser.parse(argv, strict: [elixir_plugins: :boolean])
+
+    {parsed, positional, _invalid} =
+      OptionParser.parse(argv, strict: [elixir_plugins: :boolean, root: :string])
 
     focus_atom =
       case List.first(positional) do
@@ -3492,7 +3494,13 @@ defmodule Yoke.CLI.Repl do
         _ -> :all
       end
 
-    {focus_atom, Keyword.take(parsed, [:elixir_plugins])}
+    audit_opts =
+      case Keyword.get(parsed, :root) do
+        root when is_binary(root) and root != "" -> [root: root]
+        _ -> []
+      end
+
+    {focus_atom, audit_opts ++ Keyword.take(parsed, [:elixir_plugins])}
   end
 
   defp run_project_audit(session_pid, focus, audit_opts) do
@@ -3500,6 +3508,10 @@ defmodule Yoke.CLI.Repl do
 
     IO.puts("\n" <> Yoke.Audit.format_header(facts) <> "\n")
     IO.puts(Formatter.format_markdown(Yoke.Audit.format_facts(facts)) <> "\n")
+
+    if facts.shape.source_file_count == 0 do
+      IO.puts(Formatter.format_warning(empty_scan_warning(facts)) <> "\n")
+    end
 
     prompt = Yoke.Audit.build_prompt(facts, focus: focus)
 
@@ -3522,6 +3534,26 @@ defmodule Yoke.CLI.Repl do
     end
 
     :continue
+  end
+
+  # A zero-file scan is scope information, not a clean project assessment.
+  # Say so before the model's narrative can read it as a clean bill of health,
+  # and name the concrete way to point the audit at the real project root.
+  defp empty_scan_warning(facts) do
+    base = "No source files were found under #{facts.cwd}."
+
+    case facts.scope do
+      %{nested_roots: [_ | _] = roots} ->
+        base <>
+          " Nested projects were found at " <>
+          Enum.map_join(Enum.take(roots, 10), ", ", &"#{&1}") <>
+          ". Re-run with /audit --root <dir> to audit one of them."
+
+      _ ->
+        base <>
+          " This is scope information, not a clean-project assessment. " <>
+          "Re-run with /audit --root <dir> if the project lives in a subdirectory."
+    end
   end
 
   defp handle_copy_clipboard(session_pid, _session_id) do

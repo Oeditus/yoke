@@ -350,4 +350,112 @@ defmodule Yoke.AuditTest do
       assert "Taskfile.yml" in facts.hygiene.quality_gates
     end
   end
+
+  describe "nested project roots" do
+    setup do
+      root =
+        Path.join(System.tmp_dir!(), "yoke_audit_nested_#{System.unique_integer([:positive])}")
+
+      app = Path.join(root, "app")
+      File.mkdir_p!(Path.join(app, "lib"))
+      File.mkdir_p!(Path.join(app, "test"))
+
+      File.write!(Path.join(app, "mix.exs"), """
+      defmodule AuditExample.MixProject do
+        use Mix.Project
+        def project, do: [app: :audit_example, version: "0.1.0"]
+      end
+      """)
+
+      File.write!(Path.join(app, ".formatter.exs"), "[inputs: [\"{lib,test}/**/*.{ex,exs}\"]]\n")
+      File.write!(Path.join(app, "lib/example.ex"), "defmodule AuditExample do\nend\n")
+      File.write!(Path.join(app, "test/example_test.exs"), "defmodule AuditExampleTest do\nend\n")
+
+      on_exit(fn -> File.rm_rf!(root) end)
+      {:ok, root: root, app: app}
+    end
+
+    test "a container directory redirects the audit to its single nested project",
+         %{root: root, app: app} do
+      facts = Audit.collect(root)
+
+      assert facts.cwd == app
+      assert facts.scope.root == app
+      assert facts.scope.requested == root
+      assert facts.scope.redirected? == true
+      assert facts.scope.reason == :nested_project
+
+      assert facts.shape.source_file_count == 1
+      assert facts.shape.test_file_count == 1
+      assert facts.hygiene.has_formatter == true
+    end
+
+    test "the redirected audit explains itself in the facts and the header",
+         %{root: root} do
+      facts = Audit.collect(root)
+
+      assert Audit.format_facts(facts) =~ "**Scope**"
+      assert Audit.format_facts(facts) =~ "redirected from"
+      assert Audit.format_header(facts) =~ "auditing the nested project instead"
+    end
+
+    test "an explicit root wins over nested detection", %{root: root, app: app} do
+      facts = Audit.collect(root, root: app)
+
+      assert facts.cwd == app
+      assert facts.scope.redirected? == true
+      assert facts.scope.reason == :explicit
+    end
+
+    test "allow_nested_root keeps the requested directory", %{root: root} do
+      facts = Audit.collect(root, allow_nested_root: true)
+
+      assert facts.cwd == root
+      assert facts.scope.redirected? == false
+      assert facts.shape.source_file_count == 0
+    end
+
+    test "several nested projects are reported instead of guessed", %{root: root} do
+      other = Path.join(root, "other")
+      File.mkdir_p!(Path.join(other, "lib"))
+      File.write!(Path.join(other, "mix.exs"), "[]\n")
+
+      facts = Audit.collect(root)
+
+      assert facts.cwd == root
+      assert facts.scope.redirected? == false
+      assert facts.scope.reason == :ambiguous_nested_projects
+      assert length(facts.scope.nested_roots) == 2
+
+      rendered = Audit.format_facts(facts)
+      assert rendered =~ "none was chosen"
+      assert rendered =~ "--root <dir>"
+    end
+
+    test "an empty directory is scope information, not a clean bill of health" do
+      empty =
+        Path.join(System.tmp_dir!(), "yoke_audit_bare_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(empty)
+      on_exit(fn -> File.rm_rf!(empty) end)
+
+      facts = Audit.collect(empty)
+      rendered = Audit.format_facts(facts)
+
+      assert facts.shape.source_file_count == 0
+      assert facts.scope.reason == :no_project
+      assert Enum.any?(facts.notes, &(&1 =~ "not a healthy project"))
+      assert rendered =~ "not a clean-project assessment"
+
+      # A zero-file scan must never claim every source file is tested.
+      refute rendered =~ "every source file has a matching test file"
+    end
+
+    test "an untracked directory does not report a clean working tree", %{app: app} do
+      facts = Audit.collect(app)
+
+      assert facts.health.git_tracked? == false
+      assert Audit.format_facts(facts) =~ "not a Git repository"
+    end
+  end
 end

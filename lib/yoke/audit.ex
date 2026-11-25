@@ -45,35 +45,53 @@ defmodule Yoke.Audit do
   ## Options
 
     * `:audit_config` — override map (normally read from `.yoke/config.json` `"audit"`).
+    * `:root` — audit a directory other than `cwd` (see `resolve_root/2`).
+    * `:allow_nested_root` — never refuse and never redirect to a nested
+      project, even when `cwd` itself looks like a project (see
+      `resolve_root/2`).
+
+  ## Scope
+
+  A zero-file scan is reported as scope information, never as a clean bill of
+  health. `collect/2` therefore records `scope` (the resolved root, whether it
+  was redirected, and any nested project roots it found) and `notes` (plain
+  sentences naming what could not be measured), and `format_facts/1` renders
+  both before any other fact.
   """
   @spec collect(String.t(), keyword()) :: map()
   def collect(cwd \\ ".", opts \\ []) do
-    detected_languages = safe(fn -> Yoke.Practices.detect_languages(cwd) end, [])
-    profile = Profiles.resolve(cwd, detected_languages, opts)
+    scope = resolve_root(cwd, opts)
+    root = scope.root
 
-    test_files = glob(cwd, profile.test_globs, cwd, profile.ignore_dirs)
+    detected_languages = safe(fn -> Yoke.Practices.detect_languages(root) end, [])
+    profile = Profiles.resolve(root, detected_languages, opts)
+
+    test_files = glob(root, profile.test_globs, root, profile.ignore_dirs)
     test_set = MapSet.new(test_files)
 
     source_files =
-      cwd
-      |> glob(profile.source_globs, cwd, profile.ignore_dirs)
+      root
+      |> glob(profile.source_globs, root, profile.ignore_dirs)
       |> Enum.reject(&MapSet.member?(test_set, &1))
 
-    health_facts = health(cwd, profile, source_files, test_files)
+    health_facts = health(root, profile, source_files, test_files)
+    shape_facts = shape(profile, source_files, test_files)
 
     elixir_plugins =
       if "elixir" in profile.languages do
-        collect_elixir_plugins(cwd, health_facts.base_branch, opts)
+        collect_elixir_plugins(root, health_facts.base_branch, opts)
       else
         nil
       end
 
     %{
-      cwd: Path.expand(cwd),
-      shape: shape(profile, source_files, test_files),
-      hygiene: hygiene(cwd, profile),
+      cwd: root,
+      scope: scope,
+      shape: shape_facts,
+      hygiene: hygiene(root, profile),
       health: health_facts,
-      markers: markers(cwd, source_files, test_set),
+      markers: markers(root, source_files, test_set),
+      notes: notes(%{scope: scope, shape: shape_facts, health: health_facts}),
       elixir_plugins: elixir_plugins
     }
   end
@@ -114,6 +132,196 @@ defmodule Yoke.Audit do
     end
   rescue
     _ -> nil
+  end
+
+  # ---------------------------------------------------------------------
+  # Scope
+  # ---------------------------------------------------------------------
+
+  # Directories that can never be a project root, so a monorepo-style scan
+  # does not descend into dependencies or build output.
+  @nested_root_ignore_dirs ~w(deps _build node_modules .git .elixir_ls target build dist .yoke tmp .venv venv __pycache__)
+
+  # Markers that make a directory a project root in its own right.
+  @project_root_markers ~w(
+    mix.exs Cargo.toml go.mod package.json pyproject.toml setup.py setup.cfg
+    Gemfile pom.xml build.gradle build.gradle.kts settings.gradle settings.gradle.kts
+    CMakeLists.txt meson.build
+  )
+
+  @max_nested_roots 10
+
+  @doc """
+  Resolves which directory an audit actually measures.
+
+  Auditing a container directory that holds the project one level down (the
+  common `workspace/app/` layout) used to report zero source files, no
+  formatter, and a clean working tree — measurements that read as a clean bill
+  of health when they only mean "nothing was scanned here".
+
+  The rules, in order:
+
+    1. `:root` (or `:allow_nested_root`) disables every heuristic below.
+    2. `cwd` is a project root when it has a project marker, or when it has
+       language source files and its own test directory. It is then audited
+       as given.
+    3. Otherwise, the project roots strictly below `cwd` are collected. Exactly
+       one redirects the audit to it (`redirected?: true`); several are
+       reported as ambiguous and none is chosen.
+
+  Returns a map with `:root` (absolute path), `:requested` (absolute path of
+  the directory asked for), `:redirected?`, `:nested_roots`, and `:reason`.
+  """
+  @spec resolve_root(String.t(), keyword()) :: map()
+  def resolve_root(cwd \\ ".", opts \\ []) do
+    requested = Path.expand(cwd)
+
+    cond do
+      is_binary(Keyword.get(opts, :root)) ->
+        scope(Path.expand(Keyword.fetch!(opts, :root)), requested, :explicit)
+
+      Keyword.get(opts, :allow_nested_root, false) ->
+        scope(requested, requested, :project)
+
+      project_root?(requested) ->
+        scope(requested, requested, :project)
+
+      true ->
+        resolve_nested_root(requested)
+    end
+  end
+
+  # Plain sentences naming what the deterministic facts could not measure.
+  # Rendered ahead of every other fact so a zero-file scan cannot be mistaken
+  # for a clean project assessment.
+  defp notes(%{scope: scope, shape: shape, health: health}) do
+    scope_notes(scope) ++ zero_file_notes(shape) ++ git_notes(health)
+  end
+
+  defp scope_notes(%{reason: :nested_project, requested: requested, root: root}) do
+    [
+      "No project root at `#{requested}`; audited the nested project `#{root}` instead. " <>
+        "Pass `--root <dir>` to audit a different directory."
+    ]
+  end
+
+  defp scope_notes(%{reason: :ambiguous_nested_projects, nested_roots: roots}) do
+    listed = Enum.map_join(Enum.take(roots, @max_nested_roots), ", ", &"`#{&1}`")
+
+    [
+      "No project root at the audited directory and #{length(roots)} nested projects were " <>
+        "found (#{listed}); none was chosen. Pass `--root <dir>` to select one."
+    ]
+  end
+
+  defp scope_notes(%{reason: :no_project, requested: requested}) do
+    [
+      "No project root found at `#{requested}`: no project manifest (mix.exs, Cargo.toml, " <>
+        "package.json, …) and no source/test layout. The facts below describe an empty scan, " <>
+        "not a healthy project."
+    ]
+  end
+
+  defp scope_notes(_scope), do: []
+
+  defp zero_file_notes(%{source_file_count: 0, test_file_count: 0}) do
+    [
+      "No source or test files matched the audit globs. This is scope information, not a " <>
+        "clean-project assessment."
+    ]
+  end
+
+  defp zero_file_notes(_shape), do: []
+
+  defp git_notes(%{git_dirty?: nil}), do: ["Git working-tree state could not be measured."]
+
+  defp git_notes(%{git_dirty?: false, git_tracked?: false}) do
+    [
+      "Git working-tree state is unknown: the audited directory is not a Git repository, " <>
+        "so \"not dirty\" does not mean clean."
+    ]
+  end
+
+  defp git_notes(_health), do: []
+
+  defp scope(root, requested, reason) do
+    %{
+      root: root,
+      requested: requested,
+      redirected?: root != requested,
+      nested_roots: [],
+      reason: reason
+    }
+  end
+
+  defp resolve_nested_root(requested) do
+    case nested_project_roots(requested) do
+      [only] ->
+        %{
+          root: only,
+          requested: requested,
+          redirected?: true,
+          nested_roots: [only],
+          reason: :nested_project
+        }
+
+      [] ->
+        scope(requested, requested, :no_project)
+
+      several ->
+        %{
+          root: requested,
+          requested: requested,
+          redirected?: false,
+          nested_roots: several,
+          reason: :ambiguous_nested_projects
+        }
+    end
+  end
+
+  defp project_root?(dir) do
+    Enum.any?(@project_root_markers, &File.regular?(Path.join(dir, &1))) or
+      (has_language_source?(dir) and
+         Enum.any?(["test", "tests", "spec"], &File.dir?(Path.join(dir, &1))))
+  end
+
+  defp has_language_source?(dir) do
+    ["lib", "src", "app", "pkg", "internal"]
+    |> Enum.any?(fn sub -> File.dir?(Path.join(dir, sub)) end)
+  end
+
+  defp nested_project_roots(dir) do
+    dir
+    |> collect_nested_roots(0, [])
+    |> Enum.reverse()
+  end
+
+  defp collect_nested_roots(_dir, depth, acc) when depth > 3, do: acc
+
+  defp collect_nested_roots(dir, depth, acc) do
+    case File.ls(dir) do
+      {:ok, entries} ->
+        entries
+        |> Enum.reject(&(&1 in @nested_root_ignore_dirs))
+        |> Enum.sort()
+        |> Enum.reduce(acc, fn entry, acc ->
+          path = Path.join(dir, entry)
+
+          cond do
+            not File.dir?(path) ->
+              acc
+
+            project_root?(path) ->
+              [path | acc]
+
+            true ->
+              collect_nested_roots(path, depth + 1, acc)
+          end
+        end)
+
+      _ ->
+        acc
+    end
   end
 
   # ---------------------------------------------------------------------
@@ -184,6 +392,7 @@ defmodule Yoke.Audit do
 
     %{
       git_dirty?: safe(fn -> Yoke.Git.dirty?(cwd) end, nil),
+      git_tracked?: safe(fn -> match?({:ok, _}, Yoke.Git.status(cwd)) end, false),
       base_branch: safe(fn -> Yoke.Git.default_base_branch(cwd) end, nil),
       test_to_source_ratio:
         if(source_count == 0, do: nil, else: Float.round(test_count / source_count, 2)),
@@ -306,16 +515,20 @@ defmodule Yoke.Audit do
       end
 
     untested_section =
-      if health.supports_sibling_tests? do
-        untested =
-          case health.untested_files do
-            [] -> "  (none — every source file has a matching test file)"
-            files -> Enum.map_join(files, "\n", &"  • `#{&1}`")
-          end
+      cond do
+        not health.supports_sibling_tests? ->
+          ""
 
-        "\n- Source files with no obvious matching test file:\n#{untested}"
-      else
-        ""
+        health.untested_files == [] and shape.source_file_count == 0 ->
+          ""
+
+        health.untested_files == [] ->
+          "\n- Source files with no obvious matching test file:\n" <>
+            "  (none — every source file has a matching test file)"
+
+        true ->
+          untested = Enum.map_join(health.untested_files, "\n", &"  • `#{&1}`")
+          "\n- Source files with no obvious matching test file:\n#{untested}"
       end
 
     plugin_line =
@@ -324,10 +537,12 @@ defmodule Yoke.Audit do
         summary -> "\n\n**Elixir Language Plugins (diff)**\n- #{summary}"
       end
 
+    scope_section = format_scope(facts)
+
     """
     ### Project facts
 
-    **Shape**
+    #{scope_section}**Shape**
     - Languages: #{inspect(shape.languages)}
     - Source files: #{shape.source_file_count} (#{shape.source_lines} lines) • Test files: #{shape.test_file_count}#{inline_note}
     - Test/source file ratio: #{inspect(health.test_to_source_ratio)}
@@ -341,12 +556,45 @@ defmodule Yoke.Audit do
     - Quality gates: #{inspect(hygiene.quality_gates)}
 
     **Health**
-    - Git dirty: #{inspect(health.git_dirty?)} • Base branch: #{inspect(health.base_branch)}#{untested_section}#{plugin_line}
+    - Git dirty: #{git_flag(health)} • Base branch: #{inspect(health.base_branch)}#{untested_section}#{plugin_line}
 
     **Markers (TODO/FIXME/HACK/XXX/OPTIMIZE)**
     #{markers}
     """
   end
+
+  @doc """
+  Renders the audit scope: which directory was measured, whether it was
+  redirected to a nested project, and every measurement that failed or was
+  skipped.
+
+  Returns `""` when the audit measured the requested project root and every
+  fact was measurable, so an ordinary healthy project keeps its compact facts
+  block.
+  """
+  @spec format_scope(map()) :: String.t()
+  def format_scope(facts) do
+    scope = Map.get(facts, :scope)
+    notes = Map.get(facts, :notes, [])
+
+    lines = scope_context(scope) ++ Enum.map(notes, &"- #{&1}")
+
+    case lines do
+      [] -> ""
+      lines -> "**Scope**\n" <> Enum.join(lines, "\n") <> "\n\n"
+    end
+  end
+
+  defp scope_context(nil), do: []
+
+  defp scope_context(%{redirected?: true, requested: requested, root: root}) do
+    ["- Audited root: `#{root}` (redirected from `#{requested}`)"]
+  end
+
+  defp scope_context(%{root: root}), do: ["- Audited root: `#{root}`"]
+
+  defp git_flag(%{git_dirty?: false, git_tracked?: false}), do: "unknown (not a Git repository)"
+  defp git_flag(%{git_dirty?: dirty}), do: inspect(dirty)
 
   @doc """
   Builds the agent prompt for a full project audit.
@@ -399,6 +647,11 @@ defmodule Yoke.Audit do
       present them as **actual test improvements** (concrete `ExUnit` /
       `ExUnitProperties` `property` tests targeting the corresponding
       `*_test.exs` file) whenever applicable.
+    - Read the **Scope** block first. A zero-file scan, an empty root, an
+      unmeasurable Git state, or a nested project that was not audited is
+      scope information, not evidence that the project is healthy. Never
+      describe such a project as clean; say what could not be measured and
+      how to measure it (`--root <dir>`).
     """
   end
 
@@ -456,15 +709,26 @@ defmodule Yoke.Audit do
 
   @doc """
   Renders the one-line header printed before the agent's audit narrative.
+
+  When the audit was redirected to a nested project, the header names both the
+  requested directory and the one actually measured, so a redirected audit is
+  never mistaken for a scan of the directory the user ran it from.
   """
   @spec format_header(map()) :: String.t()
   def format_header(facts) do
     """
     #{Formatter.bold()}=== Project Audit ===#{Formatter.reset()}
-    #{Formatter.cyan()}●#{Formatter.reset()} #{facts.cwd}
+    #{Formatter.cyan()}●#{Formatter.reset()} #{facts.cwd}#{redirect_line(facts)}
     #{Formatter.dim()}Measured #{facts.shape.source_file_count} source / #{facts.shape.test_file_count} test files, #{facts.shape.source_lines} source lines. Handing the facts to the agent for the narrative audit…#{Formatter.reset()}
     """
   end
+
+  defp redirect_line(%{scope: %{redirected?: true, requested: requested}}) do
+    "\n#{Formatter.yellow()}●#{Formatter.reset()} requested #{requested}; no project root there, " <>
+      "auditing the nested project instead"
+  end
+
+  defp redirect_line(_facts), do: ""
 
   # ---------------------------------------------------------------------
   # Helpers

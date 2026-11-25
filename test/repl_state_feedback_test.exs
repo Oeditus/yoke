@@ -116,4 +116,8 @@ defmodule Yoke.ReplStateFeedbackTest do
     assert Yoke.CLI.Help.text("checkpoint") =~ "/checkpoint <label>"
     assert Yoke.CLI.Help.text("undo") =~ "Working-tree files are unchanged"
   end
+
+  test "audit help documents the --root override" do
+    assert Yoke.CLI.Help.text("audit") =~ "--root <dir>"
+  end
 end
