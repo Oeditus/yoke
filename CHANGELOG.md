@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.1] - 2026-11-25
+
+### Added
+
+- **Bounded provider retry budget and request-size diagnostics**: Added `Yoke.Client.RetryBudget` to enforce a single cumulative per-turn budget (`max_attempts`, `total_timeout_ms`, `max_backoff_ms`, and an `identical_failure_limit` circuit breaker) across both `Yoke.Client.DeepSeekAPI` and `Yoke.Brain.Session`, configurable via session options and `api_retry_*` keys in `Yoke.Config` (fixes #22). Added `Yoke.Client.RequestDiagnostics` to attach metadata-only payload metrics (serialized bytes, message count, largest message, and tool-definition bytes) to retry logs and final errors, and surfaced current-turn retry consumption in `/cost`.
+
+### Fixed
+
+- **Misleading zero-file `/audit` results for nested projects**: `Yoke.Audit` now resolves the audited root before measuring. When the given directory holds no project root, the single nested project below it is audited instead (`Yoke.Audit.resolve_root/2`), several nested projects are reported as ambiguous rather than guessed, and an explicit `--root <dir>` (or `:root` option) selects one directly. The facts gained a **Scope** block that names the audited root, records every unmeasurable fact (empty scan, no project root, non-Git directory), and the prompt forbids reading a zero-file scan as a clean project. `format_facts/1` no longer claims "every source file has a matching test file" when no source files were found, and `/audit` prints an explicit warning when nothing was scanned.
+
 ## [0.31.0] - 2026-11-25
 
 ### Added
@@ -25,7 +35,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Misleading zero-file `/audit` results for nested projects**: `Yoke.Audit` now resolves the audited root before measuring. When the given directory holds no project root, the single nested project below it is audited instead (`Yoke.Audit.resolve_root/2`), several nested projects are reported as ambiguous rather than guessed, and an explicit `--root <dir>` (or `:root` option) selects one directly. The facts gained a **Scope** block that names the audited root, records every unmeasurable fact (empty scan, no project root, non-Git directory), and the prompt forbids reading a zero-file scan as a clean project. `format_facts/1` no longer claims "every source file has a matching test file" when no source files were found, and `/audit` prints an explicit warning when nothing was scanned.
 - **Malformed JSON in tool-call responses**: Hardened `Yoke.Client.DeepSeekAPI` against malformed, double-encoded, non-object, and truncated (`finish_reason: "length"`) tool-call arguments, with automatic recovery retries in `Yoke.Brain.Session`.
 - **Tool subprocess `PATH` and ERTS environment leakage**: Captured `YOKE_ORIG_PATH` in the `yoke` launcher and sanitized `PATH` and ERTS/release variables (`RELEASE_*`, `ROOTDIR`, `BINDIR`, `EMU`, `PROGNAME`) in `Yoke.Hands.Environment` so spawned tools reliably resolve host executables.
 - **Conversation loading in `/explorer`**: Fixed pagination guards, background loader cancellation (`cancel_loading/1`), and fast prefix-based LMML metadata extraction with legacy fallback.
@@ -56,6 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Event-driven lock waiting and job monitoring**: Replaced polling-based resource lock waiting in `Yoke.TaskEngine.Orchestrator` with `Registry`-dispatched `{:lock_released, resource_key}` notifications and improved process `:DOWN` monitoring in `Yoke.TaskEngine.JobManager`.
 - **LMML 0.3 integration**: Updated `:lmml` to `~> 0.3` and streamlined LMML narrative-to-Markdown export in `Yoke.Brain.Session` and `Yoke.Brain.SessionLmml`.
 
+[0.31.1]: https://github.com/Oeditus/yoke/compare/v0.31.0...v0.31.1
 [0.31.0]: https://github.com/Oeditus/yoke/compare/v0.29.0...v0.31.0
 [0.29.0]: https://github.com/Oeditus/yoke/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/Oeditus/yoke/compare/v0.27.0...v0.28.0
