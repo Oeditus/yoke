@@ -15,6 +15,8 @@ defmodule Yoke.CLI.ConfigExplorer do
   """
   alias Yoke.BashTracker
   alias Yoke.Brain.SessionLmml
+  alias Yoke.Brain.SessionMetadata
+  alias Yoke.Brain.SessionStore
   alias Yoke.CLI.Formatter
   alias Yoke.CLI.LineEditor
   alias Yoke.CLI.TerminalOwner
@@ -46,8 +48,10 @@ defmodule Yoke.CLI.ConfigExplorer do
 
   Options:
 
-    * `:include_global?` - when `false`, only the workspace `.yoke` directory is
-      scanned for sessions. Defaults to `true`.
+    * `:show_all_sessions?` - when `true`, scans the current project's `.yoke/sessions`,
+      global `~/.yoke/sessions`, and known projects' `.yoke/sessions`. Defaults to `false`
+      (current project only).
+    * `:include_global?` - legacy alias for `:show_all_sessions?`. Defaults to `false`.
   """
   def scan_directory_tree(cwd \\ ".", opts \\ []) do
     local_dir = Path.join(cwd, ".yoke")
@@ -100,6 +104,10 @@ defmodule Yoke.CLI.ConfigExplorer do
                 worker_opts =
                   if tab == :sessions do
                     state.load_options
+                    |> Keyword.put(
+                      :show_all_sessions?,
+                      Map.get(state, :show_all_sessions?, false)
+                    )
                     |> Keyword.put_new(:sessions_offset, Map.get(state.tree, :sessions_offset, 0))
                     |> Keyword.put_new(:sessions_page_size, current_sessions_page_size(state))
                   else
@@ -151,6 +159,7 @@ defmodule Yoke.CLI.ConfigExplorer do
 
     worker_opts =
       state.load_options
+      |> Keyword.put(:show_all_sessions?, Map.get(state, :show_all_sessions?, false))
       |> Keyword.put(:sessions_offset, offset)
       |> Keyword.put(:sessions_page_size, page_size)
 
@@ -186,6 +195,17 @@ defmodule Yoke.CLI.ConfigExplorer do
         status_notice: nil,
         loading: Map.put(state.loading, :sessions, :loading)
     }
+  end
+
+  @doc "Toggles between current-project conversations and all conversations across projects."
+  def toggle_show_all_sessions(state) do
+    new_show_all? = not Map.get(state, :show_all_sessions?, false)
+    updated = %{state | show_all_sessions?: new_show_all?}
+    load_sessions_page(updated, 0)
+  end
+
+  defp show_all_sessions_opt(opts) do
+    Keyword.get(opts, :show_all_sessions?, Keyword.get(opts, :include_global?, false))
   end
 
   defp sessions_has_prev?(%{tree: tree}), do: Map.get(tree, :sessions_offset, 0) > 0
@@ -320,7 +340,7 @@ defmodule Yoke.CLI.ConfigExplorer do
     sessions =
       all_files
       |> Enum.slice(offset, page_size)
-      |> Enum.map(&Map.merge(&1, parse_session_metadata(&1.path)))
+      |> Enum.map(&merge_session_metadata(&1, parse_session_metadata(&1.path)))
 
     %{
       sessions: sessions,
@@ -338,6 +358,18 @@ defmodule Yoke.CLI.ConfigExplorer do
   defp load_category(:analytics, cwd, _opts),
     do: %{analytics: read_bash_analytics(cwd), patterns: list_review_patterns(cwd)}
 
+  defp merge_session_metadata(item, meta) do
+    merged = Map.merge(item, meta)
+
+    case Map.get(meta, :project) do
+      project when is_binary(project) and project != "" ->
+        Map.put(merged, :project, project)
+
+      _ ->
+        Map.put(merged, :project, Map.get(item, :project, "unknown"))
+    end
+  end
+
   defp sessions_page_size(opts) do
     case Keyword.get(opts, :sessions_page_size) do
       n when is_integer(n) and n > 0 -> n
@@ -347,28 +379,59 @@ defmodule Yoke.CLI.ConfigExplorer do
 
   defp default_sessions_page_size do
     {_cols, rows} = terminal_dimensions()
-    max(5, rows - 6)
+    max(5, rows - 8)
   end
 
   @doc """
-  Lists session files from the workspace `.yoke/sessions` directory and the
-  global `~/.yoke/sessions` directory, newest first.
+  Lists session files newest first, tagging each entry with the `:project` it
+  belongs to.
 
-  Pass `include_global?: false` to scan only the workspace directory. Tests
-  use this to stay hermetic: the global directory lives in the developer's
-  real `$HOME`, so including it makes results depend on unrelated local
-  state.
+  By default, only the current workspace's `.yoke/sessions` directory is
+  scanned. Pass `show_all_sessions?: true` (or `include_global?: true`) to also
+  include the global `~/.yoke/sessions` directory and any known projects
+  registered in `~/.yoke/projects.json` (plus `:extra_project_dirs`).
   """
   def list_session_files(cwd \\ ".", opts \\ []) do
-    dirs =
-      if Keyword.get(opts, :include_global?, true) do
-        [Path.join(cwd, ".yoke/sessions"), Path.expand("~/.yoke/sessions")]
+    show_all? = show_all_sessions_opt(opts)
+    expanded_cwd = Path.expand(cwd)
+    current_project = SessionMetadata.project_name_for_cwd(expanded_cwd)
+    local_dir = Path.join(cwd, ".yoke/sessions")
+
+    sources =
+      if show_all? do
+        global_sessions_dir =
+          Keyword.get(opts, :global_sessions_dir, Path.expand("~/.yoke/sessions"))
+
+        registry_opts =
+          case Keyword.fetch(opts, :projects_registry_path) do
+            {:ok, path} -> [registry_path: path]
+            :error -> []
+          end
+
+        known_projects =
+          SessionStore.known_project_dirs(registry_opts) ++
+            Keyword.get(opts, :extra_project_dirs, [])
+
+        known_sources =
+          Enum.map(known_projects, fn proj_dir ->
+            expanded_proj = Path.expand(proj_dir)
+
+            {SessionMetadata.project_name_for_cwd(expanded_proj), expanded_proj,
+             Path.join(expanded_proj, ".yoke/sessions")}
+          end)
+
+        [
+          {current_project, expanded_cwd, local_dir},
+          {"global", Path.expand("~"), Path.expand(global_sessions_dir)}
+          | known_sources
+        ]
       else
-        [Path.join(cwd, ".yoke/sessions")]
+        [{current_project, expanded_cwd, local_dir}]
       end
 
-    dirs
-    |> Enum.flat_map(fn dir ->
+    sources
+    |> Enum.uniq_by(fn {_proj, _root, dir} -> Path.expand(dir) end)
+    |> Enum.flat_map(fn {project_label, project_root, dir} ->
       if File.dir?(dir) do
         case File.ls(dir) do
           {:ok, files} ->
@@ -381,21 +444,23 @@ defmodule Yoke.CLI.ConfigExplorer do
                 {:ok, stat} ->
                   id = String.replace(file, ~r/\.(lmml|lmmlz)$/, "")
 
+                  base = %{
+                    id: id,
+                    file: file,
+                    path: full_path,
+                    size: stat.size,
+                    mtime: stat.mtime,
+                    timestamp: format_timestamp(stat.mtime),
+                    project: project_label,
+                    project_path: project_root
+                  }
+
                   meta =
                     if Keyword.get(opts, :metadata?, true),
                       do: parse_session_metadata(full_path),
                       else: %{model: "not loaded", msg_count: 0, preview: "(open to inspect)"}
 
-                  [
-                    Map.merge(meta, %{
-                      id: id,
-                      file: file,
-                      path: full_path,
-                      size: stat.size,
-                      mtime: stat.mtime,
-                      timestamp: format_timestamp(stat.mtime)
-                    })
-                  ]
+                  [merge_session_metadata(base, meta)]
 
                 _ ->
                   []
@@ -409,7 +474,7 @@ defmodule Yoke.CLI.ConfigExplorer do
         []
       end
     end)
-    |> Enum.uniq_by(& &1.path)
+    |> Enum.uniq_by(&Path.expand(&1.path))
     |> Enum.sort_by(& &1.mtime, :desc)
   end
 
@@ -486,7 +551,24 @@ defmodule Yoke.CLI.ConfigExplorer do
                   "(session narrative)"
               end
 
-            {:ok, %{model: model, msg_count: msg_count, preview: preview}}
+            meta = %{model: model, msg_count: msg_count, preview: preview}
+
+            meta =
+              case Map.get(data, "project") do
+                project when is_binary(project) and project != "" ->
+                  Map.put(meta, :project, project)
+
+                _ ->
+                  case Map.get(data, "cwd") do
+                    cwd when is_binary(cwd) and cwd != "" ->
+                      Map.put(meta, :project, SessionMetadata.project_name_for_cwd(cwd))
+
+                    _ ->
+                      meta
+                  end
+              end
+
+            {:ok, meta}
 
           _ ->
             :error
@@ -874,6 +956,7 @@ defmodule Yoke.CLI.ConfigExplorer do
       detail_scroll: 0,
       status_notice: nil,
       load_options: opts,
+      show_all_sessions?: show_all_sessions_opt(opts),
       load_ref: nil,
       loader_pid: nil,
       sessions_loader_pid: nil,
@@ -1471,10 +1554,18 @@ defmodule Yoke.CLI.ConfigExplorer do
     footer_text =
       case state.view_mode do
         :list ->
-          if state.active_tab == :sessions and
-               Map.get(state.tree, :sessions_total, 0) >
+          if state.active_tab == :sessions do
+            toggle_hint =
+              if Map.get(state, :show_all_sessions?, false),
+                do: "s: Project Only",
+                else: "s: Show All"
+
+            if Map.get(state.tree, :sessions_total, 0) >
                  Map.get(state.tree, :sessions_page_size, viewport_rows) do
-            "[Tab/1-8: Tab | ↑/↓: Select | PgUp/PgDn or p/n: Page | Enter: Detail | d: Delete | r: Refresh | q: Exit]"
+              "[Tab/1-8: Tab | ↑/↓: Select | PgUp/PgDn or p/n: Page | #{toggle_hint} | Enter: Detail | d: Delete | r: Refresh | q: Exit]"
+            else
+              "[Tab/1-8: Tab | ↑/↓: Select | #{toggle_hint} | Enter: Detail | d: Delete | r: Refresh | q: Exit]"
+            end
           else
             "[Tab/1-8: Tab | ↑/↓: Select | Enter: Expand/Detail | Space: Toggle | a: Add Rule | d: Delete | r: Refresh | q: Exit]"
           end
@@ -1520,6 +1611,67 @@ defmodule Yoke.CLI.ConfigExplorer do
   # ---------------------------------------------------------------------
   # List Viewport Renderer
   # ---------------------------------------------------------------------
+
+  defp render_list_viewport(%{active_tab: :sessions} = state, cols, height, theme) do
+    items = fetch_tab_items(state)
+    show_all? = Map.get(state, :show_all_sessions?, false)
+    current_project = SessionMetadata.project_name_for_cwd(state.cwd)
+
+    toolbar_content =
+      if show_all? do
+        "  Scope: #{Formatter.bold()}All projects#{Formatter.reset()}   #{theme.pill_bg} Show All: ON #{Formatter.reset()} #{Formatter.dim()}[s: Current Project]#{Formatter.reset()}"
+      else
+        "  Scope: #{Formatter.bold()}#{current_project}#{Formatter.reset()} #{Formatter.dim()}(current project)#{Formatter.reset()}   #{theme.pill_bg} [s] Show All #{Formatter.reset()}"
+      end
+
+    toolbar_row = format_box_row(toolbar_content, cols, theme.border)
+
+    col_header_content =
+      "#{Formatter.bold()}#{Formatter.dim()}   " <>
+        "#{pad_col("Project", 14)}  " <>
+        "#{pad_col("ID", 18)}  " <>
+        "#{pad_col("Updated", 16)}  " <>
+        "#{pad_col("Model", 15)}  " <>
+        "#{String.pad_leading("Msgs", 4)}  " <>
+        "#{String.pad_leading("Size", 8)}  " <>
+        "Preview#{Formatter.reset()}"
+
+    col_header_row = format_box_row(col_header_content, cols, theme.border)
+
+    if items == [] do
+      empty_msg =
+        if show_all?,
+          do: "  (No conversations found across any project)",
+          else: "  (No conversations found for '#{current_project}' — press 's' for Show All)"
+
+      [toolbar_row, col_header_row, format_box_row(empty_msg, cols, theme.border)] ++
+        pad_empty_rows(height - 3, cols, theme.border)
+    else
+      list_height = max(1, height - 2)
+      total_items = length(items)
+      cursor = min(state.cursor, total_items - 1)
+
+      start_idx =
+        cond do
+          cursor < list_height -> 0
+          cursor >= total_items - list_height -> max(0, total_items - list_height)
+          true -> cursor - div(list_height, 2)
+        end
+
+      visible_items = Enum.slice(items, start_idx, list_height)
+
+      rows =
+        visible_items
+        |> Enum.with_index(start_idx)
+        |> Enum.map(fn {item, idx} ->
+          is_selected = idx == cursor
+          format_item_row(:sessions, item, is_selected, cols, theme)
+        end)
+
+      remaining = list_height - length(rows)
+      [toolbar_row, col_header_row] ++ rows ++ pad_empty_rows(remaining, cols, theme.border)
+    end
+  end
 
   defp render_list_viewport(state, cols, height, theme) do
     items = fetch_tab_items(state)
@@ -1673,16 +1825,24 @@ defmodule Yoke.CLI.ConfigExplorer do
 
   defp format_item_row(:sessions, sess, is_selected, cols, theme) do
     size_kb = Float.round(sess.size / 1024, 1)
+    project = Map.get(sess, :project, "unknown")
     model = Map.get(sess, :model, "deepseek-flash")
     msg_cnt = Map.get(sess, :msg_count, 0)
     preview = Map.get(sess, :preview, "")
-    ts = Map.get(sess, :timestamp, "")
+    ts = sess |> Map.get(:timestamp, "") |> String.slice(0, 16)
+
+    proj_col = pad_col(project, 14)
+    id_col = pad_col(to_string(sess.id), 18)
+    ts_col = pad_col(ts, 16)
+    model_col = pad_col(to_string(model), 15)
+    msgs_col = msg_cnt |> to_string() |> String.pad_leading(4)
+    size_col = "#{size_kb} KB" |> String.pad_leading(8)
 
     content =
       if is_selected do
-        "#{theme.bold_cursor} ❯ #{sess.id} #{Formatter.reset()}#{Formatter.yellow()}[#{ts}]#{Formatter.reset()} #{Formatter.cyan()}[#{model}] #{msg_cnt} msgs (#{size_kb} KB) - \"#{preview}\"#{Formatter.reset()}"
+        "#{theme.bold_cursor} ❯ #{Formatter.green()}#{proj_col}#{Formatter.reset()}  #{theme.bold_cursor}#{id_col}#{Formatter.reset()}  #{Formatter.yellow()}#{ts_col}#{Formatter.reset()}  #{Formatter.cyan()}#{model_col}  #{msgs_col}  #{size_col}  \"#{preview}\"#{Formatter.reset()}"
       else
-        "   #{sess.id} #{Formatter.dim()}[#{ts}] [#{model}] #{msg_cnt} msgs (#{size_kb} KB) - \"#{preview}\"#{Formatter.reset()}"
+        "   #{Formatter.cyan()}#{proj_col}#{Formatter.reset()}  #{id_col}  #{Formatter.dim()}#{ts_col}  #{model_col}  #{msgs_col}  #{size_col}  \"#{preview}\"#{Formatter.reset()}"
       end
 
     format_box_row(content, cols, theme.border)
@@ -1849,6 +2009,19 @@ defmodule Yoke.CLI.ConfigExplorer do
     format_box_row(content, cols, theme.border)
   end
 
+  defp pad_col(str, width) when is_binary(str) and is_integer(width) and width > 1 do
+    safe = Formatter.sanitize_utf8(str)
+    len = String.length(safe)
+
+    cond do
+      len == width -> safe
+      len < width -> safe <> String.duplicate(" ", width - len)
+      true -> String.slice(safe, 0, width - 1) <> "…"
+    end
+  end
+
+  defp pad_col(other, width), do: pad_col(to_string(other || ""), width)
+
   # ---------------------------------------------------------------------
   # Expandable Detail Viewport Renderer
   # ---------------------------------------------------------------------
@@ -1937,6 +2110,7 @@ defmodule Yoke.CLI.ConfigExplorer do
 
     header = [
       "Session ID:   #{sess.id}",
+      "Project:      #{Map.get(sess, :project, "unknown")}",
       "File Path:    #{sess.path}",
       "File Size:    #{sess.size} bytes",
       "Model:        #{Map.get(sess, :model, "deepseek-flash")}",
@@ -2423,6 +2597,11 @@ defmodule Yoke.CLI.ConfigExplorer do
       {:char, ?p} ->
         if can_page_sessions?(state, :prev),
           do: tui_loop(page_sessions(state, :prev), input),
+          else: tui_loop(state, input)
+
+      {:char, c} when c in [?s, ?S] ->
+        if state.active_tab == :sessions and state.view_mode == :list,
+          do: tui_loop(toggle_show_all_sessions(state), input),
           else: tui_loop(state, input)
 
       :home ->

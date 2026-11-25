@@ -24,46 +24,69 @@ defmodule Yoke.Brain.SessionStore do
 
   @doc "Saves session state and snapshots to disk as an `.lmml` narrative or `.lmmlz` zipped container."
   def save_session(session_state, cwd \\ ".") do
-    session_state = sanitize_session_state(session_state)
+    session_state =
+      session_state
+      |> sanitize_session_state()
+      |> ensure_session_cwd(cwd)
+
     session_id = session_state.session_id
     dir = session_dir(cwd)
     images = Map.get(session_state, :images) || Map.get(session_state, "images") || %{}
 
-    if is_map(images) and map_size(images) > 0 do
-      lmmlz_path = Path.join(dir, "#{session_id}.lmmlz")
-      lmml_path = Path.join(dir, "#{session_id}.lmml")
+    result =
+      if is_map(images) and map_size(images) > 0 do
+        lmmlz_path = Path.join(dir, "#{session_id}.lmmlz")
+        lmml_path = Path.join(dir, "#{session_id}.lmml")
 
-      with :ok <- File.mkdir_p(dir),
-           {:ok, narrative} <- SessionLmml.encode(session_state, session_id),
-           {:ok, bundle} <- Lmml.Bundle.new_zip("#{session_id}.lmml", narrative, images),
-           :ok <- Lmml.Bundle.write!(bundle, lmmlz_path) do
-        if File.exists?(lmml_path), do: File.rm(lmml_path)
-        {:ok, lmmlz_path}
+        with :ok <- File.mkdir_p(dir),
+             {:ok, narrative} <- SessionLmml.encode(session_state, session_id),
+             {:ok, bundle} <- Lmml.Bundle.new_zip("#{session_id}.lmml", narrative, images),
+             :ok <- Lmml.Bundle.write!(bundle, lmmlz_path) do
+          if File.exists?(lmml_path), do: File.rm(lmml_path)
+          {:ok, lmmlz_path}
+        else
+          err ->
+            Logger.error(
+              "[SessionStore] Failed to save zipped session '#{session_id}': #{format_error(err)}"
+            )
+
+            fallback_save(session_state, dir, session_id, err)
+        end
       else
-        err ->
-          Logger.error(
-            "[SessionStore] Failed to save zipped session '#{session_id}': #{format_error(err)}"
-          )
+        file_path = Path.join(dir, "#{session_id}.lmml")
 
-          fallback_save(session_state, dir, session_id, err)
+        with :ok <- File.mkdir_p(dir),
+             {:ok, narrative} <- SessionLmml.encode(session_state, session_id),
+             :ok <- File.write(file_path, narrative) do
+          {:ok, file_path}
+        else
+          err ->
+            Logger.error(
+              "[SessionStore] Failed to save session '#{session_id}': #{format_error(err)}"
+            )
+
+            fallback_save(session_state, dir, session_id, err)
+        end
       end
+
+    if match?({:ok, _}, result) do
+      register_project_dir(cwd)
+    end
+
+    result
+  end
+
+  defp ensure_session_cwd(session_state, cwd) when is_map(session_state) do
+    existing = Map.get(session_state, :cwd) || Map.get(session_state, "cwd")
+
+    if is_binary(existing) and existing != "" do
+      session_state
     else
-      file_path = Path.join(dir, "#{session_id}.lmml")
-
-      with :ok <- File.mkdir_p(dir),
-           {:ok, narrative} <- SessionLmml.encode(session_state, session_id),
-           :ok <- File.write(file_path, narrative) do
-        {:ok, file_path}
-      else
-        err ->
-          Logger.error(
-            "[SessionStore] Failed to save session '#{session_id}': #{format_error(err)}"
-          )
-
-          fallback_save(session_state, dir, session_id, err)
-      end
+      Map.put(session_state, :cwd, Path.expand(cwd))
     end
   end
+
+  defp ensure_session_cwd(other, _cwd), do: other
 
   defp metadata_file_timestamp(path) do
     case File.stat(path) do
@@ -855,5 +878,75 @@ defmodule Yoke.Brain.SessionStore do
 
   def session_dir(cwd \\ ".") do
     Path.join(cwd, ".yoke/sessions")
+  end
+
+  @doc """
+  Records a project directory in the user's known projects registry
+  (`~/.yoke/projects.json`) so `/explorer`'s "Show All" mode can discover
+  conversations across projects.
+
+  Skips writing to `$HOME` during `:test` unless `:registry_path` is explicitly
+  supplied (or configured via `:projects_registry_path`).
+  """
+  def register_project_dir(cwd, opts \\ []) when is_binary(cwd) do
+    explicit_path =
+      Keyword.get(opts, :registry_path) || Application.get_env(:yoke, :projects_registry_path)
+
+    in_test? = function_exported?(Mix, :env, 0) and Mix.env() == :test
+
+    if is_nil(explicit_path) and in_test? do
+      :ok
+    else
+      expanded = Path.expand(cwd)
+      tmp_dir = Path.expand(System.tmp_dir!())
+
+      if is_nil(explicit_path) and
+           (expanded == tmp_dir or String.starts_with?(expanded, tmp_dir <> "/")) do
+        :ok
+      else
+        registry_path = explicit_path || Path.expand("~/.yoke/projects.json")
+        existing = known_project_dirs(registry_path: registry_path)
+
+        if expanded in existing do
+          :ok
+        else
+          updated = [expanded | existing] |> Enum.uniq()
+
+          with :ok <- File.mkdir_p(Path.dirname(registry_path)),
+               {:ok, json} <- Yoke.Json.encode(updated, pretty: true),
+               :ok <- File.write(registry_path, json) do
+            :ok
+          else
+            _ -> :ok
+          end
+        end
+      end
+    end
+  rescue
+    _ -> :ok
+  end
+
+  @doc """
+  Returns the list of known project root directories recorded in the projects
+  registry (`~/.yoke/projects.json`) that still exist on disk.
+  """
+  def known_project_dirs(opts \\ []) do
+    registry_path =
+      Keyword.get(opts, :registry_path) ||
+        Application.get_env(:yoke, :projects_registry_path) ||
+        Path.expand("~/.yoke/projects.json")
+
+    with {:ok, content} <- File.read(registry_path),
+         {:ok, paths} when is_list(paths) <- Yoke.Json.decode(content) do
+      paths
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&Path.expand/1)
+      |> Enum.uniq()
+      |> Enum.filter(&File.dir?/1)
+    else
+      _ -> []
+    end
+  rescue
+    _ -> []
   end
 end

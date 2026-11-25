@@ -14,7 +14,7 @@ defmodule Yoke.Brain.SessionMetadata do
   def from_state(state, session_id, updated_at) do
     messages = Map.get(state, :messages, [])
 
-    %{
+    base = %{
       "schema_version" => 1,
       "session_id" => session_id,
       "model" => Map.get(state, :model, "deepseek-flash"),
@@ -23,7 +23,46 @@ defmodule Yoke.Brain.SessionMetadata do
       "message_count" => length(messages),
       "title" => SessionStore.extract_first_user_message(messages)
     }
+
+    maybe_put_project(base, state)
   end
+
+  defp maybe_put_project(record, state) do
+    cwd = Map.get(state, :cwd) || Map.get(state, "cwd")
+    explicit_project = Map.get(state, :project) || Map.get(state, "project")
+
+    record =
+      if is_binary(cwd) and cwd != "" do
+        expanded = Path.expand(cwd)
+        project = explicit_project || project_name_for_cwd(expanded)
+
+        record
+        |> Map.put("cwd", expanded)
+        |> Map.put("project", project)
+      else
+        if is_binary(explicit_project) and explicit_project != "" do
+          Map.put(record, "project", explicit_project)
+        else
+          record
+        end
+      end
+
+    record
+  end
+
+  @doc "Derives a human-readable project label from a working directory path."
+  def project_name_for_cwd(cwd) when is_binary(cwd) do
+    expanded = Path.expand(cwd)
+    home = Path.expand("~")
+
+    cond do
+      expanded == home -> "global"
+      expanded == "/" -> "/"
+      true -> Path.basename(expanded)
+    end
+  end
+
+  def project_name_for_cwd(_), do: "unknown"
 
   @doc "Reads an LMML, LMMLZ, or legacy JSON session without restoring it."
   def read(path) do
@@ -137,7 +176,9 @@ defmodule Yoke.Brain.SessionMetadata do
            "model",
            "step_count",
            "updated_at",
-           "title"
+           "title",
+           "project",
+           "cwd"
          ])}
 
       _ ->

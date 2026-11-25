@@ -41,6 +41,10 @@ defmodule Yoke.Brain.SessionMetadataTest do
     assert %{title: "Find the bottleneck", message_count: 3, step_count: 7} =
              SessionStore.load_session_metadata("metadata", cwd)
 
+    assert {:ok, %{"project" => project, "cwd" => saved_cwd}} = SessionMetadata.read(path)
+    assert saved_cwd == Path.expand(cwd)
+    assert project == Path.basename(Path.expand(cwd))
+
     updated = %{
       original
       | messages: original.messages ++ [%{"role" => "user", "content" => "Next"}]

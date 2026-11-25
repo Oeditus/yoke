@@ -347,7 +347,7 @@ defmodule Yoke.Brain.SessionLmml do
   # ---------------------------------------------------------------------
 
   defp build_manifest(session_state, session_id) do
-    %{
+    base = %{
       "session_id" => session_id,
       "provider_options" =>
         session_state |> Map.get(:provider_options, []) |> Yoke.Provider.public_options(),
@@ -360,6 +360,18 @@ defmodule Yoke.Brain.SessionLmml do
       "updated_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
       "snapshots" => serialize_snapshots(Map.get(session_state, :snapshots, []))
     }
+
+    case Map.get(session_state, :cwd) || Map.get(session_state, "cwd") do
+      cwd when is_binary(cwd) and cwd != "" ->
+        expanded = Path.expand(cwd)
+
+        base
+        |> Map.put("cwd", expanded)
+        |> Map.put("project", Yoke.Brain.SessionMetadata.project_name_for_cwd(expanded))
+
+      _ ->
+        base
+    end
   end
 
   defp serialize_snapshots(snapshots) when is_list(snapshots) do
@@ -417,6 +429,18 @@ defmodule Yoke.Brain.SessionLmml do
       "updated_at" => Map.get(data, "updated_at"),
       "snapshots" => Map.get(data, "snapshots", [])
     }
+
+    base =
+      case Map.get(data, "cwd") do
+        cwd when is_binary(cwd) and cwd != "" -> Map.put(base, "cwd", cwd)
+        _ -> base
+      end
+
+    base =
+      case Map.get(data, "project") do
+        project when is_binary(project) and project != "" -> Map.put(base, "project", project)
+        _ -> base
+      end
 
     case Map.get(data, "messages") do
       msgs when is_list(msgs) -> Map.put(base, "messages", msgs)
