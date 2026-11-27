@@ -390,6 +390,86 @@ defmodule Yoke.MCPServerManagerTest do
              :sys.get_state(pid)
   end
 
+  test "skips auto-SCIP on warm incremental restarts but preserves it on cold starts and force_refresh" do
+    tmp_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "yoke_ragex_warm_scip_#{System.unique_integer([:positive])}"
+      )
+
+    lib_dir = Path.join(tmp_dir, "lib")
+    File.mkdir_p!(lib_dir)
+
+    source_file = Path.join(lib_dir, "sample.ex")
+
+    File.write!(source_file, """
+    defmodule YokeWarmScipTest.Sample do
+      def ping, do: :pong
+    end
+    """)
+
+    previous_scip = Application.fetch_env(:ragex, :enable_auto_scip)
+    Application.put_env(:ragex, :enable_auto_scip, true)
+
+    on_exit(fn ->
+      case previous_scip do
+        {:ok, value} -> Application.put_env(:ragex, :enable_auto_scip, value)
+        :error -> Application.delete_env(:ragex, :enable_auto_scip)
+      end
+
+      File.rm_rf(tmp_dir)
+    end)
+
+    caller = self()
+
+    observer = fn dir, opts ->
+      send(caller, {:auto_scip_during_analysis, Application.get_env(:ragex, :enable_auto_scip)})
+      Ragex.Analyzers.Directory.analyze_directory(dir, opts)
+    end
+
+    # Cold start (empty store): auto-SCIP remains enabled.
+    assert {:ok, ^tmp_dir, _tools} =
+             MCPServerManager.start_ragex(
+               target_dir: tmp_dir,
+               watch: false,
+               notify: false,
+               generate_embeddings: false,
+               directory_analyzer: observer
+             )
+
+    assert_receive {:auto_scip_during_analysis, true}
+    assert Application.get_env(:ragex, :enable_auto_scip) == true
+    Ragex.Graph.Store.sync()
+    assert Ragex.Graph.Store.stats().nodes > 0
+
+    # Warm incremental restart: auto-SCIP is suppressed during analysis and restored afterward.
+    assert {:ok, ^tmp_dir, _tools} =
+             MCPServerManager.start_ragex(
+               target_dir: tmp_dir,
+               watch: false,
+               notify: false,
+               generate_embeddings: false,
+               directory_analyzer: observer
+             )
+
+    assert_receive {:auto_scip_during_analysis, false}
+    assert Application.get_env(:ragex, :enable_auto_scip) == true
+
+    # Explicit force_refresh (e.g. /ragex reindex): auto-SCIP remains enabled.
+    assert {:ok, ^tmp_dir, _tools} =
+             MCPServerManager.start_ragex(
+               target_dir: tmp_dir,
+               watch: false,
+               notify: false,
+               force_refresh: true,
+               generate_embeddings: false,
+               directory_analyzer: observer
+             )
+
+    assert_receive {:auto_scip_during_analysis, true}
+    assert Application.get_env(:ragex, :enable_auto_scip) == true
+  end
+
   test "formats validation errors with dynamic language (JS/TS support)" do
     err_atom = %{
       type: :validation_error,

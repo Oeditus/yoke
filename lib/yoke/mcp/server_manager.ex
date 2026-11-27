@@ -496,7 +496,7 @@ defmodule Yoke.MCP.ServerManager do
         try do
           stale_snapshot = snapshot_stale_tracking()
 
-          case analyze_ragex_directory(target_dir, opts) do
+          case analyze_ragex_directory(target_dir, opts, existing_nodes) do
             {:ok, :sync_recovered} ->
               prune_stale_tracked_entities(target_dir, stale_snapshot)
               Logger.configure(level: orig_level)
@@ -552,7 +552,7 @@ defmodule Yoke.MCP.ServerManager do
     {:ok, target_dir, registered_names}
   end
 
-  defp analyze_ragex_directory(target_dir, opts) do
+  defp analyze_ragex_directory(target_dir, opts, existing_nodes) do
     analyze_opts =
       if is_list(opts) do
         Keyword.take(opts, [
@@ -578,7 +578,21 @@ defmodule Yoke.MCP.ServerManager do
       end
 
     # The store is already loaded before taking the stale-entity snapshot.
-    analyzer.(target_dir, Keyword.put(analyze_opts, :load_project, false))
+    # Ragex's `analyze_directory/2` runs `auto_index_scip/2` unconditionally on
+    # every invocation before checking FileTracker hashes, which re-runs whole-
+    # workspace SCIP indexers (e.g. `rust-analyzer scip .`), re-ingests every
+    # symbol unbatched, and blocks cache persistence for minutes even when zero
+    # files changed. Suppress auto-SCIP on warm incremental starts while still
+    # allowing it on cold starts (empty graph) and explicit full reindexes.
+    run_analysis = fn ->
+      analyzer.(target_dir, Keyword.put(analyze_opts, :load_project, false))
+    end
+
+    if warm_incremental_run?(opts, existing_nodes) do
+      with_auto_scip_disabled(run_analysis)
+    else
+      run_analysis.()
+    end
   rescue
     e ->
       {:error, Exception.message(e)}
@@ -588,6 +602,26 @@ defmodule Yoke.MCP.ServerManager do
 
     :exit, reason ->
       {:error, {:exit, reason}}
+  end
+
+  defp warm_incremental_run?(opts, existing_nodes) do
+    existing_nodes > 0 and
+      (not is_list(opts) or
+         (Keyword.get(opts, :incremental, true) and not Keyword.get(opts, :force_refresh, false)))
+  end
+
+  defp with_auto_scip_disabled(fun) do
+    previous = Application.fetch_env(:ragex, :enable_auto_scip)
+    Application.put_env(:ragex, :enable_auto_scip, false)
+
+    try do
+      fun.()
+    after
+      case previous do
+        {:ok, value} -> Application.put_env(:ragex, :enable_auto_scip, value)
+        :error -> Application.delete_env(:ragex, :enable_auto_scip)
+      end
+    end
   end
 
   defp finish_ragex_store_sync(target_dir) do
