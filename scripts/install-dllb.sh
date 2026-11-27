@@ -14,7 +14,7 @@
 # Used by `action.yml`, and usable standalone:
 #
 #   ./scripts/install-dllb.sh                    # latest release
-#   DLLB_VERSION=v1.0.2 ./scripts/install-dllb.sh
+#   DLLB_VERSION=v1.2.0 ./scripts/install-dllb.sh
 #   DLLB_INSTALL_DIR=/usr/local/bin ./scripts/install-dllb.sh
 #
 # Design constraints (same as scripts/install.sh):

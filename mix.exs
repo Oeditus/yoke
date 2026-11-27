@@ -8,7 +8,7 @@ defmodule Yoke.MixProject do
   def project do
     [
       app: :yoke,
-      version: "0.32.0",
+      version: "0.33.0",
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
@@ -89,7 +89,7 @@ defmodule Yoke.MixProject do
       {:typle, "~> 0.5"},
       {:lfe, "~> 2.2"},
       ragex_dep(),
-      {:dllb, "~> 0.9"},
+      {:dllb, "~> 0.10"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:oeditus_credo, "~> 0.11", only: [:dev, :test], runtime: false},

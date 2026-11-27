@@ -75,7 +75,7 @@ inputs:
     default: 'false'
   dllb-version:
     description: >
-      dllb-server release tag to install, e.g. v1.0.2. Defaults to the latest
+      dllb-server release tag to install, e.g. v1.2.0. Defaults to the latest
       release, refreshed daily when cached. Set to 'skip' to install nothing.
     required: false
     default: ''
