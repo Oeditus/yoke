@@ -573,7 +573,7 @@ defmodule Yoke.Plugin.DefaultTools do
   end
 
   def execute_bash(%{"command" => cmd} = args) do
-    cwd = Map.get(args, "_session_cwd", File.cwd!())
+    cwd = Map.get(args, "_session_cwd") || File.cwd!()
     session_id = Map.get(args, "_session_id")
     is_async = Map.get(args, "async", false)
 
@@ -1003,7 +1003,7 @@ defmodule Yoke.Plugin.DefaultTools do
     sub_id = "sub_#{System.unique_integer([:positive])}"
     parent_session_id = Map.get(args, "_session_id")
     model = Map.get(args, "_session_model")
-    cwd = Map.get(args, "_session_cwd", ".")
+    cwd = Map.get(args, "_session_cwd") || "."
 
     Task.start(fn ->
       result = run_subagent_turn(sub_id, model, cwd, prompt, parent_provider_options(args))
@@ -1017,7 +1017,7 @@ defmodule Yoke.Plugin.DefaultTools do
   defp spawn_subagent_sync(args, prompt) do
     sub_id = "sub_#{System.unique_integer([:positive])}"
     model = Map.get(args, "_session_model")
-    cwd = Map.get(args, "_session_cwd", ".")
+    cwd = Map.get(args, "_session_cwd") || "."
 
     case run_subagent_turn(sub_id, model, cwd, prompt, parent_provider_options(args)) do
       {:ok, %{content: content}} -> {:ok, content}
@@ -1147,7 +1147,7 @@ defmodule Yoke.Plugin.DefaultTools do
   def linter_tool(%{"args" => args} = tool_args) do
     case Yoke.Linter.run(
            args,
-           Map.get(tool_args, "_session_cwd", "."),
+           Map.get(tool_args, "_session_cwd") || ".",
            parent_provider_options(tool_args)
          ) do
       {:ok, out} -> {:ok, out}

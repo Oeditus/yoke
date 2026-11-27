@@ -292,7 +292,7 @@ defmodule Yoke.Config do
   @doc "Loads combined configuration (global + workspace override)."
   def load_config(cwd \\ ".") do
     global_cfg = read_json_config(global_config_path())
-    local_cfg = read_json_config(local_config_path(cwd))
+    local_cfg = read_json_config(local_config_path(cwd || "."))
 
     merged_cfg = Map.merge(global_cfg, local_cfg)
 
