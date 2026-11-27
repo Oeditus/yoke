@@ -79,9 +79,11 @@ defmodule Yoke.BashTracker do
       reason: "Use list_dir or mcp_ragex_structure for project hierarchy"
     },
     "sed" => %{
-      analog: "replace_file / mcp_ragex_edit_file",
+      analog:
+        "read_file (with start_line/end_line) / mcp_ragex_view / replace_file / mcp_ragex_edit_file",
       category: :file_edit,
-      reason: "Use replace_file or mcp_ragex_edit_file for deterministic file editing"
+      reason:
+        "Use read_file (with start_line/end_line) or mcp_ragex_view for reading line ranges, and replace_file or mcp_ragex_edit_file for editing"
     },
     "awk" => %{
       analog: "replace_file / mcp_ragex_edit_file / read_file",
@@ -281,12 +283,25 @@ defmodule Yoke.BashTracker do
     end
   end
 
+  # Shell commands that are hard-blocked when invoked as the leading command of
+  # a bash tool call (including after `cd <dir> &&`), because Ragex MCP tools
+  # and dedicated Yoke file/search tools are strictly superior.
+  #
+  # Note: when one of these appears *downstream* in a pipe from a legitimate
+  # build/test command (e.g. `mix test 2>&1 | tail -n 30` or
+  # `mix compile 2>&1 | grep -i warning`), it is filtering command output rather
+  # than exploring source files, so `check_bash_policy/2` allows it.
+  @blocked_shell_analogs ~w(
+    sed awk cat head tail more less grep rg ag find locate ls tree wc ctags cscope
+  )
+
   @doc "Normalizes a raw command string to identify the root executable or compound command."
   def normalize_command(cmd) when is_binary(cmd) do
     trimmed = String.trim(cmd)
+    {_cd_dir, effective_cmd} = strip_leading_cd(trimmed)
 
     stripped =
-      trimmed
+      effective_cmd
       |> strip_leading_env_vars()
       |> strip_wrappers()
 
@@ -318,11 +333,70 @@ defmodule Yoke.BashTracker do
     end
   end
 
+  @doc """
+  Evaluates a bash command against the tool-analog enforcement policy.
+
+  Splits the command into top-level chain segments (`&&`, `||`, `;` outside
+  quotes), tracks any `cd <dir>` prefix, and inspects the *first* pipeline
+  stage of each non-`cd` segment. If that leading executable is in
+  `@blocked_shell_analogs` (`sed`, `awk`, `cat`, `head`, `tail`, `grep`, `rg`,
+  `ag`, `find`, `ls`, `tree`, `wc`, etc.), returns `{:block, info}` with an
+  actionable error message pointing to the exact Ragex / dedicated tool analog.
+
+  Legitimate build/test pipelines such as `mix test 2>&1 | tail -n 30` or
+  `cd /proj && mix compile | grep -i warning` return `:allow` because the
+  leading pipeline stage is `mix`, not a blocked file-exploration command.
+  """
+  @spec check_bash_policy(String.t(), keyword()) :: :allow | {:block, map()}
+  def check_bash_policy(cmd, opts \\ [])
+
+  def check_bash_policy(cmd, opts) when is_binary(cmd) do
+    cwd = Keyword.get(opts, :cwd)
+    segments = split_shell_chain(cmd)
+
+    segments
+    |> Enum.reduce_while({:allow, cwd}, fn seg, {:allow, current_dir} ->
+      trimmed = String.trim(seg)
+
+      case parse_cd_segment(trimmed) do
+        {:cd, target_dir} ->
+          resolved = resolve_cd_dir(target_dir, current_dir)
+          {:cont, {:allow, resolved}}
+
+        :not_cd ->
+          first_stage = first_pipeline_stage(trimmed)
+          {base_bin, _compound} = normalize_single_stage(first_stage)
+
+          if base_bin in @blocked_shell_analogs do
+            info = build_block_info(base_bin, first_stage, current_dir)
+            {:halt, {:block, info}}
+          else
+            {:cont, {:allow, current_dir}}
+          end
+      end
+    end)
+    |> case do
+      {:allow, _dir} -> :allow
+      {:block, info} -> {:block, info}
+    end
+  end
+
+  def check_bash_policy(_, _), do: :allow
+
   @doc "Returns suggested analog information for a command if it is ineffective."
   def suggest_analog(cmd) when is_binary(cmd) do
     {base_bin, compound} = normalize_command(cmd)
 
     cond do
+      base_bin == "sed" and sed_read_only?(cmd) ->
+        {:ok,
+         %{
+           analog: "read_file (with start_line/end_line) / mcp_ragex_view / mcp_ragex_read_file",
+           category: :file_read,
+           reason:
+             "Use read_file (with start_line/end_line) or Ragex mcp_ragex_view / mcp_ragex_read_file instead of `sed -n` for reading file line ranges"
+         }}
+
       Map.has_key?(@analogs, compound) ->
         {:ok, Map.get(@analogs, compound)}
 
@@ -657,6 +731,205 @@ defmodule Yoke.BashTracker do
 
       #{dim}Use `/bash export` to dump full analytics JSON to .yoke/exports/.#{reset}
       """
+    end
+  end
+
+  defp strip_leading_cd(cmd) do
+    case split_shell_chain(cmd) do
+      [first | rest] when rest != [] ->
+        case parse_cd_segment(String.trim(first)) do
+          {:cd, dir} ->
+            {dir, Enum.join(rest, " && ") |> String.trim()}
+
+          :not_cd ->
+            {nil, cmd}
+        end
+
+      _ ->
+        {nil, cmd}
+    end
+  end
+
+  defp parse_cd_segment(seg) do
+    case Regex.run(~r/^cd(?:\s+(.+))?$/, seg) do
+      [_, dir] -> {:cd, dir |> String.trim() |> unquote_shell_token()}
+      [_] -> {:cd, "~"}
+      nil -> :not_cd
+    end
+  end
+
+  defp resolve_cd_dir("~", _cwd), do: System.user_home() || "~"
+
+  defp resolve_cd_dir(target, cwd) when is_binary(target) do
+    if Path.type(target) == :absolute do
+      target
+    else
+      Path.expand(target, cwd || File.cwd!())
+    end
+  end
+
+  defp unquote_shell_token(str) do
+    cond do
+      String.starts_with?(str, "'") and String.ends_with?(str, "'") and byte_size(str) >= 2 ->
+        String.slice(str, 1..-2//1)
+
+      String.starts_with?(str, "\"") and String.ends_with?(str, "\"") and byte_size(str) >= 2 ->
+        String.slice(str, 1..-2//1)
+
+      true ->
+        str
+    end
+  end
+
+  defp normalize_single_stage(stage) do
+    stripped =
+      stage
+      |> String.trim()
+      |> strip_leading_env_vars()
+      |> strip_wrappers()
+
+    case String.split(stripped, ~r/\s+/, trim: true) do
+      [] -> {"", ""}
+      [bin | _] -> {Path.basename(bin), Path.basename(bin)}
+    end
+  end
+
+  # Splits a shell command on top-level `&&`, `||`, and `;` operators outside quotes.
+  defp split_shell_chain(cmd) when is_binary(cmd) do
+    do_split_shell_chain(cmd, nil, false, [], [])
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp do_split_shell_chain(<<>>, _quote, _esc, current, acc) do
+    Enum.reverse([IO.iodata_to_binary(Enum.reverse(current)) | acc])
+  end
+
+  defp do_split_shell_chain(<<?\\, ch::utf8, rest::binary>>, q, false, current, acc)
+       when q != ?' do
+    do_split_shell_chain(rest, q, false, [<<ch::utf8>>, "\\" | current], acc)
+  end
+
+  defp do_split_shell_chain(<<q, rest::binary>>, nil, false, current, acc)
+       when q in [?', ?"] do
+    do_split_shell_chain(rest, q, false, [<<q>> | current], acc)
+  end
+
+  defp do_split_shell_chain(<<q, rest::binary>>, q, false, current, acc)
+       when q in [?', ?"] do
+    do_split_shell_chain(rest, nil, false, [<<q>> | current], acc)
+  end
+
+  defp do_split_shell_chain(<<"&&", rest::binary>>, nil, false, current, acc) do
+    seg = IO.iodata_to_binary(Enum.reverse(current))
+    do_split_shell_chain(rest, nil, false, [], [seg | acc])
+  end
+
+  defp do_split_shell_chain(<<"||", rest::binary>>, nil, false, current, acc) do
+    seg = IO.iodata_to_binary(Enum.reverse(current))
+    do_split_shell_chain(rest, nil, false, [], [seg | acc])
+  end
+
+  defp do_split_shell_chain(<<?;, rest::binary>>, nil, false, current, acc) do
+    seg = IO.iodata_to_binary(Enum.reverse(current))
+    do_split_shell_chain(rest, nil, false, [], [seg | acc])
+  end
+
+  defp do_split_shell_chain(<<ch::utf8, rest::binary>>, q, _esc, current, acc) do
+    do_split_shell_chain(rest, q, false, [<<ch::utf8>> | current], acc)
+  end
+
+  # Extracts the first pipeline stage (everything before the first unquoted `|`).
+  defp first_pipeline_stage(seg) when is_binary(seg) do
+    do_first_pipeline_stage(seg, nil, [])
+    |> String.trim()
+  end
+
+  defp do_first_pipeline_stage(<<>>, _q, acc), do: IO.iodata_to_binary(Enum.reverse(acc))
+
+  defp do_first_pipeline_stage(<<?\\, ch::utf8, rest::binary>>, q, acc) when q != ?' do
+    do_first_pipeline_stage(rest, q, [<<ch::utf8>>, "\\" | acc])
+  end
+
+  defp do_first_pipeline_stage(<<q, rest::binary>>, nil, acc) when q in [?', ?"] do
+    do_first_pipeline_stage(rest, q, [<<q>> | acc])
+  end
+
+  defp do_first_pipeline_stage(<<q, rest::binary>>, q, acc) when q in [?', ?"] do
+    do_first_pipeline_stage(rest, nil, [<<q>> | acc])
+  end
+
+  defp do_first_pipeline_stage(<<?|, _rest::binary>>, nil, acc) do
+    IO.iodata_to_binary(Enum.reverse(acc))
+  end
+
+  defp do_first_pipeline_stage(<<ch::utf8, rest::binary>>, q, acc) do
+    do_first_pipeline_stage(rest, q, [<<ch::utf8>> | acc])
+  end
+
+  defp sed_read_only?(cmd) when is_binary(cmd) do
+    Regex.match?(~r/\bsed\b/, cmd) and not Regex.match?(~r/\bsed\b[^|;&]*\s-i\b/, cmd)
+  end
+
+  defp build_block_info(base_bin, stage, current_dir) do
+    analog_entry =
+      if base_bin == "sed" and sed_read_only?(stage) do
+        %{
+          analog: "read_file (with start_line/end_line) / mcp_ragex_view / mcp_ragex_read_file",
+          category: :file_read,
+          reason:
+            "Use read_file (with start_line/end_line) or Ragex mcp_ragex_view / mcp_ragex_read_file to inspect line ranges instead of `sed`"
+        }
+      else
+        Map.get(@analogs, base_bin, %{
+          analog: "dedicated Yoke / Ragex MCP tool",
+          category: :shell_analog,
+          reason: "Use dedicated file/search or Ragex MCP tools instead of raw bash"
+        })
+      end
+
+    concrete_hint =
+      if base_bin == "sed" and sed_read_only?(stage) do
+        extract_sed_range_hint(stage, current_dir)
+      else
+        nil
+      end
+
+    hint_suffix = if concrete_hint, do: " Suggested call: #{concrete_hint}.", else: ""
+
+    message =
+      "[Bash Guard] Refused shell command '#{base_bin}': #{analog_entry.reason}. " <>
+        "Use #{analog_entry.analog} instead.#{hint_suffix}"
+
+    %{
+      command: base_bin,
+      analog: analog_entry.analog,
+      category: analog_entry.category,
+      reason: analog_entry.reason,
+      hint: concrete_hint,
+      message: message
+    }
+  end
+
+  defp extract_sed_range_hint(stage, current_dir) do
+    case Regex.run(
+           ~r/\bsed\b[^|;&]*?['"]?(\d+)\s*,\s*(\d+)p['"]?\s+([^\s|;&]+)/,
+           stage
+         ) do
+      [_, start_s, end_s, raw_path] ->
+        clean_path = unquote_shell_token(raw_path)
+
+        resolved_path =
+          if is_binary(current_dir) and current_dir != "" and Path.type(clean_path) != :absolute do
+            Path.join(current_dir, clean_path)
+          else
+            clean_path
+          end
+
+        "read_file(path: #{inspect(resolved_path)}, start_line: #{start_s}, end_line: #{end_s}) or mcp_ragex_view"
+
+      _ ->
+        nil
     end
   end
 

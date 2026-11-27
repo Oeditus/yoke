@@ -69,6 +69,10 @@ defmodule Yoke.CLI.Repl do
       )
     )
 
+    if not is_nil(opts[:conversation] || opts[:resume]) do
+      print_conversation_tail(session_pid, session_id)
+    end
+
     history = LineEditor.load_history()
     loop(session_pid, session_id, history)
   end
@@ -2402,6 +2406,7 @@ defmodule Yoke.CLI.Repl do
       end
 
     IO.puts(Formatter.format_success("Switched active REPL session to '#{id}'"))
+    print_conversation_tail(new_pid, id)
     {:switch_session, id, new_pid}
   end
 
@@ -4054,6 +4059,191 @@ defmodule Yoke.CLI.Repl do
             run_console_command(cmd)
             console_loop(session_pid, session_id, updated_history)
         end
+    end
+  end
+
+  @default_resume_tail_messages 6
+
+  @doc """
+  Prints the tail of the active/resumed conversation to the terminal so the user
+  has immediate context before the next prompt appears.
+  """
+  def print_conversation_tail(session_pid, session_id, opts \\ []) do
+    messages =
+      case safe_get_session_messages(session_pid) do
+        {:ok, msgs} when is_list(msgs) and msgs != [] ->
+          msgs
+
+        _ ->
+          {msgs, _meta} = load_session_from_store(session_id)
+          msgs
+      end
+
+    case format_conversation_tail(messages, opts) do
+      nil ->
+        :ok
+
+      rendered ->
+        Formatter.safe_puts("\n" <> rendered <> "\n")
+        Formatter.flush()
+        :ok
+    end
+  end
+
+  @doc """
+  Formats the tail of a conversation's user/assistant messages for display on
+  session resume. Returns `nil` when there are no conversational messages.
+  """
+  def format_conversation_tail(messages, opts \\ [])
+
+  def format_conversation_tail(messages, opts) when is_list(messages) do
+    limit = Keyword.get(opts, :limit, @default_resume_tail_messages)
+
+    conversational =
+      messages
+      |> Enum.filter(&conversational_message?/1)
+      |> Enum.map(fn msg ->
+        {message_role(msg), extract_message_text(msg)}
+      end)
+      |> Enum.reject(fn {_role, text} -> String.trim(text) == "" end)
+
+    if conversational == [] do
+      nil
+    else
+      total = length(conversational)
+      tail_msgs = Enum.take(conversational, -limit)
+      shown = length(tail_msgs)
+      omitted = total - shown
+
+      dim = Formatter.dim()
+      reset = Formatter.reset()
+      green = Formatter.green()
+      cyan = Formatter.cyan()
+      bold = Formatter.bold()
+      assistant_name = Yoke.Config.assistant_name()
+
+      header_label =
+        if omitted > 0 do
+          "── Conversation tail (last #{shown} of #{total} messages; #{omitted} earlier omitted • /review_conversation for full) ──"
+        else
+          noun = if total == 1, do: "message", else: "messages"
+          "── Conversation tail (#{total} #{noun}) ──"
+        end
+
+      body =
+        tail_msgs
+        |> Enum.with_index()
+        |> Enum.map_join("\n\n", fn {{role, text}, idx} ->
+          is_last? = idx == shown - 1
+          max_lines = if is_last?, do: 30, else: 10
+          max_chars = if is_last?, do: 2_000, else: 600
+          trimmed_text = truncate_tail_message(text, max_lines, max_chars)
+
+          case role do
+            "user" ->
+              if String.contains?(trimmed_text, "\n") do
+                "#{green}#{bold}You:#{reset}\n#{trimmed_text}"
+              else
+                "#{green}#{bold}You:#{reset} #{trimmed_text}"
+              end
+
+            "assistant" ->
+              rendered_md =
+                trimmed_text
+                |> Formatter.format_markdown()
+                |> String.trim_trailing()
+
+              "#{cyan}#{bold}#{assistant_name}:#{reset}\n#{rendered_md}"
+
+            other ->
+              "#{bold}#{other}:#{reset} #{trimmed_text}"
+          end
+        end)
+
+      footer = String.duplicate("─", 76)
+
+      """
+      #{dim}#{header_label}#{reset}
+
+      #{body}
+
+      #{dim}#{footer}#{reset}
+      """
+      |> String.trim_trailing()
+    end
+  end
+
+  def format_conversation_tail(_, _), do: nil
+
+  defp safe_get_session_messages(pid) when is_pid(pid) do
+    if Process.alive?(pid) do
+      Session.get_messages(pid)
+    else
+      :error
+    end
+  rescue
+    _ -> :error
+  catch
+    :exit, _ -> :error
+  end
+
+  defp safe_get_session_messages(_), do: :error
+
+  defp conversational_message?(msg) when is_map(msg) do
+    message_role(msg) in ["user", "assistant"]
+  end
+
+  defp conversational_message?(_), do: false
+
+  defp message_role(msg) do
+    role = Map.get(msg, "role") || Map.get(msg, :role)
+    if is_atom(role) and not is_nil(role), do: Atom.to_string(role), else: role
+  end
+
+  defp extract_message_text(msg) do
+    content = Map.get(msg, "content") || Map.get(msg, :content) || ""
+
+    cond do
+      is_binary(content) ->
+        String.trim(content)
+
+      is_list(content) ->
+        content
+        |> Enum.map_join("\n", fn
+          %{"text" => t} when is_binary(t) -> t
+          %{text: t} when is_binary(t) -> t
+          other when is_binary(other) -> other
+          _ -> ""
+        end)
+        |> String.trim()
+
+      true ->
+        ""
+    end
+  end
+
+  defp truncate_tail_message(text, max_lines, max_chars) do
+    lines = String.split(text, ~r/\r?\n/)
+
+    {text_by_lines, lines_truncated?} =
+      if length(lines) > max_lines do
+        {lines |> Enum.take(max_lines) |> Enum.join("\n"), true}
+      else
+        {text, false}
+      end
+
+    {final_text, chars_truncated?} =
+      if String.length(text_by_lines) > max_chars do
+        {String.slice(text_by_lines, 0, max_chars), true}
+      else
+        {text_by_lines, false}
+      end
+
+    if lines_truncated? or chars_truncated? do
+      String.trim_trailing(final_text) <>
+        "\n#{Formatter.dim()}… (truncated; run /review_conversation for full message)#{Formatter.reset()}"
+    else
+      final_text
     end
   end
 

@@ -579,28 +579,45 @@ defmodule Yoke.Plugin.DefaultTools do
 
     Yoke.BashTracker.record(cmd, cwd: cwd, session_id: session_id, async: is_async)
 
-    if is_async do
-      # `start_job/2` either returns `{:ok, job_id, log_file}` or raises; any
-      # failure to spawn the job is turned into an error tuple by the
-      # function-level `rescue` below.
-      {:ok, job_id, log_file} =
-        Yoke.TaskEngine.JobManager.start_job(cmd, cwd: cwd, session_id: session_id)
-
-      {:ok,
-       "Started background job '#{job_id}' (log: #{log_file}) as an asynchronous OTP process. The job will record its completion in this session automatically. Continue with other work in this turn, check progress via job_status, or complete your turn so the user can continue once the job finishes."}
-    else
-      {env, exec_cmd} = Yoke.TaskEngine.JobManager.prepare_environment(cmd)
-
-      case System.cmd("sh", ["-c", exec_cmd], env: env, stderr_to_stdout: true) do
-        {output, 0} ->
-          {:ok, Yoke.Json.sanitize_utf8(output)}
-
-        {output, code} ->
-          {:ok, Yoke.Json.sanitize_utf8("Command exited with status #{code}:\n#{output}")}
+    policy_result =
+      if Yoke.Config.enforce_bash_analogs?(cwd) do
+        Yoke.BashTracker.check_bash_policy(cmd, cwd: cwd)
+      else
+        :allow
       end
+
+    case policy_result do
+      {:block, %{message: message}} ->
+        {:error, message}
+
+      :allow ->
+        run_bash_command(cmd, cwd, session_id, is_async)
     end
   rescue
     e -> {:error, "Execution exception: #{inspect(e)}"}
+  end
+
+  defp run_bash_command(cmd, cwd, session_id, true) do
+    # `start_job/2` either returns `{:ok, job_id, log_file}` or raises; any
+    # failure to spawn the job is turned into an error tuple by the
+    # caller's `rescue`.
+    {:ok, job_id, log_file} =
+      Yoke.TaskEngine.JobManager.start_job(cmd, cwd: cwd, session_id: session_id)
+
+    {:ok,
+     "Started background job '#{job_id}' (log: #{log_file}) as an asynchronous OTP process. The job will record its completion in this session automatically. Continue with other work in this turn, check progress via job_status, or complete your turn so the user can continue once the job finishes."}
+  end
+
+  defp run_bash_command(cmd, _cwd, _session_id, false) do
+    {env, exec_cmd} = Yoke.TaskEngine.JobManager.prepare_environment(cmd)
+
+    case System.cmd("sh", ["-c", exec_cmd], env: env, stderr_to_stdout: true) do
+      {output, 0} ->
+        {:ok, Yoke.Json.sanitize_utf8(output)}
+
+      {output, code} ->
+        {:ok, Yoke.Json.sanitize_utf8("Command exited with status #{code}:\n#{output}")}
+    end
   end
 
   def job_status_tool(%{"job_id" => job_id} = args) do

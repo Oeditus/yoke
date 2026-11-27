@@ -122,7 +122,12 @@ defmodule Yoke.Config do
     "review_poster_icon" => "\u{1FAA2}",
     # Run Elixir language plugins (oeditus_credo, propwise, credo) on diffs during
     # code reviews and project audits. Set to false (or pass --no-elixir-plugins) to opt out.
-    "elixir_plugins" => true
+    "elixir_plugins" => true,
+    # Hard-block raw shell commands that have dedicated Ragex / Yoke tool analogs
+    # (sed, awk, cat, head, tail, grep, rg, ag, find, ls, tree, wc, etc.) when invoked
+    # directly (or after `cd <dir> &&`) through the LLM `bash` tool. Legitimate build/test
+    # pipelines such as `mix test | tail -n 30` remain allowed. Set to false to opt out.
+    "enforce_bash_analogs" => true
   }
 
   @doc "Returns the configured project languages list or nil if auto-detection should be used."
@@ -262,6 +267,20 @@ defmodule Yoke.Config do
   @spec explicit_questions_enabled?(String.t()) :: boolean()
   def explicit_questions_enabled?(cwd \\ ".") do
     boolean_opt(load_config(cwd), "explicit_questions_enabled", true)
+  end
+
+  @doc """
+  Returns true when runtime enforcement of dedicated Ragex / Yoke tool analogs
+  over raw bash commands (`sed`, `cat`, `grep`, `find`, `ls`, etc.) is enabled.
+  Default: `true` (opt-out via `"enforce_bash_analogs": false` in config or
+  `Application.put_env(:yoke, :enforce_bash_analogs, false)`).
+  """
+  @spec enforce_bash_analogs?(String.t()) :: boolean()
+  def enforce_bash_analogs?(cwd \\ ".") do
+    case Application.get_env(:yoke, :enforce_bash_analogs) do
+      val when is_boolean(val) -> val
+      _ -> boolean_opt(load_config(cwd), "enforce_bash_analogs", true)
+    end
   end
 
   @doc "Returns the built-in default value for a configuration key."

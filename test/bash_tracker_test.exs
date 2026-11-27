@@ -161,4 +161,86 @@ defmodule Yoke.BashTrackerTest do
       assert BashTracker.stats(cwd: tmp_dir).total_calls == 1
     end
   end
+
+  describe "cd-prefixed normalization and check_bash_policy/2" do
+    test "normalize_command/1 unwraps leading cd && prefix" do
+      assert BashTracker.normalize_command(
+               "cd /home/am/Proyectos/cure-lang && sed -n '7868,7930p' lib/cure/compiler/parser.ex"
+             ) == {"sed", "sed"}
+
+      assert BashTracker.normalize_command("cd /tmp && mix test") == {"mix", "mix test"}
+    end
+
+    test "blocks sed -n with cd prefix and suggests exact read_file line range" do
+      cmd = "cd /home/am/Proyectos/cure-lang && sed -n '7868,7930p' lib/cure/compiler/parser.ex"
+
+      assert {:block, info} = BashTracker.check_bash_policy(cmd)
+      assert info.command == "sed"
+      assert info.category == :file_read
+      assert info.message =~ "[Bash Guard] Refused shell command 'sed'"
+      assert info.message =~ "read_file"
+      assert info.message =~ "/home/am/Proyectos/cure-lang/lib/cure/compiler/parser.ex"
+      assert info.message =~ "start_line: 7868"
+      assert info.message =~ "end_line: 7930"
+    end
+
+    test "blocks raw file-exploration commands (cat, grep, rg, find, ls, head, tail, awk)" do
+      for cmd <- [
+            "cat mix.exs",
+            "head -n 20 lib/yoke.ex",
+            "tail -n 20 lib/yoke.ex",
+            "grep -rn 'def ' lib/",
+            "rg 'foo|bar' lib/",
+            "find . -name '*.ex'",
+            "ls -la lib/",
+            "cd /proj && awk '{print $1}' mix.exs"
+          ] do
+        assert {:block, info} = BashTracker.check_bash_policy(cmd),
+               "expected #{inspect(cmd)} to be blocked"
+
+        assert info.message =~ "[Bash Guard]"
+      end
+    end
+
+    test "allows legitimate build/test commands including pipelines into grep/tail/head" do
+      for cmd <- [
+            "mix test",
+            "cd /home/am/Proyectos/cure-lang && mix test",
+            "mix test 2>&1 | tail -n 30",
+            "mix compile 2>&1 | grep -i warning",
+            "cargo build --release | head -n 50",
+            "git log -n 5 --oneline",
+            "echo 'hello'"
+          ] do
+        assert :allow == BashTracker.check_bash_policy(cmd),
+               "expected #{inspect(cmd)} to be allowed"
+      end
+    end
+
+    test "DefaultTools.execute_bash/1 enforces the guard by default and respects opt-out", %{
+      tmp_dir: tmp_dir
+    } do
+      cmd = "cd /home/am/Proyectos/cure-lang && sed -n '7868,7930p' lib/cure/compiler/parser.ex"
+
+      assert {:error, msg} =
+               Yoke.Plugin.DefaultTools.execute_bash(%{
+                 "command" => cmd,
+                 "_session_cwd" => tmp_dir
+               })
+
+      assert msg =~ "[Bash Guard] Refused shell command 'sed'"
+      assert msg =~ "start_line: 7868"
+
+      # Opt-out via application env allows execution (using a harmless command)
+      Application.put_env(:yoke, :enforce_bash_analogs, false)
+
+      on_exit(fn -> Application.delete_env(:yoke, :enforce_bash_analogs) end)
+
+      assert {:ok, _} =
+               Yoke.Plugin.DefaultTools.execute_bash(%{
+                 "command" => "ls #{tmp_dir}",
+                 "_session_cwd" => tmp_dir
+               })
+    end
+  end
 end

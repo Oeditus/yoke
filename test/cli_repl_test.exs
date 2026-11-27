@@ -556,6 +556,92 @@ defmodule Yoke.CLIReplTest do
              Repl.handle_input("/session resume " <> target_id, pid, id)
   end
 
+  describe "conversation tail on /resume" do
+    test "format_conversation_tail/2 returns nil for empty or system-only histories" do
+      assert Repl.format_conversation_tail([]) == nil
+      assert Repl.format_conversation_tail([%{"role" => "system", "content" => "sys"}]) == nil
+
+      assert Repl.format_conversation_tail([
+               %{"role" => "system", "content" => "sys"},
+               %{"role" => "tool", "content" => "tool output"}
+             ]) == nil
+    end
+
+    test "format_conversation_tail/2 skips system/tool blobs and renders the last N messages" do
+      messages = [
+        %{"role" => "system", "content" => "system prompt"},
+        %{"role" => "user", "content" => "First question"},
+        %{"role" => "assistant", "content" => "First answer"},
+        %{"role" => "user", "content" => "Second question"},
+        %{"role" => "tool", "content" => "noisy raw tool output"},
+        %{"role" => "assistant", "content" => "Second answer"},
+        %{"role" => "user", "content" => "Third question"},
+        %{"role" => "assistant", "content" => "Third answer"}
+      ]
+
+      rendered = Repl.format_conversation_tail(messages, limit: 2)
+      assert is_binary(rendered)
+      assert rendered =~ "last 2 of 6 messages"
+      assert rendered =~ "4 earlier omitted"
+      assert rendered =~ "Third question"
+      assert rendered =~ "Third answer"
+      refute rendered =~ "First question"
+      refute rendered =~ "noisy raw tool output"
+    end
+
+    test "format_conversation_tail/2 truncates oversized messages" do
+      long_text = Enum.map_join(1..60, "\n", &"line #{&1}")
+
+      rendered =
+        Repl.format_conversation_tail([
+          %{"role" => "user", "content" => long_text}
+        ])
+
+      assert rendered =~ "line 1"
+      assert rendered =~ "truncated"
+      refute rendered =~ "line 60"
+    end
+
+    @tag tmp_dir: true
+    test "/resume <id> prints the resumed conversation tail before switching", %{
+      session_pid: pid,
+      session_id: id,
+      tmp_dir: tmp_dir
+    } do
+      File.cd!(tmp_dir, fn ->
+        File.mkdir_p!(".yoke/sessions")
+        target_id = "resume_tail_#{System.unique_integer([:positive])}"
+
+        File.write!(
+          ".yoke/sessions/#{target_id}.json",
+          Yoke.Json.encode!(%{
+            "session_id" => target_id,
+            "model" => "deepseek-flash",
+            "messages" => [
+              %{"role" => "system", "content" => "sys"},
+              %{"role" => "user", "content" => "Where did we leave off?"},
+              %{"role" => "assistant", "content" => "We finished refactoring the parser."}
+            ],
+            "updated_at" => "2026-11-27T05:00:00"
+          })
+        )
+
+        output =
+          ExUnit.CaptureIO.capture_io(fn ->
+            assert {:switch_session, ^target_id, new_pid} =
+                     Repl.handle_input("/resume " <> target_id, pid, id)
+
+            SessionSupervisor.stop_session(new_pid)
+          end)
+
+        assert output =~ "Switched active REPL session to '#{target_id}'"
+        assert output =~ "Conversation tail"
+        assert output =~ "Where did we leave off?"
+        assert output =~ "We finished refactoring the parser."
+      end)
+    end
+  end
+
   @tag tmp_dir: true
   test "session cleanup preserves unreadable sessions", %{tmp_dir: cwd} do
     File.cd!(cwd, fn ->
