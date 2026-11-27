@@ -1464,19 +1464,7 @@ defmodule Yoke.CLI.LineEditor do
 
     if force or not Application.get_env(:yoke, :flow_control_disabled, false) do
       if tty?() do
-        cond do
-          File.exists?("/dev/tty") ->
-            System.cmd("sh", ["-c", "stty -ixon < /dev/tty 2>/dev/null || true"])
-            :ok
-
-          File.exists?("/proc/self/fd/0") ->
-            System.cmd("stty", ["-F", "/proc/self/fd/0", "-ixon"], stderr_to_stdout: true)
-            :ok
-
-          true ->
-            System.cmd("sh", ["-c", "stty -ixon 2>/dev/null || true"])
-            :ok
-        end
+        run_stty_disable_ixon()
       end
 
       Application.put_env(:yoke, :flow_control_disabled, true)
@@ -1488,6 +1476,44 @@ defmodule Yoke.CLI.LineEditor do
     _ -> :ok
   catch
     _, _ -> :ok
+  end
+
+  defp run_stty_disable_ixon do
+    case System.find_executable("stty") do
+      nil ->
+        :ok
+
+      stty ->
+        _ =
+          stty
+          |> stty_ixon_candidates()
+          |> Enum.any?(fn args ->
+            match?({_, 0}, System.cmd(stty, args, stderr_to_stdout: true))
+          end)
+
+        :ok
+    end
+  end
+
+  defp stty_ixon_candidates(_stty) do
+    case :os.type() do
+      {:unix, :linux} ->
+        [
+          if(File.exists?("/dev/tty"), do: ["-F", "/dev/tty", "-ixon"]),
+          if(File.exists?("/proc/self/fd/0"), do: ["-F", "/proc/self/fd/0", "-ixon"])
+        ]
+        |> Enum.reject(&is_nil/1)
+
+      {:unix, _} ->
+        [
+          if(File.exists?("/dev/tty"), do: ["-f", "/dev/tty", "-ixon"]),
+          ["-ixon"]
+        ]
+        |> Enum.reject(&is_nil/1)
+
+      _ ->
+        []
+    end
   end
 
   defp set_raw_mode do

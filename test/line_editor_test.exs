@@ -953,6 +953,10 @@ defmodule Yoke.LineEditorTest do
       # Idempotent call
       assert :ok == LineEditor.disable_flow_control()
     end
+
+    test "disable_flow_control/1 with force: true does not leak /dev/tty errors to stderr" do
+      assert :ok == LineEditor.disable_flow_control(force: true)
+    end
   end
 
   describe "unclosed paired symbol detection (unclosed_pair?/1)" do
