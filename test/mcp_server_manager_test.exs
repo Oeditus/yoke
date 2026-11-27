@@ -300,6 +300,96 @@ defmodule Yoke.MCPServerManagerTest do
     end
   end
 
+  test "recovers cleanly when Ragex.Graph.Store.sync times out during directory analysis" do
+    tmp_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "yoke_ragex_sync_timeout_#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(tmp_dir)
+    on_exit(fn -> File.rm_rf(tmp_dir) end)
+
+    store = Process.whereis(Ragex.Graph.Store)
+    pattern = [{[{:save_cache, :_}, :_, :_], [], []}]
+    :erlang.trace_pattern({Ragex.Graph.Store, :handle_call, 3}, pattern, [:local])
+    :erlang.trace(store, true, [:call])
+
+    try do
+      assert {:ok, ^tmp_dir, tools} =
+               MCPServerManager.start_ragex(
+                 target_dir: tmp_dir,
+                 watch: false,
+                 notify: false,
+                 directory_analyzer: fn _dir, _opts ->
+                   exit({:timeout, {GenServer, :call, [Ragex.Graph.Store, :sync, 5000]}})
+                 end
+               )
+
+      assert is_list(tools) and tools != []
+
+      delivery = :erlang.trace_delivered(store)
+      assert_receive {:trace_delivered, ^store, ^delivery}
+
+      assert_receive {:trace, ^store, :call,
+                      {Ragex.Graph.Store, :handle_call, [{:save_cache, ^tmp_dir}, _, _]}}
+    after
+      :erlang.trace(store, false, [:call])
+      :erlang.trace_pattern({Ragex.Graph.Store, :handle_call, 3}, false, [:local])
+    end
+  end
+
+  test "still registers Ragex tools when directory analysis exits unexpectedly" do
+    tmp_dir =
+      Path.join(System.tmp_dir!(), "yoke_ragex_exit_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(tmp_dir)
+    on_exit(fn -> File.rm_rf(tmp_dir) end)
+
+    assert {:ok, ^tmp_dir, tools} =
+             MCPServerManager.start_ragex(
+               target_dir: tmp_dir,
+               watch: false,
+               notify: false,
+               directory_analyzer: fn _dir, _opts -> exit(:boom) end
+             )
+
+    assert is_list(tools) and tools != []
+    assert :sys.get_state(MCPServerManager).ragex_status == :ready
+  end
+
+  test "unblocks waiting callers if the Ragex startup task exits unexpectedly" do
+    pid = Process.whereis(MCPServerManager)
+    manager_state = :sys.get_state(pid)
+
+    on_exit(fn ->
+      :sys.replace_state(pid, fn _ -> manager_state end)
+    end)
+
+    task = spawn(fn -> Process.sleep(:infinity) end)
+    task_ref = make_ref()
+    reply_tag = make_ref()
+    caller = self()
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | ragex_status: :starting,
+          ragex_task: task,
+          ragex_task_ref: task_ref,
+          waiting_callers: [{:start, {caller, reply_tag}}]
+      }
+    end)
+
+    send(pid, {:DOWN, task_ref, :process, task, :killed})
+    Process.exit(task, :kill)
+
+    assert_receive {^reply_tag, {:error, {:ragex_task_exited, :killed}}}, 1_000
+
+    assert %{ragex_status: :ready, ragex_task: nil, ragex_task_ref: nil, waiting_callers: []} =
+             :sys.get_state(pid)
+  end
+
   test "formats validation errors with dynamic language (JS/TS support)" do
     err_atom = %{
       type: :validation_error,

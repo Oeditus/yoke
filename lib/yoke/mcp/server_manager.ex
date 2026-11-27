@@ -94,6 +94,7 @@ defmodule Yoke.MCP.ServerManager do
       waiting_callers: [],
       dllb_projects: MapSet.new(),
       ragex_task: nil,
+      ragex_task_ref: nil,
       dllb_activations: %{},
       shutdown_callers: []
     }
@@ -113,8 +114,29 @@ defmodule Yoke.MCP.ServerManager do
 
   def handle_info(:auto_start_ragex, state) do
     cwd = project_dir()
-    task = start_ragex_task(cwd, [])
-    {:noreply, %{state | ragex_status: :starting, ragex_task: task}}
+    {task, task_ref} = start_ragex_task(cwd, [])
+    {:noreply, %{state | ragex_status: :starting, ragex_task: task, ragex_task_ref: task_ref}}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{ragex_task_ref: ref} = state)
+      when is_reference(ref) do
+    case state.ragex_status do
+      :starting ->
+        Logger.warning("󱐋🔌 Ragex startup task exited unexpectedly: #{inspect(reason)}")
+        reply_waiting_callers(state.waiting_callers, {:error, {:ragex_task_exited, reason}})
+
+        {:noreply,
+         %{
+           state
+           | ragex_status: :ready,
+             waiting_callers: [],
+             ragex_task: nil,
+             ragex_task_ref: nil
+         }}
+
+      _ ->
+        {:noreply, %{state | ragex_task: nil, ragex_task_ref: nil}}
+    end
   end
 
   def handle_info({ref, result}, state) when is_map_key(state.dllb_activations, ref) do
@@ -134,10 +156,13 @@ defmodule Yoke.MCP.ServerManager do
 
   @impl true
   def handle_cast({:ragex_started, _dir, _tools}, %{ragex_status: :stopped} = state) do
-    {:noreply, state}
+    demonitor_ragex_task(state.ragex_task_ref)
+    {:noreply, %{state | ragex_task: nil, ragex_task_ref: nil}}
   end
 
   def handle_cast({:ragex_started, dir, tools_registered}, state) do
+    demonitor_ragex_task(state.ragex_task_ref)
+
     new_servers =
       Map.put(state.servers, "ragex", %{
         command: "in_process",
@@ -153,23 +178,29 @@ defmodule Yoke.MCP.ServerManager do
     end)
 
     {:noreply,
-     %{state | servers: new_servers, ragex_status: :ready, waiting_callers: [], ragex_task: nil}}
+     %{
+       state
+       | servers: new_servers,
+         ragex_status: :ready,
+         waiting_callers: [],
+         ragex_task: nil,
+         ragex_task_ref: nil
+     }}
   end
 
   @impl true
   def handle_cast({:ragex_failed, _reason}, %{ragex_status: :stopped} = state) do
-    {:noreply, state}
+    demonitor_ragex_task(state.ragex_task_ref)
+    {:noreply, %{state | ragex_task: nil, ragex_task_ref: nil}}
   end
 
   def handle_cast({:ragex_failed, reason}, state) do
+    demonitor_ragex_task(state.ragex_task_ref)
     Logger.warning("󱐋🔌 Ragex auto-start notice: #{inspect(reason)}")
+    reply_waiting_callers(state.waiting_callers, {:error, reason})
 
-    Enum.each(state.waiting_callers, fn
-      {_tag, caller} -> GenServer.reply(caller, {:error, reason})
-      caller -> GenServer.reply(caller, {:error, reason})
-    end)
-
-    {:noreply, %{state | ragex_status: :ready, waiting_callers: [], ragex_task: nil}}
+    {:noreply,
+     %{state | ragex_status: :ready, waiting_callers: [], ragex_task: nil, ragex_task_ref: nil}}
   end
 
   @impl true
@@ -234,10 +265,16 @@ defmodule Yoke.MCP.ServerManager do
         {:noreply, %{state | waiting_callers: [{:start, from} | state.waiting_callers]}}
 
       _ ->
-        task = start_ragex_task(target_dir, opts)
+        {task, task_ref} = start_ragex_task(target_dir, opts)
 
         {:noreply,
-         %{state | ragex_status: :starting, waiting_callers: [{:start, from}], ragex_task: task}}
+         %{
+           state
+           | ragex_status: :starting,
+             waiting_callers: [{:start, from}],
+             ragex_task: task,
+             ragex_task_ref: task_ref
+         }}
     end
   end
 
@@ -261,13 +298,10 @@ defmodule Yoke.MCP.ServerManager do
 
   @impl true
   def handle_call(:stop_ragex, from, state) do
+    demonitor_ragex_task(state.ragex_task_ref)
     stop_ragex_task(state.ragex_task)
     Enum.each(state.dllb_projects, &stop_dllb_project/1)
-
-    Enum.each(state.waiting_callers, fn
-      {_tag, caller} -> GenServer.reply(caller, {:error, :shutting_down})
-      caller -> GenServer.reply(caller, {:error, :shutting_down})
-    end)
+    reply_waiting_callers(state.waiting_callers, {:error, :shutting_down})
 
     state = %{
       state
@@ -275,6 +309,7 @@ defmodule Yoke.MCP.ServerManager do
         dllb_projects: MapSet.new(),
         ragex_status: :stopped,
         ragex_task: nil,
+        ragex_task_ref: nil,
         waiting_callers: [],
         shutdown_callers: [from | state.shutdown_callers]
     }
@@ -374,7 +409,16 @@ defmodule Yoke.MCP.ServerManager do
   defp start_ragex_task(target_dir, opts) do
     {:ok, pid} =
       Task.start(fn ->
-        case do_start_ragex(target_dir, opts) do
+        result =
+          try do
+            do_start_ragex(target_dir, opts)
+          rescue
+            e -> {:error, Exception.message(e)}
+          catch
+            :exit, reason -> {:error, {:exit, reason}}
+          end
+
+        case result do
           {:ok, dir, tools_registered} ->
             GenServer.cast(@name, {:ragex_started, dir, tools_registered})
 
@@ -383,7 +427,17 @@ defmodule Yoke.MCP.ServerManager do
         end
       end)
 
-    pid
+    {pid, Process.monitor(pid)}
+  end
+
+  defp demonitor_ragex_task(nil), do: :ok
+  defp demonitor_ragex_task(ref), do: Process.demonitor(ref, [:flush])
+
+  defp reply_waiting_callers(callers, reply) do
+    Enum.each(callers, fn
+      {_tag, caller} -> GenServer.reply(caller, reply)
+      caller -> GenServer.reply(caller, reply)
+    end)
   end
 
   defp stop_ragex_task(nil), do: :ok
@@ -443,6 +497,11 @@ defmodule Yoke.MCP.ServerManager do
           stale_snapshot = snapshot_stale_tracking()
 
           case analyze_ragex_directory(target_dir, opts) do
+            {:ok, :sync_recovered} ->
+              prune_stale_tracked_entities(target_dir, stale_snapshot)
+              Logger.configure(level: orig_level)
+              Logger.info("Ragex indexing complete (graph store sync drained).")
+
             {:ok, stats} ->
               prune_stale_tracked_entities(target_dir, stale_snapshot)
               Logger.configure(level: orig_level)
@@ -493,29 +552,62 @@ defmodule Yoke.MCP.ServerManager do
     {:ok, target_dir, registered_names}
   end
 
-  defp analyze_ragex_directory(target_dir, opts) when is_list(opts) do
+  defp analyze_ragex_directory(target_dir, opts) do
     analyze_opts =
-      Keyword.take(opts, [
-        :max_depth,
-        :exclude_patterns,
-        :incremental,
-        :force_refresh,
-        :notify,
-        :timeout,
-        :max_concurrency,
-        :generate_embeddings,
-        :watch
-      ])
+      if is_list(opts) do
+        Keyword.take(opts, [
+          :max_depth,
+          :exclude_patterns,
+          :incremental,
+          :force_refresh,
+          :notify,
+          :timeout,
+          :max_concurrency,
+          :generate_embeddings,
+          :watch
+        ])
+      else
+        []
+      end
+
+    analyzer =
+      if is_list(opts) do
+        Keyword.get(opts, :directory_analyzer, &Ragex.Analyzers.Directory.analyze_directory/2)
+      else
+        &Ragex.Analyzers.Directory.analyze_directory/2
+      end
 
     # The store is already loaded before taking the stale-entity snapshot.
-    Ragex.Analyzers.Directory.analyze_directory(
-      target_dir,
-      Keyword.put(analyze_opts, :load_project, false)
-    )
+    analyzer.(target_dir, Keyword.put(analyze_opts, :load_project, false))
+  rescue
+    e ->
+      {:error, Exception.message(e)}
+  catch
+    :exit, {:timeout, {GenServer, :call, [Ragex.Graph.Store, :sync, _timeout]}} ->
+      finish_ragex_store_sync(target_dir)
+
+    :exit, reason ->
+      {:error, {:exit, reason}}
   end
 
-  defp analyze_ragex_directory(target_dir, _opts) do
-    Ragex.Analyzers.Directory.analyze_directory(target_dir, load_project: false)
+  defp finish_ragex_store_sync(target_dir) do
+    # `Ragex.Analyzers.Directory.analyze_files/2` calls `Ragex.Graph.Store.sync/0`
+    # with the default 5s GenServer timeout. When a large batch of async writes
+    # is still draining in `Ragex.Graph.Store`, that barrier times out even
+    # though file analysis already finished. Calling `save_cache/1` uses an
+    # `:infinity` GenServer call, so it both waits for pending casts to drain
+    # and persists the cache that `analyze_directory/2` could not reach.
+    if Code.ensure_loaded?(Ragex.Graph.Store) do
+      Ragex.Graph.Store.save_cache(target_dir)
+    end
+
+    {:ok, :sync_recovered}
+  rescue
+    e ->
+      {:error, {:store_sync_failed, Exception.message(e)}}
+  catch
+    :exit, reason ->
+      {:error, {:store_sync_failed, reason}}
   end
 
   defp snapshot_stale_tracking do
