@@ -336,7 +336,10 @@ runs:
             [ -n "$INPUT_FORMAT" ]         && args+=(--format "$INPUT_FORMAT")
             [ -n "$INPUT_MAX_COST" ]       && args+=(--max-cost "$INPUT_MAX_COST")
             [ -n "$INPUT_MAX_DIFF_BYTES" ] && args+=(--max-diff-bytes "$INPUT_MAX_DIFF_BYTES")
-            [ "$INPUT_DRY_RUN" = "true" ]        && args+=(--dry-run)
+            if [ "$INPUT_DRY_RUN" = "true" ]; then
+              args+=(--dry-run)
+              expect_report=false
+            fi
             [ "$INPUT_ELIXIR_PLUGINS" = "false" ] && args+=(--no-elixir-plugins)
             [ "$INPUT_POST" = "true" ]           && args+=(--post)
             ;;

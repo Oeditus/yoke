@@ -77,9 +77,43 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          elixir-version: '1.20'
+          otp-version: '29'
+
+      - name: Restore Mix dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: deps
+          key: ${{ runner.os }}-${{ runner.arch }}-mix-test-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-mix-test-
+
+      - name: Restore PLT cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: priv/plts
+          key: ${{ runner.os }}-${{ runner.arch }}-plt-test-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-plt-test-
+
+      # `build-from-source` fetches deps under MIX_ENV=escript (omitting native
+      # embeddings deps), so running `yoke lint` under default MIX_ENV=dev fails
+      # with unchecked dependencies. Prepare the project under MIX_ENV=test
+      # (which includes credo, oeditus_credo, dialyxir, and mix_audit without
+      # native deps) and warm the PLT outside `yoke lint`'s per-tool timeout.
+      - name: Prepare project for lint
+        env:
+          MIX_ENV: test
+        run: |
+          mix deps.get
+          mix compile
+          mix dialyzer --plt
+
       - name: Exercise yoke lint
         id: lint
         uses: ./
+        env:
+          MIX_ENV: test
         with:
           command: lint
           build-from-source: 'true'
