@@ -94,6 +94,8 @@ defmodule Yoke.MixProject do
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:oeditus_credo, "~> 0.11", only: [:dev, :test], runtime: false},
       {:propwise, "~> 0.4", only: [:dev, :test], runtime: false},
+      # Development/test only: `Ragex.Analysis.Prisma` shells out to `mix prisma`
+      {:prisma, "~> 0.2", only: [:dev, :test], runtime: false},
       {:excoveralls, "~> 0.18", only: :test, runtime: false},
       # Scans mix.lock for known security vulnerabilities (`mix deps.audit`)
       {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false}
@@ -111,7 +113,7 @@ defmodule Yoke.MixProject do
   # Opt-in source override for validating changes before a Ragex Hex release.
   defp ragex_dep do
     case System.get_env("LOCAL_RAGEX") do
-      nil -> {:ragex, "~> 0.46"}
+      nil -> {:ragex, "~> 0.47"}
       path -> {:ragex, path: Path.expand(path), override: true}
     end
   end

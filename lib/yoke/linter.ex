@@ -42,6 +42,13 @@ defmodule Yoke.Linter do
         docs: "https://hexdocs.pm/dialyxir"
       },
       %{
+        name: "prisma",
+        aliases: [],
+        description:
+          "Prisma hybrid success/gradual type analyzer for compiled Elixir/Erlang beams",
+        docs: "https://prisma.hexdocs.pm"
+      },
+      %{
         name: "javac",
         aliases: ["java", "compile"],
         description: "Java compiler & type checker (via ./mvnw test-compile, gradle, or javac)",
@@ -148,6 +155,7 @@ defmodule Yoke.Linter do
       "propwise" -> "propwise"
       "credo" -> "credo"
       "dialyzer" -> "dialyzer"
+      "prisma" -> "prisma"
       t when t in ["javac", "java", "compile"] -> "javac"
       t when t in ["mvn", "maven"] -> "mvn"
       "checkstyle" -> "checkstyle"
@@ -218,6 +226,10 @@ defmodule Yoke.Linter do
 
   defp run_single_tool("metacredo", rest, cwd) do
     exec_metacredo(rest, cwd)
+  end
+
+  defp run_single_tool("prisma", rest, cwd) do
+    exec_prisma(rest, cwd)
   end
 
   defp run_single_tool(tool, rest, cwd) do
@@ -577,6 +589,77 @@ defmodule Yoke.Linter do
     Enum.join([header | lines], "\n")
   end
 
+  defp exec_prisma(rest, cwd) do
+    if Code.ensure_loaded?(Ragex.Analysis.Prisma) do
+      expanded_cwd = Path.expand(cwd)
+
+      case rest do
+        ["build" | _] ->
+          case Ragex.Analysis.Prisma.build(expanded_cwd) do
+            {:ok, output} -> {:ok, output}
+            {:error, reason} -> {:error, "Prisma build failed: #{inspect(reason)}"}
+          end
+
+        _ ->
+          opts = parse_prisma_opts(rest)
+
+          case Ragex.Analysis.Prisma.analyze(expanded_cwd, opts) do
+            {:ok, findings} ->
+              {:ok, format_prisma_report(findings)}
+
+            {:error, :unavailable} ->
+              {:error,
+               "Prisma is not available for '#{expanded_cwd}'. Add `{:prisma, \"~> 0.2\", only: [:dev, :test], runtime: false}` to mix.exs and run `mix prisma.build`."}
+
+            {:error, reason} ->
+              {:error, "Prisma analysis failed: #{inspect(reason)}"}
+          end
+      end
+    else
+      {:error, "Ragex.Analysis.Prisma is not available in this build."}
+    end
+  rescue
+    e -> {:error, "Failed to run Prisma: #{Exception.message(e)}"}
+  end
+
+  defp parse_prisma_opts(args), do: parse_prisma_opts(args, [])
+
+  defp parse_prisma_opts([], acc), do: Enum.reverse(acc)
+
+  defp parse_prisma_opts(["project" | rest], acc), do: parse_prisma_opts(rest, acc)
+
+  defp parse_prisma_opts(["--mode", mode | rest], acc)
+       when mode in ["hybrid", "gradual", "discrepancy"] do
+    parse_prisma_opts(rest, [{:mode, String.to_existing_atom(mode)} | acc])
+  end
+
+  defp parse_prisma_opts(["--no-oxbow" | rest], acc),
+    do: parse_prisma_opts(rest, [{:oxbow, false} | acc])
+
+  defp parse_prisma_opts(["--warnings-as-errors" | rest], acc),
+    do: parse_prisma_opts(rest, [{:warnings_as_errors, true} | acc])
+
+  defp parse_prisma_opts([_other | rest], acc), do: parse_prisma_opts(rest, acc)
+
+  defp format_prisma_report([]) do
+    "Prisma: No findings."
+  end
+
+  defp format_prisma_report(findings) when is_list(findings) do
+    header = "Prisma: #{length(findings)} finding(s):"
+
+    lines =
+      Enum.map(findings, fn f ->
+        file = f.file || f.module || "unknown"
+        line = if f.line, do: ":#{f.line}", else: ""
+        sev = f.severity |> to_string() |> String.upcase()
+        kind = f.kind || "issue"
+        "#{file}#{line} [#{sev}] (#{kind}) #{f.message}"
+      end)
+
+    Enum.join([header | lines], "\n")
+  end
+
   def help_text do
     """
     Usage: /linter [fix] <tool> [project | diff [ref] | cr [base] [head] | <args>]
@@ -587,6 +670,7 @@ defmodule Yoke.Linter do
       • propwise - Property-based testing candidate detector (https://propwise.hexdocs.pm)
       • credo - Standard Credo static analyzer
       • dialyzer - Dialyxir static type checker
+      • prisma - Hybrid success/gradual type analyzer for compiled beams (https://prisma.hexdocs.pm)
       • javac / mvn / checkstyle - Java compilation and style checks
       • cargo / clippy - Rust type-checking (`cargo check`) and linting (`cargo clippy`)
       • go (aliases: go_vet, golang) - Go static analysis (`go vet ./...`)

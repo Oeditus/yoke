@@ -14,6 +14,7 @@ defmodule Yoke.LinterTest do
       assert "propwise" in names
       assert "credo" in names
       assert "dialyzer" in names
+      assert "prisma" in names
       assert "javac" in names
       assert "mvn" in names
       assert "checkstyle" in names
@@ -53,6 +54,9 @@ defmodule Yoke.LinterTest do
 
         assert {:error, err3} = Linter.run("go", tmp_dir)
         assert err3 =~ "No go.mod found"
+
+        assert {:error, err4} = Linter.run("prisma", tmp_dir)
+        assert err4 =~ "Prisma is not available"
       after
         File.rm_rf!(tmp_dir)
       end

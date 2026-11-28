@@ -8,6 +8,7 @@ defmodule Yoke.Application do
   @impl true
   def start(_type, _args) do
     Yoke.CLI.LogFormatter.install()
+    Yoke.Hands.Environment.sanitize_runtime_env()
 
     children = [
       # Unique registry for process naming via tuple

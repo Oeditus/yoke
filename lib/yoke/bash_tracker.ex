@@ -126,6 +126,12 @@ defmodule Yoke.BashTracker do
       reason:
         "Use mcp_ragex_metacredo_analyze or run_linter metacredo for in-process cross-language static analysis"
     },
+    "mix prisma" => %{
+      analog: "mcp_ragex_prisma_analyze / run_linter prisma",
+      category: :analysis,
+      reason:
+        "Use mcp_ragex_prisma_analyze or run_linter prisma for structured hybrid success/gradual type analysis"
+    },
     "wc" => %{
       analog: "mcp_ragex_analyze_file / read_file",
       category: :analysis,

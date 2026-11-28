@@ -194,7 +194,7 @@ defmodule Yoke.Hands.EnvironmentTest do
     release_root = "/tmp/yoke-fake-release"
 
     keys = ~w(
-      PATH YOKE_ORIG_PATH ROOTDIR BINDIR EMU PROGNAME ERL_ROOTDIR
+      PATH YOKE_ORIG_PATH ROOTDIR BINDIR EMU PROGNAME ERL_ROOTDIR MIX_ENV
       RELEASE_ROOT RELEASE_NAME RELEASE_VSN RELEASE_BOOT_SCRIPT RELEASE_COOKIE
     )
 
@@ -215,9 +215,10 @@ defmodule Yoke.Hands.EnvironmentTest do
       "EMU" => "beam",
       "PROGNAME" => "erl",
       "ERL_ROOTDIR" => release_root,
+      "MIX_ENV" => "prod",
       "RELEASE_ROOT" => release_root,
       "RELEASE_NAME" => "yoke",
-      "RELEASE_VSN" => "0.29.0",
+      "RELEASE_VSN" => "0.33.0",
       "RELEASE_BOOT_SCRIPT" => "start",
       "RELEASE_COOKIE" => "secret-cookie"
     })
@@ -230,6 +231,7 @@ defmodule Yoke.Hands.EnvironmentTest do
     assert System.get_env("EMU") == nil
     assert System.get_env("PROGNAME") == nil
     assert System.get_env("ERL_ROOTDIR") == nil
+    assert System.get_env("MIX_ENV") == nil
     assert System.get_env("RELEASE_ROOT") == nil
     assert System.get_env("RELEASE_NAME") == nil
     assert System.get_env("RELEASE_VSN") == nil

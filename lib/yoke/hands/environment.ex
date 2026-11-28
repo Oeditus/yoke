@@ -74,6 +74,12 @@ defmodule Yoke.Hands.Environment do
           System.delete_env("ERL_ROOTDIR")
         end
 
+        # Inside an assembled OTP release, MIX_ENV is meaningless for Yoke
+        # itself and breaks dev/test-only Mix tools (credo, prisma, dialyzer,
+        # oeditus_credo, propwise) when Yoke shells out to `mix` on the
+        # underlying project if the caller had MIX_ENV=prod set.
+        System.delete_env("MIX_ENV")
+
         parent_env
         |> Map.keys()
         |> Enum.filter(&String.starts_with?(&1, "RELEASE_"))
