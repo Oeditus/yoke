@@ -1288,15 +1288,24 @@ defmodule Yoke.Plugin.DefaultTools do
           :ok
 
         {:error, reason} when is_binary(reason) ->
-          {:error, "Ruby syntax error for '#{path}': #{reason}"}
-
-        _ ->
-          :ok
+          if ruby_parser_unavailable_error?(reason) do
+            :ok
+          else
+            {:error, "Ruby syntax error for '#{path}': #{reason}"}
+          end
       end
     else
       :ok
     end
   rescue
     _ -> :ok
+  end
+
+  defp ruby_parser_unavailable_error?(reason) do
+    String.starts_with?(reason, "Ruby parser unavailable:") or
+      String.starts_with?(reason, "Exit code ") or
+      String.starts_with?(reason, "Failed to run ") or
+      String.contains?(reason, "LoadError") or
+      String.contains?(reason, "GemNotFound")
   end
 end

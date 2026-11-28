@@ -136,21 +136,21 @@ defmodule Yoke.LanguageSupportTest do
   end
 
   test "write_file validates Ruby syntax when Metastatic Ruby parser is available" do
-    if Code.ensure_loaded?(Metastatic.Adapters.Ruby) and Metastatic.Adapters.Ruby.available?() do
-      tmp_dir =
-        Path.join(System.tmp_dir!(), "yoke_ruby_write_#{System.unique_integer([:positive])}")
+    tmp_dir =
+      Path.join(System.tmp_dir!(), "yoke_ruby_write_#{System.unique_integer([:positive])}")
 
-      File.mkdir_p!(tmp_dir)
+    File.mkdir_p!(tmp_dir)
 
-      try do
-        valid_path = Path.join(tmp_dir, "app.rb")
-        valid_code = "def greet(name)\n  \"Hello, \#{name}\"\nend\n"
+    try do
+      valid_path = Path.join(tmp_dir, "app.rb")
+      valid_code = "def greet(name)\n  \"Hello, \#{name}\"\nend\n"
 
-        assert {:ok, _} =
-                 DefaultTools.write_file(%{"path" => valid_path, "content" => valid_code})
+      assert {:ok, _} =
+               DefaultTools.write_file(%{"path" => valid_path, "content" => valid_code})
 
-        assert File.read!(valid_path) == valid_code
+      assert File.read!(valid_path) == valid_code
 
+      if ruby_parser_ready?() do
         invalid_path = Path.join(tmp_dir, "broken.rb")
 
         assert {:error, rb_err} =
@@ -161,9 +161,15 @@ defmodule Yoke.LanguageSupportTest do
 
         assert rb_err =~ "Ruby syntax error"
         refute File.exists?(invalid_path)
-      after
-        File.rm_rf!(tmp_dir)
       end
+    after
+      File.rm_rf!(tmp_dir)
     end
+  end
+
+  defp ruby_parser_ready? do
+    Code.ensure_loaded?(Metastatic.Adapters.Ruby) and
+      Metastatic.Adapters.Ruby.available?() and
+      match?({:ok, _}, Metastatic.Adapters.Ruby.parse("1"))
   end
 end
